@@ -511,9 +511,30 @@ async function parseAgentStreamResponse(
   const outputItems: ResponsesOutputItem[] = []
   let streamedText = ''
 
-  const publishOutputItems = (items: ResponsesOutputItem[]) => {
-    for (const item of items) {
-      const index = item.id ? outputItems.findIndex((existing) => existing.id === item.id) : -1
+  const publishOutputItems = (items: ResponsesOutputItem[], outputIndices?: Array<number | undefined>) => {
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i]
+      const outputIndex = outputIndices?.[i]
+      let index = item.id ? outputItems.findIndex((existing) => existing.id === item.id) : -1
+      // The terminal `response.completed` event re-emits the streamed items inside its
+      // `response.output` array, but those copies omit the per-item `id` field. Without
+      // a secondary match, the dedupe above would treat each one as a new entry and the
+      // assistant message would render twice in the agent UI. When we know the
+      // output_index (or it is 0 and we currently track one item of the same type),
+      // match the existing slot instead of appending.
+      if (index < 0 && !item.id && typeof outputIndex === "number" && outputIndex >= 0 && outputIndex < outputItems.length) {
+        const candidate = outputItems[outputIndex]
+        if (candidate?.type === item.type) index = outputIndex
+      }
+      if (index < 0 && !item.id && item.type) {
+        // Fallback: match by type when only one tracked item shares it. This covers the
+        // common single-message turn shape without risking false matches across distinct
+        // tool calls.
+        const sameTypeIndices = outputItems
+          .map((existing, idx) => existing.type === item.type ? idx : -1)
+          .filter((idx) => idx >= 0)
+        if (sameTypeIndices.length === 1) index = sameTypeIndices[0]
+      }
       if (index >= 0) outputItems[index] = item
       else outputItems.push(item)
     }
@@ -585,7 +606,11 @@ async function parseAgentStreamResponse(
     if (!payload) return
 
     if (Array.isArray(payload.output)) {
-      publishOutputItems(payload.output)
+      // For the terminal `response.completed` snapshot the per-item `output_index` is
+      // implicit (== array index). Hand it to publishOutputItems so the dedupe can match
+      // streamed items that lost their id in the snapshot.
+      const indices = type === "response.completed" ? payload.output.map((_, idx) => idx) : undefined
+      publishOutputItems(payload.output, indices)
     }
 
     if (type === 'response.output_item.added') {
