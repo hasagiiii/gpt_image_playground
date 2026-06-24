@@ -396,6 +396,7 @@ export default function InputBar() {
   const [balanceLoading, setBalanceLoading] = useState<boolean>(false)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [modelsLoading, setModelsLoading] = useState<boolean>(false)
+  const [selectedModel, setSelectedModel] = useState<string>('gpt-image-2')
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
   const setPrompt = useStore((s) => s.setPrompt)
@@ -492,7 +493,16 @@ export default function InputBar() {
         setBalance('')
       }
       if (modelsRes.status === 'fulfilled') {
-        setModels(modelsRes.value.data || [])
+        const list = modelsRes.value.data || []
+        setModels(list)
+        // 默认优先选中 gpt-image-2；否则若当前选择已不在列表中，回落到第一个；都没有则保留 'gpt-image-2'
+        setSelectedModel((prev) => {
+          const ids = list.map((m) => m.id)
+          if (ids.includes('gpt-image-2')) return 'gpt-image-2'
+          if (prev && ids.includes(prev)) return prev
+          if (ids.length > 0) return ids[0]
+          return 'gpt-image-2'
+        })
       } else {
         console.error('[InputBar] fetchModels failed:', modelsRes.reason)
         setModels([])
@@ -800,7 +810,9 @@ export default function InputBar() {
       ? settings
       : normalizeSettings({ ...settings, activeProfileId: activeProfile.id })
   ), [activeProfile.id, settingsActiveProfile.id, settings])
-  const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
+  // 提交所需的 API 配置：优先使用 InputBar 中选择的 OIDC apiKey + 模型；
+  // 仍兼容老的 settings 中 profile 自带 apiKey 的方式。
+  const hasSubmitApiConfig = Boolean((apiKey && selectedModel) || activeProfile.apiKey)
   const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig && !activeAgentIsRunning)
   const submitButtonAriaLabel = activeAgentIsRunning
     ? '停止生成'
@@ -813,9 +825,17 @@ export default function InputBar() {
     if (appMode === 'agent') {
       void submitAgentMessage()
     } else {
-      void submitTask()
+      // 把 InputBar 选中的 OIDC apiKey 和模型作为本次请求的覆盖项传入，
+      // 这样就不再依赖设置面板里 profile 自带的 apiKey/model。
+      const apiOverride = (apiKey || selectedModel)
+        ? {
+            ...(apiKey ? { apiKey } : {}),
+            ...(selectedModel ? { model: selectedModel } : {}),
+          }
+        : undefined
+      void submitTask(apiOverride ? { apiOverride } : {})
     }
-  }, [appMode])
+  }, [appMode, apiKey, selectedModel])
   const stopActiveAgentResponse = useCallback(() => {
     stopAgentResponse(activeAgentConversationId)
   }, [activeAgentConversationId])
@@ -2148,29 +2168,37 @@ export default function InputBar() {
                 </span>
 
                 <span className="ml-2 font-medium text-gray-500 dark:text-gray-400">模型:</span>
-                <span className="text-gray-600 dark:text-gray-300">
-                  {modelsLoading ? '加载中...' : `${models.length} 个`}
-                </span>
-              </div>
-
-              {models.length > 0 && (
-                <details className="text-gray-500 dark:text-gray-400">
-                  <summary className="cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200">
-                    展开模型列表
-                  </summary>
-                  <div className="mt-1 flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded bg-gray-50 p-2 dark:bg-white/[0.04]">
+                {modelsLoading ? (
+                  <span className="text-gray-400 dark:text-gray-500">加载中...</span>
+                ) : models.length > 0 ? (
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="max-w-[260px] truncate rounded bg-purple-100 px-2 py-0.5 font-mono text-purple-700 outline-none dark:bg-purple-900/30 dark:text-purple-300"
+                  >
+                    {/* 当 gpt-image-2 不在 /v1/models 返回中时，仍然兜底提供该选项作为默认值 */}
+                    {!models.some((m) => m.id === selectedModel) && (
+                      <option value={selectedModel} className="font-mono">
+                        {selectedModel}
+                      </option>
+                    )}
                     {models.map((m) => (
-                      <span
-                        key={m.id}
-                        title={m.owned_by ? `owned_by: ${m.owned_by}` : ''}
-                        className="rounded bg-white px-1.5 py-0.5 font-mono text-[11px] text-gray-700 ring-1 ring-gray-200 dark:bg-white/[0.06] dark:text-gray-200 dark:ring-white/[0.08]"
-                      >
+                      <option key={m.id} value={m.id} className="font-mono">
                         {m.id}
-                      </span>
+                      </option>
                     ))}
-                  </div>
-                </details>
-              )}
+                  </select>
+                ) : (
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="max-w-[260px] truncate rounded bg-purple-100 px-2 py-0.5 font-mono text-purple-700 outline-none dark:bg-purple-900/30 dark:text-purple-300"
+                  >
+                    <option value="gpt-image-2" className="font-mono">gpt-image-2</option>
+                  </select>
+                )}
+                <span className="text-gray-400 dark:text-gray-500">共 {models.length} 个</span>
+              </div>
             </div>
             
             <div

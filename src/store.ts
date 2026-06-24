@@ -2320,7 +2320,7 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
+export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; apiOverride?: { apiKey?: string; model?: string } } = {}) {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
     useStore.getState()
 
@@ -2351,9 +2351,20 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   if (validateApiProfile(activeProfile)) {
-    showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
-    useStore.getState().setShowSettings(true)
-    return
+    // 若调用方提供了 apiKey/model 覆盖（例如 InputBar 中选择的 OIDC apiKey 与模型），
+    // 则在校验时忽略对应字段缺失的问题。
+    const validationMsg = validateApiProfile(activeProfile)
+    const ignorable = (() => {
+      if (!validationMsg) return true
+      if (validationMsg === '缺少 API Key' && options.apiOverride?.apiKey) return true
+      if (validationMsg === '缺少模型 ID' && options.apiOverride?.model) return true
+      return false
+    })()
+    if (!ignorable) {
+      showToast(`请先完善请求 API 配置：${validationMsg}`, 'error')
+      useStore.getState().setShowSettings(true)
+      return
+    }
   }
 
   if (!prompt.trim()) {
@@ -2420,7 +2431,10 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     apiProfileId: activeProfile.id,
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
-    apiModel: activeProfile.model,
+    apiModel: options.apiOverride?.model || activeProfile.model,
+    ...(options.apiOverride && (options.apiOverride.apiKey || options.apiOverride.model)
+      ? { apiOverride: { ...options.apiOverride } }
+      : {}),
     inputImageIds: orderedInputImages.map((i) => i.id),
     maskTargetImageId,
     maskImageId,
@@ -4307,7 +4321,14 @@ async function executeTask(taskId: string) {
     })
     return
   }
-  const activeProfile = taskProfile ?? getActiveApiProfile(settings)
+  const baseProfile = taskProfile ?? getActiveApiProfile(settings)
+  const activeProfile = task.apiOverride && (task.apiOverride.apiKey || task.apiOverride.model)
+    ? {
+        ...baseProfile,
+        ...(task.apiOverride.apiKey ? { apiKey: task.apiOverride.apiKey } : {}),
+        ...(task.apiOverride.model ? { model: task.apiOverride.model } : {}),
+      }
+    : baseProfile
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
   const taskProvider = task.apiProvider ?? activeProfile.provider
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint

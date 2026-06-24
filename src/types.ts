@@ -172,6 +172,11 @@ export interface TaskRecord {
   apiMode?: ApiMode
   /** 生成时使用的模型 ID */
   apiModel?: string
+  /**
+   * 运行时覆盖 API 配置中的 apiKey/model。仅本次请求生效，不会写回 settings。
+   * 当 InputBar 中显式选择了 OIDC 拉取的 apiKey 与 model 时使用。
+   */
+  apiOverride?: { apiKey?: string; model?: string }
   /** fal.ai 队列请求 ID，用于连接断开后的结果恢复 */
   falRequestId?: string
   /** fal.ai 队列 endpoint，用于连接断开后的状态和结果查询 */
