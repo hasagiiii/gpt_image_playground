@@ -1,6 +1,8 @@
 import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { ALL_FAVORITES_COLLECTION_ID, deleteFavoriteCollection, getTaskFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, addImageFromFile, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { useAuth } from '../auth/AuthContext'
+import { fetchApiKeys, fetchUsage, fetchModels, extractBalance, type ModelInfo } from '../auth/oidcResource'
 import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings } from '../lib/apiProfiles'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
@@ -385,6 +387,15 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
 }
 
 export default function InputBar() {
+  const { user, refreshUser } = useAuth()
+  const [apiKeys, setApiKeys] = useState<string[]>([])
+  const [apiKey, setApiKey] = useState<string>('')
+  const [apiKeysLoading, setApiKeysLoading] = useState<boolean>(false)
+  const [apiKeysError, setApiKeysError] = useState<string>('')
+  const [balance, setBalance] = useState<string>('')
+  const [balanceLoading, setBalanceLoading] = useState<boolean>(false)
+  const [models, setModels] = useState<ModelInfo[]>([])
+  const [modelsLoading, setModelsLoading] = useState<boolean>(false)
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
   const setPrompt = useStore((s) => s.setPrompt)
@@ -417,6 +428,85 @@ export default function InputBar() {
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   const openFavoritePicker = useStore((s) => s.openFavoritePicker)
   const searchQuery = useStore((s) => s.searchQuery)
+
+  // 进入页面时拉取一次：先 refreshUser（保持鉴权状态），再从 OIDC provider 拉 api-keys 列表
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      try {
+        await refreshUser()
+      } catch (err) {
+        console.error('Failed to refresh user:', err)
+      }
+      if (cancelled) return
+      setApiKeysLoading(true)
+      setApiKeysError('')
+      try {
+        const res = await fetchApiKeys()
+        if (cancelled) return
+        const keys = res.sub2api_apikeys || []
+        console.log('[InputBar] parsed apiKeys:', keys, 'count:', res.sub2api_apikey_count)
+        setApiKeys(keys)
+        // 没有则清空选中；只有一个则自动选中；多个则在已选不在列表时回落到第一个
+        setApiKey((prev) => {
+          if (keys.length === 0) return ''
+          if (prev && keys.includes(prev)) return prev
+          return keys[0]
+        })
+      } catch (err) {
+        if (cancelled) return
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[InputBar] fetchApiKeys failed:', err)
+        setApiKeysError(msg)
+        setApiKeys([])
+        setApiKey('')
+      } finally {
+        if (!cancelled) setApiKeysLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+    // 仅在挂载时触发一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 选中的 apiKey 变化：并行拉 balance(/v1/usage) 与 模型列表(/v1/models)
+  useEffect(() => {
+    if (!apiKey) {
+      setBalance('')
+      setModels([])
+      return
+    }
+    let cancelled = false
+    setBalanceLoading(true)
+    setModelsLoading(true)
+    Promise.allSettled([fetchUsage(apiKey), fetchModels(apiKey)]).then((results) => {
+      if (cancelled) return
+      const [usageRes, modelsRes] = results
+      if (usageRes.status === 'fulfilled') {
+        setBalance(extractBalance(usageRes.value))
+      } else {
+        console.error('[InputBar] fetchUsage failed:', usageRes.reason)
+        setBalance('')
+      }
+      if (modelsRes.status === 'fulfilled') {
+        setModels(modelsRes.value.data || [])
+      } else {
+        console.error('[InputBar] fetchModels failed:', modelsRes.reason)
+        setModels([])
+      }
+      setBalanceLoading(false)
+      setModelsLoading(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [apiKey])
+
+  // 兼容旧用法：保留 user 变量引用，避免未使用告警
+  void user
 
   const filteredTasks = useMemo(() => {
     const sorted = [...tasks].sort((a, b) => b.createdAt - a.createdAt)
@@ -2026,6 +2116,63 @@ export default function InputBar() {
                 </div>
               </div>
             )}
+            
+            {/* API Key / Balance / 模型 显示区域 */}
+            <div className="mb-2 flex flex-col gap-1 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-gray-500 dark:text-gray-400">API Key:</span>
+                {apiKeysLoading ? (
+                  <span className="text-gray-400 dark:text-gray-500">加载中...</span>
+                ) : apiKeys.length > 0 ? (
+                  <select
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    className="max-w-[280px] truncate rounded bg-blue-100 px-2 py-0.5 font-mono text-blue-700 outline-none dark:bg-blue-900/30 dark:text-blue-300"
+                  >
+                    {apiKeys.map((k) => (
+                      <option key={k} value={k} className="font-mono">
+                        {k}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="rounded bg-blue-100 px-2 py-0.5 font-mono text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                    {apiKeysError ? `加载失败: ${apiKeysError}` : '(未获取到)'}
+                  </span>
+                )}
+                <span className="text-gray-400 dark:text-gray-500">共 {apiKeys.length} 个</span>
+
+                <span className="ml-2 font-medium text-gray-500 dark:text-gray-400">Balance:</span>
+                <span className="rounded bg-green-100 px-2 py-0.5 font-mono text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                  {balanceLoading ? '加载中...' : balance || '(未获取到)'}
+                </span>
+
+                <span className="ml-2 font-medium text-gray-500 dark:text-gray-400">模型:</span>
+                <span className="text-gray-600 dark:text-gray-300">
+                  {modelsLoading ? '加载中...' : `${models.length} 个`}
+                </span>
+              </div>
+
+              {models.length > 0 && (
+                <details className="text-gray-500 dark:text-gray-400">
+                  <summary className="cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200">
+                    展开模型列表
+                  </summary>
+                  <div className="mt-1 flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded bg-gray-50 p-2 dark:bg-white/[0.04]">
+                    {models.map((m) => (
+                      <span
+                        key={m.id}
+                        title={m.owned_by ? `owned_by: ${m.owned_by}` : ''}
+                        className="rounded bg-white px-1.5 py-0.5 font-mono text-[11px] text-gray-700 ring-1 ring-gray-200 dark:bg-white/[0.06] dark:text-gray-200 dark:ring-white/[0.08]"
+                      >
+                        {m.id}
+                      </span>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+            
             <div
               ref={textareaRef}
               contentEditable

@@ -8,6 +8,7 @@ import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
 import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
+import UserMenu from '../auth/UserMenu'
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -305,6 +306,7 @@ export default function Header() {
                 设置
               </ViewportTooltip>
             </div>
+            <UserMenu />
           </div>
         </div>
         <div className={`safe-area-x sm:hidden overflow-hidden transition-all duration-300 ease-in-out ${appMode === 'gallery' && scrollDirection === 'down' ? 'max-h-0 opacity-0 pb-0' : 'max-h-20 opacity-100 pb-2'}`}>

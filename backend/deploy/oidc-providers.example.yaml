@@ -1,0 +1,43 @@
+# OIDC 提供商配置模板
+#
+# 放在 oidc.providers 数组中。后端启动时会调用每个 issuer_url + "/.well-known/openid-configuration"
+# 完成 OIDC discovery，因此只需要标准 OIDC 提供商即可，无需为每家做适配。
+#
+# 必填字段：name / issuer_url / client_id / client_secret / redirect_uri
+# 可选字段：display_name / scopes（默认 openid profile email）
+
+# ----- 通用 OIDC（推荐）-----
+- name: corp-sso
+  display_name: 企业单点登录
+  issuer_url: https://your-oidc-provider.example.com
+  client_id: your-client-id
+  client_secret: your-client-secret
+  redirect_uri: https://app.example.com/auth/callback/corp-sso
+  scopes:
+    - openid
+    - profile
+    - email
+
+# ----- Auth0 示例 -----
+# - name: auth0
+#   display_name: Auth0
+#   issuer_url: https://YOUR_TENANT.auth0.com/
+#   client_id: xxxxxxxx
+#   client_secret: yyyyyyyy
+#   redirect_uri: https://app.example.com/auth/callback/auth0
+
+# ----- Keycloak 示例 -----
+# - name: keycloak
+#   display_name: Keycloak
+#   issuer_url: https://kc.example.com/realms/your-realm
+#   client_id: gpt-image
+#   client_secret: zzzz
+#   redirect_uri: https://app.example.com/auth/callback/keycloak
+
+# ----- Google 示例（需配置 https + redirect_uri 到 GCP 控制台）-----
+# - name: google
+#   display_name: Google
+#   issuer_url: https://accounts.google.com
+#   client_id: xxxx.apps.googleusercontent.com
+#   client_secret: aaaa
+#   redirect_uri: https://app.example.com/auth/callback/google

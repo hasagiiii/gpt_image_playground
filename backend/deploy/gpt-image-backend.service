@@ -1,0 +1,38 @@
+# 二进制部署的 systemd unit 示例
+# 安装方式：
+#   sudo cp gpt-image-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gpt-image-backend
+
+[Unit]
+Description=GPT Image Playground Backend (OIDC)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gpt-image
+Group=gpt-image
+WorkingDirectory=/opt/gpt-image-backend
+ExecStart=/opt/gpt-image-backend/server -config /opt/gpt-image-backend/config/config.yaml
+Restart=on-failure
+RestartSec=3s
+StandardOutput=journal
+StandardError=journal
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/gpt-image-backend
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

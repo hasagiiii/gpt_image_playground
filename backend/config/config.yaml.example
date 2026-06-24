@@ -1,0 +1,41 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  environment: development        # development | production
+  log_level: info                 # debug | info | warn | error
+  base_url: http://localhost:8080 # 后端对外基础地址，OIDC 回调拼接用
+  frontend_url: http://localhost:5173 # 登录完成后回跳的前端入口
+  cors_origins:
+    - http://localhost:5173
+    - http://localhost:3000
+
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: password
+  name: gpt_image_playground
+  ssl_mode: disable
+  max_open_conns: 25
+  max_idle_conns: 5
+  max_lifetime_seconds: 300
+
+jwt:
+  secret_key: change-me-to-a-long-random-secret
+  issuer: gpt-image-backend
+  expire_hours: 24
+  refresh_hours: 168              # 7 天
+
+oidc:
+  providers:
+    # 通用 OIDC 提供商（标准 OIDC discovery 协议即可）
+    - name: corp-sso
+      display_name: 企业单点登录
+      issuer_url: https://your-oidc-provider.example.com
+      client_id: your-client-id
+      client_secret: your-client-secret
+      redirect_uri: http://localhost:8080/auth/callback/corp-sso
+      scopes:
+        - openid
+        - profile
+        - email
