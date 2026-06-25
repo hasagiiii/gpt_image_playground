@@ -1,20 +1,16 @@
 import type { ReactNode } from 'react'
 import { useAuth } from './AuthContext'
-import LoginPage from './LoginPage'
+import LoginModal from './LoginModal'
 
 /**
  * AuthGate 是高阶组件：
  * - status === 'disabled'：直接放行（兼容纯静态部署）
  * - status === 'loading'：渲染轻量占位
  * - status === 'authenticated'：渲染子组件
- * - 其他：渲染登录页
+ * - status === 'unauthenticated'：渲染首页并叠加登录弹窗（强制登录）
  */
 export default function AuthGate({ children }: { children: ReactNode }) {
   const { status } = useAuth()
-
-  if (status === 'disabled' || status === 'authenticated') {
-    return <>{children}</>
-  }
 
   if (status === 'loading') {
     return (
@@ -24,5 +20,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     )
   }
 
-  return <LoginPage />
+  return (
+    <>
+      {children}
+      {status === 'unauthenticated' && <LoginModal />}
+    </>
+  )
 }

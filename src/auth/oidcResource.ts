@@ -7,7 +7,7 @@
  * - 调用方需保证 provider 已开启 CORS
  */
 
-import { getOIDCAccessToken, getOIDCIssuer } from './api'
+import { getOIDCAccessToken, getOIDCIssuer, refreshOIDCToken } from './api'
 
 export type ApiKeysResponse = {
   sub2api_apikeys: string[]
@@ -55,14 +55,22 @@ function requireOIDCToken(): string {
 /** GET {issuer}/oidc/resource/api-keys */
 export async function fetchApiKeys(): Promise<ApiKeysResponse> {
   const issuer = requireIssuer()
-  const token = requireOIDCToken()
-  const resp = await fetch(joinUrl(issuer, '/oidc/resource/api-keys'), {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-    },
-  })
+  const apiKeysUrl = joinUrl(issuer, '/oidc/resource/api-keys')
+  const doFetch = (token: string) =>
+    fetch(apiKeysUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    })
+
+  let resp = await doFetch(requireOIDCToken())
+  // oidc_access_token 过期：用 refresh token 换新的再重试一次
+  if (resp.status === 401) {
+    const refreshed = await refreshOIDCToken()
+    if (refreshed) resp = await doFetch(refreshed)
+  }
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
     throw new Error(`fetch api-keys failed: ${resp.status} ${text}`)

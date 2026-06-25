@@ -66,10 +66,11 @@ func (s *AuthService) InitiateLogin(providerName string) (*LoginInit, error) {
 
 // CallbackResult 回调成功的产物：用户 + token 对
 type CallbackResult struct {
-	User            *models.User
-	Tokens          *appjwt.TokenPair
-	OIDCAccessToken string
-	IssuerURL       string
+	User             *models.User
+	Tokens           *appjwt.TokenPair
+	OIDCAccessToken  string
+	OIDCRefreshToken string
+	IssuerURL        string
 }
 
 // HandleCallback 处理 OIDC 回调：交换 token、upsert 用户、签发 JWT
@@ -137,16 +138,26 @@ func (s *AuthService) HandleCallback(ctx context.Context, providerName, state, c
 		return nil, err
 	}
 	return &CallbackResult{
-		User:            user,
-		Tokens:          tokens,
-		OIDCAccessToken: claims.OIDCAccessToken,
-		IssuerURL:       claims.IssuerURL,
+		User:             user,
+		Tokens:           tokens,
+		OIDCAccessToken:  claims.OIDCAccessToken,
+		OIDCRefreshToken: claims.OIDCRefreshToken,
+		IssuerURL:        claims.IssuerURL,
 	}, nil
 }
 
 // RefreshTokens 用 refresh token 换新的 access/refresh 对
 func (s *AuthService) RefreshTokens(refreshToken string) (*appjwt.TokenPair, error) {
 	return s.jwtMgr.RefreshAccessToken(refreshToken)
+}
+
+// RefreshOIDCToken 用 OIDC provider 的 refresh token 刷新 oidc_access_token，provider 取自登录态
+func (s *AuthService) RefreshOIDCToken(ctx context.Context, providerName, refreshToken string) (*auth.OIDCTokens, error) {
+	p, ok := s.registry.Get(providerName)
+	if !ok {
+		return nil, fmt.Errorf("unknown provider: %s", providerName)
+	}
+	return p.RefreshOIDCToken(ctx, refreshToken)
 }
 
 // GetUser 根据 user_id 取用户资料

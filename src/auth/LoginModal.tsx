@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react'
+import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { listProviders, startLogin, type Provider } from './api'
 
-export default function LoginPage() {
+/**
+ * 登录弹窗：未检测到有效登录态时，叠加在首页之上弹出。
+ * 强制登录，不支持点击遮罩或 ESC 关闭。
+ */
+export default function LoginModal() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  usePreventBackgroundScroll(true)
 
   useEffect(() => {
     let alive = true
@@ -27,8 +34,12 @@ export default function LoginPage() {
   }, [])
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-white/[0.08] bg-white dark:bg-gray-900 shadow-lg p-8">
+    <div
+      data-no-drag-select
+      className="fixed inset-0 z-[120] flex items-center justify-center p-4"
+    >
+      <div className="absolute inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-md animate-overlay-in" />
+      <div className="relative w-full max-w-sm rounded-3xl border border-white/50 dark:border-white/[0.08] bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl shadow-[0_8px_40px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_40px_rgb(0,0,0,0.4)] ring-1 ring-black/5 dark:ring-white/10 p-8 z-10 animate-confirm-in">
         <div className="flex flex-col items-center gap-2 mb-6">
           <h1 className="text-xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
             GPT Image Playground

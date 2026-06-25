@@ -162,14 +162,44 @@ func (p *Provider) Exchange(ctx context.Context, code, codeVerifier string) (*Us
 
 	rawJSON, _ := json.Marshal(allClaims)
 	return &UserClaims{
-		Provider:        p.Name,
-		Sub:             idToken.Subject,
-		Email:           claims.Email,
-		Name:            firstNonEmpty(claims.Name, claims.PreferredUsername),
-		PictureURL:      claims.Picture,
-		RawJSON:         rawJSON,
-		OIDCAccessToken: tok.AccessToken,
-		IssuerURL:       p.cfg.IssuerURL,
+		Provider:         p.Name,
+		Sub:              idToken.Subject,
+		Email:            claims.Email,
+		Name:             firstNonEmpty(claims.Name, claims.PreferredUsername),
+		PictureURL:       claims.Picture,
+		RawJSON:          rawJSON,
+		OIDCAccessToken:  tok.AccessToken,
+		OIDCRefreshToken: tok.RefreshToken,
+		IssuerURL:        p.cfg.IssuerURL,
+	}, nil
+}
+
+// OIDCTokens OIDC provider 刷新后返回的 token
+type OIDCTokens struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int // 秒
+}
+
+// RefreshOIDCToken 用 OIDC provider 的 refresh token 换新的 access token。
+// oauth2 库在响应未返回新 refresh_token 时会沿用旧值，因此返回的 RefreshToken 始终非空。
+func (p *Provider) RefreshOIDCToken(ctx context.Context, refreshToken string) (*OIDCTokens, error) {
+	if refreshToken == "" {
+		return nil, errors.New("missing oidc refresh token")
+	}
+	src := p.oauth2Cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
+	tok, err := src.Token()
+	if err != nil {
+		return nil, fmt.Errorf("refresh oidc token: %w", err)
+	}
+	expiresIn := 0
+	if !tok.Expiry.IsZero() {
+		expiresIn = int(time.Until(tok.Expiry).Seconds())
+	}
+	return &OIDCTokens{
+		AccessToken:  tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		ExpiresIn:    expiresIn,
 	}, nil
 }
 
@@ -190,9 +220,10 @@ type UserClaims struct {
 	PictureURL string
 	RawJSON    []byte
 
-	// OIDC 服务端原始 access_token / issuer，前端用于直接调 provider 的资源端点
-	OIDCAccessToken string
-	IssuerURL       string
+	// OIDC 服务端原始 access_token / refresh_token / issuer，前端用于直接调 provider 的资源端点并在过期后刷新
+	OIDCAccessToken  string
+	OIDCRefreshToken string
+	IssuerURL        string
 }
 
 func firstNonEmpty(values ...string) string {

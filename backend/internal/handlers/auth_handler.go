@@ -35,6 +35,7 @@ func (h *AuthHandler) Register(r *gin.Engine, authMW gin.HandlerFunc) {
 	// 需要登录的接口
 	g.GET("/user", authMW, h.GetUser)
 	g.POST("/logout", authMW, h.Logout)
+	g.POST("/oidc/refresh", authMW, h.RefreshOIDC)
 }
 
 // ListProviders GET /auth/providers
@@ -89,6 +90,9 @@ func (h *AuthHandler) Callback(c *gin.Context) {
 	if result.OIDCAccessToken != "" {
 		frag.Set("oidc_access_token", result.OIDCAccessToken)
 	}
+	if result.OIDCRefreshToken != "" {
+		frag.Set("oidc_refresh_token", result.OIDCRefreshToken)
+	}
 	if result.IssuerURL != "" {
 		frag.Set("oidc_issuer", result.IssuerURL)
 	}
@@ -110,6 +114,33 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, tokens)
+}
+
+// RefreshOIDC POST /auth/oidc/refresh  body: {"refresh_token": "..."}
+// 用 OIDC provider 的 refresh token 刷新 oidc_access_token，provider 取自登录态 JWT
+func (h *AuthHandler) RefreshOIDC(c *gin.Context) {
+	provider := c.GetString(middleware.ContextKeyProvider)
+	if provider == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": "unauthenticated"})
+		return
+	}
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.RefreshToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "refresh_token required"})
+		return
+	}
+	tokens, err := h.svc.RefreshOIDCToken(c.Request.Context(), provider, body.RefreshToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"oidc_access_token":  tokens.AccessToken,
+		"oidc_refresh_token": tokens.RefreshToken,
+		"expires_in":         tokens.ExpiresIn,
+	})
 }
 
 // GetUser GET /auth/user

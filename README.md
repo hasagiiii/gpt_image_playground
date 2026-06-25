@@ -300,11 +300,20 @@ services:
 
 **1. 环境准备与启动**
 
-你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://api.openai.com/v1`）。然后安装依赖并启动：
+你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://api.openai.com/v1`）。可参考根目录的 `.env.example`（含全部可用变量及说明），复制为 `.env.local` 后按需修改。然后安装依赖并启动：
 
 **导入自定义服务商配置**：`VITE_DEFAULT_API_URL` 除了填写普通 API 地址外，也支持直接填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL。设为配置 URL 时，页面启动后会自动导入其中的自定义服务商和 API 配置，设置页显示的是配置 JSON 中 profile 定义的 `baseUrl`（而非配置 URL 本身）。
 
 **仅展示默认配置**：在 `.env.local` 中加入 `VITE_SHOW_DEFAULT_CONFIG_ONLY=true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`VITE_DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
+
+**登录认证（可选）**：通过 `VITE_AUTH_BACKEND_URL` 控制是否启用 OIDC 登录。启用后进入首页时若无有效登录态，会在首页之上弹出登录弹窗强制登录。取值规则：
+
+- 不设置该变量：禁用认证，直接进入首页（纯静态部署默认行为）。
+- `VITE_AUTH_BACKEND_URL=disabled`：显式禁用认证。
+- `VITE_AUTH_BACKEND_URL=`（空串）：启用认证并使用同源后端（推荐生产部署，由 Nginx 反代 `/auth`、`/api/v1`）。
+- `VITE_AUTH_BACKEND_URL=https://your-backend`：启用认证并跨域调用指定后端（开发环境常用）。
+
+> 认证后端的部署与 OIDC 提供商配置见 `backend/README.md`。
 
 ```bash
 npm install

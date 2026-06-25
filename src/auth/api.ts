@@ -12,6 +12,7 @@
 export const ACCESS_TOKEN_KEY = 'auth.access_token'
 export const REFRESH_TOKEN_KEY = 'auth.refresh_token'
 export const OIDC_ACCESS_TOKEN_KEY = 'auth.oidc_access_token'
+export const OIDC_REFRESH_TOKEN_KEY = 'auth.oidc_refresh_token'
 export const OIDC_ISSUER_KEY = 'auth.oidc_issuer'
 
 export type Provider = {
@@ -86,6 +87,7 @@ export function clearTokens() {
     localStorage.removeItem(ACCESS_TOKEN_KEY)
     localStorage.removeItem(REFRESH_TOKEN_KEY)
     localStorage.removeItem(OIDC_ACCESS_TOKEN_KEY)
+    localStorage.removeItem(OIDC_REFRESH_TOKEN_KEY)
     localStorage.removeItem(OIDC_ISSUER_KEY)
   } catch {
     /* ignore */
@@ -105,6 +107,43 @@ export function getOIDCAccessToken(): string | null {
 export function getOIDCIssuer(): string | null {
   try {
     return localStorage.getItem(OIDC_ISSUER_KEY)
+  } catch {
+    return null
+  }
+}
+
+/** 取 OIDC 提供商的 refresh_token，用于过期后刷新 oidc_access_token */
+export function getOIDCRefreshToken(): string | null {
+  try {
+    return localStorage.getItem(OIDC_REFRESH_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 用 OIDC refresh token 刷新 oidc_access_token。
+ * 走后端 /auth/oidc/refresh（authFetch 会附带应用 JWT 并在其过期时自动刷新），
+ * 成功后回写新的 oidc_access_token（及轮转后的 refresh token），返回新的 access token。
+ */
+export async function refreshOIDCToken(): Promise<string | null> {
+  const refresh = getOIDCRefreshToken()
+  if (!refresh) return null
+  try {
+    const resp = await authFetch('/auth/oidc/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: refresh }),
+    })
+    if (!resp.ok) return null
+    const data = (await resp.json()) as { oidc_access_token?: string; oidc_refresh_token?: string }
+    if (!data.oidc_access_token) return null
+    try {
+      localStorage.setItem(OIDC_ACCESS_TOKEN_KEY, data.oidc_access_token)
+      if (data.oidc_refresh_token) localStorage.setItem(OIDC_REFRESH_TOKEN_KEY, data.oidc_refresh_token)
+    } catch {
+      /* ignore quota errors */
+    }
+    return data.oidc_access_token
   } catch {
     return null
   }
@@ -216,8 +255,10 @@ export function consumeAuthHash(): boolean {
   // 额外保存 OIDC access_token 与 issuer，供前端直接调 provider 的资源端点
   try {
     const oidcAccessToken = params.get('oidc_access_token')
+    const oidcRefreshToken = params.get('oidc_refresh_token')
     const oidcIssuer = params.get('oidc_issuer')
     if (oidcAccessToken) localStorage.setItem(OIDC_ACCESS_TOKEN_KEY, oidcAccessToken)
+    if (oidcRefreshToken) localStorage.setItem(OIDC_REFRESH_TOKEN_KEY, oidcRefreshToken)
     if (oidcIssuer) localStorage.setItem(OIDC_ISSUER_KEY, oidcIssuer)
   } catch {
     /* ignore quota errors */
