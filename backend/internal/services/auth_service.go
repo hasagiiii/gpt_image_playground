@@ -70,6 +70,7 @@ type CallbackResult struct {
 	Tokens           *appjwt.TokenPair
 	OIDCAccessToken  string
 	OIDCRefreshToken string
+	OIDCExpiresIn    int
 	IssuerURL        string
 }
 
@@ -142,6 +143,7 @@ func (s *AuthService) HandleCallback(ctx context.Context, providerName, state, c
 		Tokens:           tokens,
 		OIDCAccessToken:  claims.OIDCAccessToken,
 		OIDCRefreshToken: claims.OIDCRefreshToken,
+		OIDCExpiresIn:    claims.OIDCExpiresIn,
 		IssuerURL:        claims.IssuerURL,
 	}, nil
 }

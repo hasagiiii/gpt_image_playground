@@ -161,6 +161,10 @@ func (p *Provider) Exchange(ctx context.Context, code, codeVerifier string) (*Us
 	allClaims["picture"] = claims.Picture
 
 	rawJSON, _ := json.Marshal(allClaims)
+	expiresIn := 0
+	if !tok.Expiry.IsZero() {
+		expiresIn = int(time.Until(tok.Expiry).Seconds())
+	}
 	return &UserClaims{
 		Provider:         p.Name,
 		Sub:              idToken.Subject,
@@ -170,6 +174,7 @@ func (p *Provider) Exchange(ctx context.Context, code, codeVerifier string) (*Us
 		RawJSON:          rawJSON,
 		OIDCAccessToken:  tok.AccessToken,
 		OIDCRefreshToken: tok.RefreshToken,
+		OIDCExpiresIn:    expiresIn,
 		IssuerURL:        p.cfg.IssuerURL,
 	}, nil
 }
@@ -223,6 +228,7 @@ type UserClaims struct {
 	// OIDC 服务端原始 access_token / refresh_token / issuer，前端用于直接调 provider 的资源端点并在过期后刷新
 	OIDCAccessToken  string
 	OIDCRefreshToken string
+	OIDCExpiresIn    int // 秒；0 表示未知
 	IssuerURL        string
 }
 

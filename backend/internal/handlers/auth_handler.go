@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -92,6 +93,9 @@ func (h *AuthHandler) Callback(c *gin.Context) {
 	}
 	if result.OIDCRefreshToken != "" {
 		frag.Set("oidc_refresh_token", result.OIDCRefreshToken)
+	}
+	if result.OIDCExpiresIn > 0 {
+		frag.Set("oidc_expires_in", strconv.Itoa(result.OIDCExpiresIn))
 	}
 	if result.IssuerURL != "" {
 		frag.Set("oidc_issuer", result.IssuerURL)

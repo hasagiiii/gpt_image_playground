@@ -515,6 +515,34 @@ export default function InputBar() {
     }
   }, [apiKey])
 
+  // 监听任务结束事件：当处于 running 状态的任务数下降时（说明有任务完成或失败），
+  // 重新拉取一次 /v1/usage 来刷新 Balance 显示，确保余额是最新的。
+  const prevRunningTaskCountRef = useRef<number>(0)
+  useEffect(() => {
+    const runningCount = tasks.reduce(
+      (acc, t) => acc + (t.status === 'running' ? 1 : 0),
+      0,
+    )
+    const prev = prevRunningTaskCountRef.current
+    prevRunningTaskCountRef.current = runningCount
+    if (!apiKey) return
+    if (runningCount < prev) {
+      // 有任务从 running 转为 done/error，刷新 balance
+      let cancelled = false
+      fetchUsage(apiKey)
+        .then((usage) => {
+          if (cancelled) return
+          setBalance(extractBalance(usage))
+        })
+        .catch((err) => {
+          console.error('[InputBar] refresh balance after task done failed:', err)
+        })
+      return () => {
+        cancelled = true
+      }
+    }
+  }, [tasks, apiKey])
+
   // 兼容旧用法：保留 user 变量引用，避免未使用告警
   void user
 
@@ -2138,7 +2166,7 @@ export default function InputBar() {
             )}
             
             {/* API Key / Balance / 模型 显示区域 */}
-            <div className="mb-2 flex flex-col gap-1 text-xs">
+            <div className="mt-2 flex flex-col gap-1 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium text-gray-500 dark:text-gray-400">API Key:</span>
                 {apiKeysLoading ? (
@@ -2160,7 +2188,6 @@ export default function InputBar() {
                     {apiKeysError ? `加载失败: ${apiKeysError}` : '(未获取到)'}
                   </span>
                 )}
-                <span className="text-gray-400 dark:text-gray-500">共 {apiKeys.length} 个</span>
 
                 <span className="ml-2 font-medium text-gray-500 dark:text-gray-400">Balance:</span>
                 <span className="rounded bg-green-100 px-2 py-0.5 font-mono text-green-700 dark:bg-green-900/30 dark:text-green-300">
@@ -2197,7 +2224,6 @@ export default function InputBar() {
                     <option value="gpt-image-2" className="font-mono">gpt-image-2</option>
                   </select>
                 )}
-                <span className="text-gray-400 dark:text-gray-500">共 {models.length} 个</span>
               </div>
             </div>
             

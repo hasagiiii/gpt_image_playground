@@ -14,6 +14,10 @@ export const REFRESH_TOKEN_KEY = 'auth.refresh_token'
 export const OIDC_ACCESS_TOKEN_KEY = 'auth.oidc_access_token'
 export const OIDC_REFRESH_TOKEN_KEY = 'auth.oidc_refresh_token'
 export const OIDC_ISSUER_KEY = 'auth.oidc_issuer'
+export const OIDC_TOKEN_EXPIRY_KEY = 'auth.oidc_access_token_expire_at'
+
+/** 预刷提前量（秒）：距过期还剩不足这么多就算“快过期” */
+const OIDC_REFRESH_SKEW_SEC = 60
 
 export type Provider = {
   name: string
@@ -89,6 +93,7 @@ export function clearTokens() {
     localStorage.removeItem(OIDC_ACCESS_TOKEN_KEY)
     localStorage.removeItem(OIDC_REFRESH_TOKEN_KEY)
     localStorage.removeItem(OIDC_ISSUER_KEY)
+    localStorage.removeItem(OIDC_TOKEN_EXPIRY_KEY)
   } catch {
     /* ignore */
   }
@@ -121,6 +126,48 @@ export function getOIDCRefreshToken(): string | null {
   }
 }
 
+/** 读取 OIDC access_token 的到期时间戳（ms），未记录则返回 0 */
+export function getOIDCAccessTokenExpireAt(): number {
+  try {
+    const v = localStorage.getItem(OIDC_TOKEN_EXPIRY_KEY)
+    return v ? Number(v) || 0 : 0
+  } catch {
+    return 0
+  }
+}
+
+/** 保存 OIDC access_token 及其 expires_in（可选）；expires_in <=0 时不写到期时间 */
+export function saveOIDCAccessToken(token: string, expiresInSec?: number) {
+  try {
+    localStorage.setItem(OIDC_ACCESS_TOKEN_KEY, token)
+    if (typeof expiresInSec === 'number' && expiresInSec > 0) {
+      const expireAt = Date.now() + expiresInSec * 1000
+      localStorage.setItem(OIDC_TOKEN_EXPIRY_KEY, String(expireAt))
+    }
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
+/** OIDC access_token 是否快过期（默认 60s 预刷）。未记录到期时间时返回 false，交给 401 被动刷 */
+export function isOIDCTokenExpiringSoon(skewSec = OIDC_REFRESH_SKEW_SEC): boolean {
+  const expireAt = getOIDCAccessTokenExpireAt()
+  if (!expireAt) return false
+  return Date.now() >= expireAt - skewSec * 1000
+}
+
+/**
+ * 调用 provider 资源端点前调一次：快过期就主动刷。
+ * 返回当前可用的 oidc_access_token。刷失败且没可用 token 时返回 null。
+ */
+export async function ensureOIDCToken(): Promise<string | null> {
+  if (isOIDCTokenExpiringSoon()) {
+    const fresh = await refreshOIDCToken()
+    if (fresh) return fresh
+  }
+  return getOIDCAccessToken()
+}
+
 /**
  * 用 OIDC refresh token 刷新 oidc_access_token。
  * 走后端 /auth/oidc/refresh（authFetch 会附带应用 JWT 并在其过期时自动刷新），
@@ -135,13 +182,19 @@ export async function refreshOIDCToken(): Promise<string | null> {
       body: JSON.stringify({ refresh_token: refresh }),
     })
     if (!resp.ok) return null
-    const data = (await resp.json()) as { oidc_access_token?: string; oidc_refresh_token?: string }
+    const data = (await resp.json()) as {
+      oidc_access_token?: string
+      oidc_refresh_token?: string
+      expires_in?: number
+    }
     if (!data.oidc_access_token) return null
-    try {
-      localStorage.setItem(OIDC_ACCESS_TOKEN_KEY, data.oidc_access_token)
-      if (data.oidc_refresh_token) localStorage.setItem(OIDC_REFRESH_TOKEN_KEY, data.oidc_refresh_token)
-    } catch {
-      /* ignore quota errors */
+    saveOIDCAccessToken(data.oidc_access_token, data.expires_in)
+    if (data.oidc_refresh_token) {
+      try {
+        localStorage.setItem(OIDC_REFRESH_TOKEN_KEY, data.oidc_refresh_token)
+      } catch {
+        /* ignore quota errors */
+      }
     }
     return data.oidc_access_token
   } catch {
@@ -257,7 +310,9 @@ export function consumeAuthHash(): boolean {
     const oidcAccessToken = params.get('oidc_access_token')
     const oidcRefreshToken = params.get('oidc_refresh_token')
     const oidcIssuer = params.get('oidc_issuer')
-    if (oidcAccessToken) localStorage.setItem(OIDC_ACCESS_TOKEN_KEY, oidcAccessToken)
+    const oidcExpiresInRaw = params.get('oidc_expires_in')
+    const oidcExpiresIn = oidcExpiresInRaw ? Number(oidcExpiresInRaw) : undefined
+    if (oidcAccessToken) saveOIDCAccessToken(oidcAccessToken, oidcExpiresIn)
     if (oidcRefreshToken) localStorage.setItem(OIDC_REFRESH_TOKEN_KEY, oidcRefreshToken)
     if (oidcIssuer) localStorage.setItem(OIDC_ISSUER_KEY, oidcIssuer)
   } catch {

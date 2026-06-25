@@ -7,7 +7,7 @@
  * - 调用方需保证 provider 已开启 CORS
  */
 
-import { getOIDCAccessToken, getOIDCIssuer, refreshOIDCToken } from './api'
+import { clearTokens, ensureOIDCToken, getOIDCAccessToken, getOIDCIssuer, refreshOIDCToken } from './api'
 
 export type ApiKeysResponse = {
   sub2api_apikeys: string[]
@@ -52,6 +52,22 @@ function requireOIDCToken(): string {
   return tok
 }
 
+/** OIDC 会话不可恢复时：清 token 并跳回首页走重登 */
+function handleOIDCSessionLost(): never {
+  clearTokens()
+  if (typeof window !== 'undefined') {
+    window.location.href = '/'
+  }
+  throw new Error('OIDC session expired, please re-login')
+}
+
+/** 在调用前拿到一个可用的 oidc_access_token，快过期会主动刷 */
+async function getActiveOIDCToken(): Promise<string> {
+  const tok = await ensureOIDCToken()
+  if (!tok) handleOIDCSessionLost()
+  return tok as string
+}
+
 /** GET {issuer}/oidc/resource/api-keys */
 export async function fetchApiKeys(): Promise<ApiKeysResponse> {
   const issuer = requireIssuer()
@@ -65,11 +81,12 @@ export async function fetchApiKeys(): Promise<ApiKeysResponse> {
       },
     })
 
-  let resp = await doFetch(requireOIDCToken())
+  let resp = await doFetch(await getActiveOIDCToken())
   // oidc_access_token 过期：用 refresh token 换新的再重试一次
   if (resp.status === 401) {
     const refreshed = await refreshOIDCToken()
-    if (refreshed) resp = await doFetch(refreshed)
+    if (!refreshed) handleOIDCSessionLost()
+    resp = await doFetch(refreshed as string)
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
