@@ -397,6 +397,7 @@ export default function InputBar() {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [modelsLoading, setModelsLoading] = useState<boolean>(false)
   const [selectedModel, setSelectedModel] = useState<string>('gpt-image-2')
+  const setOidcApiOverride = useStore((s) => s.setOidcApiOverride)
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
   const setPrompt = useStore((s) => s.setPrompt)
@@ -515,32 +516,35 @@ export default function InputBar() {
     }
   }, [apiKey])
 
-  // 监听任务结束事件：当处于 running 状态的任务数下降时（说明有任务完成或失败），
-  // 重新拉取一次 /v1/usage 来刷新 Balance 显示，确保余额是最新的。
-  const prevRunningTaskCountRef = useRef<number>(0)
   useEffect(() => {
-    const runningCount = tasks.reduce(
-      (acc, t) => acc + (t.status === 'running' ? 1 : 0),
+    setOidcApiOverride((apiKey || selectedModel)
+      ? {
+          ...(apiKey ? { apiKey } : {}),
+          ...(selectedModel ? { model: selectedModel } : {}),
+        }
+      : null)
+  }, [apiKey, selectedModel, setOidcApiOverride])
+
+  // 监听任务完成时间推进，刷新 Balance；避免任务列表其它更新取消掉刷新请求。
+  const lastSeenFinishedAtRef = useRef<number>(0)
+  const balanceRefreshSeqRef = useRef<number>(0)
+  useEffect(() => {
+    if (!apiKey) return
+    const latestFinishedAt = tasks.reduce(
+      (latest, t) => t.finishedAt && t.finishedAt > latest ? t.finishedAt : latest,
       0,
     )
-    const prev = prevRunningTaskCountRef.current
-    prevRunningTaskCountRef.current = runningCount
-    if (!apiKey) return
-    if (runningCount < prev) {
-      // 有任务从 running 转为 done/error，刷新 balance
-      let cancelled = false
-      fetchUsage(apiKey)
-        .then((usage) => {
-          if (cancelled) return
-          setBalance(extractBalance(usage))
-        })
-        .catch((err) => {
-          console.error('[InputBar] refresh balance after task done failed:', err)
-        })
-      return () => {
-        cancelled = true
-      }
-    }
+    if (latestFinishedAt <= lastSeenFinishedAtRef.current) return
+    lastSeenFinishedAtRef.current = latestFinishedAt
+    const seq = ++balanceRefreshSeqRef.current
+    fetchUsage(apiKey)
+      .then((usage) => {
+        if (seq !== balanceRefreshSeqRef.current) return
+        setBalance(extractBalance(usage))
+      })
+      .catch((err) => {
+        console.error('[InputBar] refresh balance after task done failed:', err)
+      })
   }, [tasks, apiKey])
 
   // 兼容旧用法：保留 user 变量引用，避免未使用告警
@@ -853,17 +857,9 @@ export default function InputBar() {
     if (appMode === 'agent') {
       void submitAgentMessage()
     } else {
-      // 把 InputBar 选中的 OIDC apiKey 和模型作为本次请求的覆盖项传入，
-      // 这样就不再依赖设置面板里 profile 自带的 apiKey/model。
-      const apiOverride = (apiKey || selectedModel)
-        ? {
-            ...(apiKey ? { apiKey } : {}),
-            ...(selectedModel ? { model: selectedModel } : {}),
-          }
-        : undefined
-      void submitTask(apiOverride ? { apiOverride } : {})
+      void submitTask()
     }
-  }, [appMode, apiKey, selectedModel])
+  }, [appMode])
   const stopActiveAgentResponse = useCallback(() => {
     stopAgentResponse(activeAgentConversationId)
   }, [activeAgentConversationId])
