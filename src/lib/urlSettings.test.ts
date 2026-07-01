@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createDefaultFalProfile,
   createDefaultOpenAIProfile,
+  DEFAULT_BASE_URL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_SETTINGS,
   normalizeSettings,
@@ -32,7 +33,7 @@ describe('URL settings params', () => {
     expect(next.profiles.find((profile) => profile.id === next.activeProfileId)).toMatchObject({
       name: 'URL 参数配置',
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
       model: DEFAULT_IMAGES_MODEL,
     })
@@ -47,7 +48,7 @@ describe('URL settings params', () => {
 
     expect(next.profiles.find((profile) => profile.id === next.activeProfileId)).toMatchObject({
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
       model: 'custom-image-model',
       apiMode: 'images',
@@ -64,7 +65,7 @@ describe('URL settings params', () => {
     expect(next.profiles.find((profile) => profile.id === next.activeProfileId)).toMatchObject({
       name: '测试配置',
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
     })
   })
@@ -113,7 +114,7 @@ describe('URL settings params', () => {
     expect(activeProfile).toMatchObject({
       name: 'URL Profile',
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
     })
   })
@@ -141,7 +142,7 @@ describe('URL settings params', () => {
     expect(next.activeProfileId).not.toBe(existingProfile.id)
     expect(activeProfile).toMatchObject({
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
       codexCli: true,
     })
@@ -171,7 +172,7 @@ describe('URL settings params', () => {
     expect(next.activeProfileId).not.toBe(existingProfile.id)
     expect(activeProfile).toMatchObject({
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
       streamImages: true,
       streamPartialImages: 3,
@@ -193,7 +194,7 @@ describe('URL settings params', () => {
     expect(next.profiles).toHaveLength(2)
     expect(next.profiles.find((profile) => profile.id === next.activeProfileId)).toMatchObject({
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'openai-key',
     })
   })
@@ -370,7 +371,7 @@ describe('URL settings params', () => {
       id: current.activeProfileId,
       provider: 'openai',
       name: '导入配置',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'test-key',
       model: 'custom-model',
       apiMode: 'responses',
@@ -478,7 +479,7 @@ describe('URL settings params', () => {
       id: current.activeProfileId,
       provider: 'openai',
       name: 'OpenAI Profile',
-      baseUrl: 'https://openai.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'openai-key',
       model: 'openai-model',
       timeout: 120,

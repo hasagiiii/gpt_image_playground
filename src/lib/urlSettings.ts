@@ -182,7 +182,8 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
       apiMode: profileApiMode,
       model: profileApiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL,
     })
-    if (apiUrlParam !== null) profile.baseUrl = normalizeBaseUrl(apiUrlParam.trim())
+    // OpenAI 的 baseUrl 由部署端锁定（见 apiProfiles.normalizeApiProfile），apiUrl 参数不再覆盖，
+    // 也避免用未归一的 baseUrl 与已归一的现有 profile 比对导致去重 key 不一致而误建重复配置。
     if (apiKeyParam !== null) profile.apiKey = apiKeyParam.trim()
     if (modelParam !== null && modelParam.trim()) profile.model = modelParam.trim()
     if (profileName) profile.name = profileName

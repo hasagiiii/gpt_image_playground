@@ -9,6 +9,8 @@
  * Token 存储：localStorage，key 见下面常量
  */
 
+import { getAuthRuntimeConfig } from '../lib/runtimeEnv'
+
 export const ACCESS_TOKEN_KEY = 'auth.access_token'
 export const REFRESH_TOKEN_KEY = 'auth.refresh_token'
 export const OIDC_ACCESS_TOKEN_KEY = 'auth.oidc_access_token'
@@ -42,15 +44,15 @@ export type TokenPair = {
 
 /** 是否启用认证：disabled / 未配置后端时返回 false */
 export function isAuthEnabled(): boolean {
-  const v = import.meta.env.VITE_AUTH_BACKEND_URL
+  const v = getAuthRuntimeConfig()
   if (v === undefined) return false
   if (v === 'disabled') return false
   return true
 }
 
-/** 取后端基址，优先 env，缺省同源 */
+/** 取后端基址，优先注入/env，缺省同源 */
 export function getAuthBaseUrl(): string {
-  const v = import.meta.env.VITE_AUTH_BACKEND_URL
+  const v = getAuthRuntimeConfig()
   if (!v || v === 'disabled') return ''
   return v.replace(/\/+$/, '')
 }

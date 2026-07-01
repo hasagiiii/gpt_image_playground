@@ -18,3 +18,19 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+/** Go 后端在 index.html 注入的运行时配置对象（各字段可选 string） */
+interface AppRuntimeConfig {
+  DEFAULT_API_URL?: string
+  API_PROXY_AVAILABLE?: string
+  API_PROXY_LOCKED?: string
+  DOCKER_DEPLOYMENT?: string
+  DOCKER_LEGACY_API_URL_USED?: string
+  SHOW_DEFAULT_CONFIG_ONLY?: string
+  AUTH_BACKEND_URL?: string
+  [key: string]: string | undefined
+}
+
+interface Window {
+  __APP_CONFIG__?: AppRuntimeConfig
+}

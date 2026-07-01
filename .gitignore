@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Docker 构建时从仓库根拷入的前端产物（go:embed 用），不入库
+backend/internal/web/dist/
 dev-proxy.config.json
 .wrangler/
 .claude/

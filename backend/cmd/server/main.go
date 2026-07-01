@@ -20,6 +20,7 @@ import (
 	"gpt-image-backend/internal/handlers"
 	"gpt-image-backend/internal/middleware"
 	"gpt-image-backend/internal/services"
+	"gpt-image-backend/internal/web"
 	"gpt-image-backend/pkg/config"
 	appjwt "gpt-image-backend/pkg/jwt"
 )
@@ -89,6 +90,10 @@ func main() {
 		})
 	})
 
+	// 前端 SPA fallback：所有 API 路由之后挂载，仅接管未匹配路由。
+	// 带 -tags embed 构建时服务嵌入的前端产物并注入运行时配置；否则为空 FS（本地开发交给 vite）。
+	r.NoRoute(web.Handler)
+
 	// 8. 启动 HTTP 服务（带优雅关停）
 	srv := &http.Server{
 		Addr:              cfg.Server.Address(),
@@ -135,8 +140,9 @@ func setupLogger(level, env string) {
 // buildCORS 任务 6.4：CORS 中间件
 func buildCORS(origins []string) gin.HandlerFunc {
 	if len(origins) == 0 {
-		// 默认禁用跨源；同源调用不受 CORS 限制
-		origins = []string{}
+		// 未配置跨源白名单：不启用 CORS（同源调用本就不受限制）。
+		// 单镜像形态前端与后端同源，无需 CORS；此处直接放行，避免 cors.New 因空白名单 panic。
+		return func(c *gin.Context) { c.Next() }
 	}
 	return cors.New(cors.Config{
 		AllowOrigins:     origins,

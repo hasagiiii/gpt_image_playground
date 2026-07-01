@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  DEFAULT_BASE_URL,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
@@ -58,7 +59,7 @@ describe('mergeImportedSettings', () => {
     expect(merged.profiles[0]).toMatchObject({
       id: DEFAULT_OPENAI_PROFILE_ID,
       provider: 'openai',
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'imported-key',
       model: 'imported-model',
       timeout: 120,
@@ -156,7 +157,7 @@ describe('mergeImportedSettings', () => {
     expect(merged.profiles[0]).toMatchObject({ apiKey: 'current-key', model: 'current-model' })
     expect(merged.profiles[1]).toMatchObject({
       provider: 'openai',
-      baseUrl: 'https://imported.example.com/v1',
+      baseUrl: DEFAULT_BASE_URL,
       apiKey: 'imported-key',
       model: 'imported-model',
     })
