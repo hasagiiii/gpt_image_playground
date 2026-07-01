@@ -1,0 +1,328 @@
+/**
+ * Auth backend API 客户端
+ *
+ * 设计要点：
+ * - VITE_AUTH_BACKEND_URL 为空 ""：使用同源（推荐生产部署，nginx 反代 /auth /api/v1）
+ * - VITE_AUTH_BACKEND_URL = "disabled"：禁用认证，兼容纯静态部署
+ * - VITE_AUTH_BACKEND_URL = "https://..."：跨域调用（开发环境）
+ *
+ * Token 存储：localStorage，key 见下面常量
+ */
+
+import { getAuthRuntimeConfig } from '../lib/runtimeEnv'
+
+export const ACCESS_TOKEN_KEY = 'auth.access_token'
+export const REFRESH_TOKEN_KEY = 'auth.refresh_token'
+export const OIDC_ACCESS_TOKEN_KEY = 'auth.oidc_access_token'
+export const OIDC_REFRESH_TOKEN_KEY = 'auth.oidc_refresh_token'
+export const OIDC_ISSUER_KEY = 'auth.oidc_issuer'
+export const OIDC_TOKEN_EXPIRY_KEY = 'auth.oidc_access_token_expire_at'
+
+/** 预刷提前量（秒）：距过期还剩不足这么多就算“快过期” */
+const OIDC_REFRESH_SKEW_SEC = 60
+
+export type Provider = {
+  name: string
+  display_name: string
+}
+
+export type PublicUser = {
+  id: string
+  oidc_provider: string
+  email?: string
+  name?: string
+  picture_url?: string
+  claims?: Record<string, any>
+}
+
+export type TokenPair = {
+  access_token: string
+  refresh_token: string
+  expires_in: number
+  token_type?: string
+}
+
+/** 是否启用认证：disabled / 未配置后端时返回 false */
+export function isAuthEnabled(): boolean {
+  const v = getAuthRuntimeConfig()
+  if (v === undefined) return false
+  if (v === 'disabled') return false
+  return true
+}
+
+/** 取后端基址，优先注入/env，缺省同源 */
+export function getAuthBaseUrl(): string {
+  const v = getAuthRuntimeConfig()
+  if (!v || v === 'disabled') return ''
+  return v.replace(/\/+$/, '')
+}
+
+function url(path: string): string {
+  const base = getAuthBaseUrl()
+  if (!path.startsWith('/')) path = '/' + path
+  return base + path
+}
+
+export function getAccessToken(): string | null {
+  try {
+    return localStorage.getItem(ACCESS_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function getRefreshToken(): string | null {
+  try {
+    return localStorage.getItem(REFRESH_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function saveTokens(pair: TokenPair) {
+  try {
+    localStorage.setItem(ACCESS_TOKEN_KEY, pair.access_token)
+    localStorage.setItem(REFRESH_TOKEN_KEY, pair.refresh_token)
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
+export function clearTokens() {
+  try {
+    localStorage.removeItem(ACCESS_TOKEN_KEY)
+    localStorage.removeItem(REFRESH_TOKEN_KEY)
+    localStorage.removeItem(OIDC_ACCESS_TOKEN_KEY)
+    localStorage.removeItem(OIDC_REFRESH_TOKEN_KEY)
+    localStorage.removeItem(OIDC_ISSUER_KEY)
+    localStorage.removeItem(OIDC_TOKEN_EXPIRY_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 取 OIDC 提供商的原始 access_token，用于直接调用 provider 的资源端点 */
+export function getOIDCAccessToken(): string | null {
+  try {
+    return localStorage.getItem(OIDC_ACCESS_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+/** 取 OIDC issuer URL，用于拼接 /oidc/resource/api-keys 等资源端点 */
+export function getOIDCIssuer(): string | null {
+  try {
+    return localStorage.getItem(OIDC_ISSUER_KEY)
+  } catch {
+    return null
+  }
+}
+
+/** 取 OIDC 提供商的 refresh_token，用于过期后刷新 oidc_access_token */
+export function getOIDCRefreshToken(): string | null {
+  try {
+    return localStorage.getItem(OIDC_REFRESH_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+/** 读取 OIDC access_token 的到期时间戳（ms），未记录则返回 0 */
+export function getOIDCAccessTokenExpireAt(): number {
+  try {
+    const v = localStorage.getItem(OIDC_TOKEN_EXPIRY_KEY)
+    return v ? Number(v) || 0 : 0
+  } catch {
+    return 0
+  }
+}
+
+/** 保存 OIDC access_token 及其 expires_in（可选）；expires_in <=0 时不写到期时间 */
+export function saveOIDCAccessToken(token: string, expiresInSec?: number) {
+  try {
+    localStorage.setItem(OIDC_ACCESS_TOKEN_KEY, token)
+    if (typeof expiresInSec === 'number' && expiresInSec > 0) {
+      const expireAt = Date.now() + expiresInSec * 1000
+      localStorage.setItem(OIDC_TOKEN_EXPIRY_KEY, String(expireAt))
+    }
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
+/** OIDC access_token 是否快过期（默认 60s 预刷）。未记录到期时间时返回 false，交给 401 被动刷 */
+export function isOIDCTokenExpiringSoon(skewSec = OIDC_REFRESH_SKEW_SEC): boolean {
+  const expireAt = getOIDCAccessTokenExpireAt()
+  if (!expireAt) return false
+  return Date.now() >= expireAt - skewSec * 1000
+}
+
+/**
+ * 调用 provider 资源端点前调一次：快过期就主动刷。
+ * 返回当前可用的 oidc_access_token。刷失败且没可用 token 时返回 null。
+ */
+export async function ensureOIDCToken(): Promise<string | null> {
+  if (isOIDCTokenExpiringSoon()) {
+    const fresh = await refreshOIDCToken()
+    if (fresh) return fresh
+  }
+  return getOIDCAccessToken()
+}
+
+/**
+ * 用 OIDC refresh token 刷新 oidc_access_token。
+ * 走后端 /auth/oidc/refresh（authFetch 会附带应用 JWT 并在其过期时自动刷新），
+ * 成功后回写新的 oidc_access_token（及轮转后的 refresh token），返回新的 access token。
+ */
+export async function refreshOIDCToken(): Promise<string | null> {
+  const refresh = getOIDCRefreshToken()
+  if (!refresh) return null
+  try {
+    const resp = await authFetch('/auth/oidc/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: refresh }),
+    })
+    if (!resp.ok) return null
+    const data = (await resp.json()) as {
+      oidc_access_token?: string
+      oidc_refresh_token?: string
+      expires_in?: number
+    }
+    if (!data.oidc_access_token) return null
+    saveOIDCAccessToken(data.oidc_access_token, data.expires_in)
+    if (data.oidc_refresh_token) {
+      try {
+        localStorage.setItem(OIDC_REFRESH_TOKEN_KEY, data.oidc_refresh_token)
+      } catch {
+        /* ignore quota errors */
+      }
+    }
+    return data.oidc_access_token
+  } catch {
+    return null
+  }
+}
+
+/** 一个轻量包装，附带 Authorization 头并在 401 时尝试 refresh 一次 */
+export async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const accessToken = getAccessToken()
+  const headers = new Headers(init.headers || {})
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  if (init.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  let resp = await fetch(url(input), { ...init, headers })
+  if (resp.status !== 401) return resp
+
+  // 尝试 refresh
+  const refreshed = await refreshTokens()
+  if (!refreshed) return resp
+
+  const retryHeaders = new Headers(init.headers || {})
+  retryHeaders.set('Authorization', `Bearer ${refreshed.access_token}`)
+  if (init.body && !retryHeaders.has('Content-Type')) {
+    retryHeaders.set('Content-Type', 'application/json')
+  }
+  resp = await fetch(url(input), { ...init, headers: retryHeaders })
+  return resp
+}
+
+/** 列出可用的 OIDC 提供商 */
+export async function listProviders(): Promise<Provider[]> {
+  const resp = await fetch(url('/auth/providers'))
+  if (!resp.ok) throw new Error(`list providers: ${resp.status}`)
+  const data = (await resp.json()) as { providers: Provider[] }
+  return data.providers || []
+}
+
+/** 跳转到 OIDC 登录（让浏览器导航过去） */
+export function startLogin(providerName: string) {
+  window.location.href = url(`/auth/login/${encodeURIComponent(providerName)}`)
+}
+
+/** 取当前用户资料 */
+export async function fetchUser(): Promise<PublicUser | null> {
+  const resp = await authFetch('/auth/user')
+  if (resp.status === 401 || resp.status === 404) return null
+  if (!resp.ok) throw new Error(`fetch user: ${resp.status}`)
+  return (await resp.json()) as PublicUser
+}
+
+/** 刷新 token，失败返回 null 并清掉本地 token */
+export async function refreshTokens(): Promise<TokenPair | null> {
+  const refresh = getRefreshToken()
+  if (!refresh) return null
+  try {
+    const resp = await fetch(url('/auth/refresh'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refresh }),
+    })
+    if (!resp.ok) {
+      clearTokens()
+      return null
+    }
+    const pair = (await resp.json()) as TokenPair
+    saveTokens(pair)
+    return pair
+  } catch {
+    return null
+  }
+}
+
+/** 退出登录：调用后端，本地清 token */
+export async function logout(): Promise<void> {
+  try {
+    await authFetch('/auth/logout', { method: 'POST' })
+  } catch {
+    /* ignore */
+  } finally {
+    clearTokens()
+  }
+}
+
+/**
+ * 解析 OIDC 回调 fragment：
+ * 后端在 callback 成功后会 302 到 /#access_token=...&refresh_token=...
+ * 这个函数负责把 token 从 hash 中取出并保存，然后清掉 URL hash。
+ */
+export function consumeAuthHash(): boolean {
+  if (!window.location.hash) return false
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash
+  if (!hash.includes('access_token=')) return false
+
+  const params = new URLSearchParams(hash)
+  const accessToken = params.get('access_token')
+  const refreshToken = params.get('refresh_token')
+  if (!accessToken || !refreshToken) return false
+
+  saveTokens({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_in: 0,
+    token_type: params.get('token_type') || 'Bearer',
+  })
+
+  // 额外保存 OIDC access_token 与 issuer，供前端直接调 provider 的资源端点
+  try {
+    const oidcAccessToken = params.get('oidc_access_token')
+    const oidcRefreshToken = params.get('oidc_refresh_token')
+    const oidcIssuer = params.get('oidc_issuer')
+    const oidcExpiresInRaw = params.get('oidc_expires_in')
+    const oidcExpiresIn = oidcExpiresInRaw ? Number(oidcExpiresInRaw) : undefined
+    if (oidcAccessToken) saveOIDCAccessToken(oidcAccessToken, oidcExpiresIn)
+    if (oidcRefreshToken) localStorage.setItem(OIDC_REFRESH_TOKEN_KEY, oidcRefreshToken)
+    if (oidcIssuer) localStorage.setItem(OIDC_ISSUER_KEY, oidcIssuer)
+  } catch {
+    /* ignore quota errors */
+  }
+
+  // 清掉 hash，避免 token 残留在地址栏
+  const cleanUrl = window.location.pathname + window.location.search
+  window.history.replaceState(null, '', cleanUrl)
+  return true
+}

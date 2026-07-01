@@ -1,8 +1,8 @@
 import type { ImportedProviderSettings } from './apiProfiles'
 import { importCustomProviderSettingsFromJson } from './apiProfiles'
-import { readRuntimeEnv } from './runtimeEnv'
+import { getRuntimeConfig } from './runtimeEnv'
 
-const DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
+const DEFAULT_API_URL = getRuntimeConfig('DEFAULT_API_URL')
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 

@@ -1,4 +1,4 @@
-import { fal } from '@fal-ai/client'
+import { client } from './opentk_media_sdk'
 import type { ApiProfile, FalApiResponse, TaskParams } from '../types'
 import { DEFAULT_FAL_BASE_URL } from './apiProfiles'
 import {
@@ -38,12 +38,12 @@ function mapFalQuality(quality: TaskParams['quality']): 'low' | 'medium' | 'high
 
 function configureFal(profile: ApiProfile) {
   const baseUrl = profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
-  const config: Parameters<typeof fal.config>[0] = {
+  const config: Parameters<typeof client.config>[0] = {
     credentials: profile.apiKey,
     suppressLocalCredentialsWarning: true,
   }
   if (baseUrl !== DEFAULT_FAL_BASE_URL) config.proxyUrl = baseUrl
-  fal.config(config)
+  client.config(config)
 }
 
 async function createFalRequestInput(opts: CallApiOptions): Promise<Record<string, unknown>> {
@@ -187,8 +187,8 @@ export async function getFalQueuedImageResult(
   params: TaskParams,
 ): Promise<CallApiResult> {
   configureFal(profile)
-  await fal.queue.subscribeToStatus(endpoint, { requestId, logs: true })
-  const result = await fal.queue.result(endpoint, { requestId })
+  await client.queue.subscribeToStatus(endpoint, { requestId, logs: true })
+  const result = await client.queue.result(endpoint, { requestId })
   return parseFalResult(result.data as FalApiResponse, params, getFalCustomBaseUrlLabel(profile))
 }
 
@@ -209,7 +209,7 @@ export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfil
     const isEdit = opts.inputImageDataUrls.length > 0
     const endpoint = mapFalEndpoint(profile.model, isEdit)
     const input = await createFalRequestInput(opts)
-    const result = await fal.subscribe(endpoint, {
+    const result = await client.subscribe(endpoint, {
       input,
       logs: true,
       onEnqueue: (requestId) => {

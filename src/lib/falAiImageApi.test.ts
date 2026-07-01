@@ -1,11 +1,11 @@
-import { fal } from '@fal-ai/client'
+import { client } from './opentk_media_sdk'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultFalProfile, DEFAULT_FAL_BASE_URL, DEFAULT_SETTINGS } from './apiProfiles'
 import { callFalAiImageApi } from './falAiImageApi'
 
-vi.mock('@fal-ai/client', () => ({
-  fal: {
+vi.mock('./opentk_media_sdk', () => ({
+  client: {
     config: vi.fn(),
     subscribe: vi.fn(),
     queue: {
@@ -15,7 +15,7 @@ vi.mock('@fal-ai/client', () => ({
   },
 }))
 
-const falMock = fal as unknown as {
+const falMock = client as unknown as {
   config: Mock
   subscribe: Mock
 }

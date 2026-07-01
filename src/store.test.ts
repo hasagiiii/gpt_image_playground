@@ -131,7 +131,7 @@ import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversati
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, retryTask, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -248,6 +248,7 @@ describe('mask draft lifecycle in store actions', () => {
       detailTaskId: null,
       lightboxImageId: null,
       lightboxImageList: [],
+      oidcApiOverride: null,
       showSettings: false,
       toast: null,
       confirmDialog: null,
@@ -293,6 +294,81 @@ describe('mask draft lifecycle in store actions', () => {
     const state = useStore.getState()
     expect(state.tasks).toHaveLength(1)
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
+  })
+
+  it('keeps OIDC api override when retrying a task', async () => {
+    const { callImageApi } = await import('./lib/api')
+    const profile = createDefaultOpenAIProfile({
+      id: 'openai-profile',
+      apiKey: 'profile-key',
+      model: 'profile-model',
+    })
+    vi.mocked(callImageApi).mockClear()
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [profile],
+        activeProfileId: profile.id,
+      }),
+      tasks: [],
+    })
+
+    await retryTask(task({
+      apiOverride: { apiKey: 'oidc-key', model: 'oidc-model' },
+    }))
+    for (let i = 0; i < 5 && vi.mocked(callImageApi).mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const [newTask] = useStore.getState().tasks
+    expect(newTask.apiOverride).toEqual({ apiKey: 'oidc-key', model: 'oidc-model' })
+    expect(newTask.apiModel).toBe('oidc-model')
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({
+        profiles: [expect.objectContaining({
+          apiKey: 'oidc-key',
+          model: 'oidc-model',
+        })],
+      }),
+    }))
+  })
+
+  it('uses current OIDC api override when retrying from a task card', async () => {
+    const { callImageApi } = await import('./lib/api')
+    const profile = createDefaultOpenAIProfile({
+      id: 'openai-profile',
+      apiKey: 'profile-key',
+      model: 'profile-model',
+    })
+    vi.mocked(callImageApi).mockClear()
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [profile],
+        activeProfileId: profile.id,
+      }),
+      oidcApiOverride: { apiKey: 'current-oidc-key', model: 'current-oidc-model' },
+      tasks: [],
+    })
+
+    await retryTask(task({
+      apiOverride: { apiKey: 'old-oidc-key', model: 'old-oidc-model' },
+    }))
+    for (let i = 0; i < 5 && vi.mocked(callImageApi).mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const [newTask] = useStore.getState().tasks
+    expect(newTask.apiOverride).toEqual({ apiKey: 'current-oidc-key', model: 'current-oidc-model' })
+    expect(newTask.apiModel).toBe('current-oidc-model')
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({
+        profiles: [expect.objectContaining({
+          apiKey: 'current-oidc-key',
+          model: 'current-oidc-model',
+        })],
+      }),
+    }))
   })
 
   it('stores decoded image size as actual size when the API omits size', async () => {

@@ -1,0 +1,14 @@
+# 不要把含密钥的真实配置纳入版本控制
+config/config.yaml
+config.yaml
+
+# 编译产物
+/server
+/dist
+/bin
+/gpt-image-backend
+
+# 测试缓存
+*.test
+*.out
+coverage.out

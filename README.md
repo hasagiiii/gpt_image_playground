@@ -211,72 +211,33 @@ $env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
 <details>
 <summary><strong>🐳 方式三：Docker 部署</strong></summary>
 
-官方镜像已发布至 GitHub Container Registry。Docker 部署支持在运行时注入默认配置。
+官方镜像已发布至 GitHub Container Registry。该镜像为**单镜像形态**：Go 后端内嵌前端静态产物，并在返回 `index.html` 时把运行时配置注入到 `window.__APP_CONFIG__`，无需再在构建期写入 `VITE_*`。
 
-**环境变量说明：**
+> ⚠️ 该镜像内置强制登录后端，**运行时需要外挂 `config.yaml` 并连接一个外部 PostgreSQL 数据库**（后端启动会自动执行数据库迁移）。后端配置项（`server` / `database` / `jwt` / `oidc`）与 OIDC 提供商说明详见 [`backend/README.md`](backend/README.md)。容器默认监听 `8080`（可在 `config.yaml` 的 `server.port` 调整）。
+
+**前端运行时环境变量（注入到 `window.__APP_CONFIG__`）：**
 
 - `DEFAULT_API_URL`：设置页面上默认显示的 API 地址（如 `https://api.openai.com/v1`）。也支持填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL 来导入自定义服务商配置（详见下方说明）。
-- `API_PROXY_URL`：配置内置代理实际转发到的完整 API 基础地址（仅开启代理时有效）。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://api.openai.com/v1`。
-- `ENABLE_API_PROXY`：设为 `true` 开启容器内置 Nginx 同源代理，用于解决浏览器跨域（CORS）限制。开启后，前端 **API 代理** 开关默认开启，浏览器会请求同源的 `/api-proxy/{接口相对路径}`，再由 Nginx 拼接到 `API_PROXY_URL` 后转发；用户仍可在设置中手动关闭。
-- `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。
-- `SHOW_DEFAULT_CONFIG_ONLY`：设为 `true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换，只允许使用默认配置和默认服务商类型。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
-- `HOST` / `PORT`：指定容器内 Nginx 监听的地址和端口（默认 `0.0.0.0:80`）。
+- `SHOW_DEFAULT_CONFIG_ONLY`：设为 `true` 后，如果已配置默认 API URL，前端会禁用“当前配置”和“服务商类型”的下拉切换，只允许使用默认配置和默认服务商类型。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
+- `AUTH_BACKEND_URL`：控制前端认证行为的三态开关——不设置该变量则禁用登录；设为 `disabled` 显式禁用；设为空串（`AUTH_BACKEND_URL=`）则启用登录并调用同源后端（单镜像形态推荐值）。
 
-> ⚠️ **安全警告**：开启 API 代理后，任何人都能将你的服务器作为代理来请求目标 API。建议仅在有访问控制（如 IP 白名单）或本地网络中开启。
+> ⚠️ **同源代理已移除**：单镜像不再提供容器内置的同源 API 代理，`API_PROXY_AVAILABLE` / `API_PROXY_LOCKED` 恒为 `false`。旧版本的 `ENABLE_API_PROXY` / `LOCK_API_PROXY` / `API_PROXY_URL` / `API_URL` 等 nginx 代理相关变量均已不再支持。如需绕开浏览器 CORS，请在 API 上游侧自建代理，或使用自定义服务商配置指向已支持 CORS 的地址。
 
 > 💡 **导入自定义服务商配置**：`DEFAULT_API_URL` 除了填写普通 API 地址外，也支持直接填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL。设为配置 URL 时，页面启动后会自动导入其中的自定义服务商和 API 配置，设置页显示的是配置 JSON 中 profile 定义的 `baseUrl`（而非配置 URL 本身）。
-
-> 💡 **隐藏真实 API 地址**：如果不希望用户在前端看到真实的 API 上游地址，可以配合 `ENABLE_API_PROXY=true` 和 `LOCK_API_PROXY=true` 强制所有请求走服务器代理，再将 `API_PROXY_URL` 设为真实的 API 上游地址。根据使用的服务商类型，`DEFAULT_API_URL` 的填法不同：
->
-> - **OpenAI 兼容接口**：将 `DEFAULT_API_URL` 留空或填写一个占位地址（如 `https://proxy`）。
-> - **自定义服务商配置**：将 `DEFAULT_API_URL` 设为配置 URL（`.json` 或带 `settings` 参数的分享 URL），配置 JSON 中 profile 的 `baseUrl` 留空或填占位地址，并设置 `apiProxy:true`。
->
-> 这样前端设置页只会显示空值或占位地址，真实 API 地址仅存在于服务器侧的 `API_PROXY_URL`，不会暴露给用户。
->
-> 自定义服务商开启代理仅支持同步返回图片的配置；包含 `taskIdPath` 或 `poll` 的异步任务自定义服务商暂不支持 API 代理。
-
-> 💡 **兼容迁移**：旧版本中的 `API_URL` 已拆分为 `DEFAULT_API_URL` 和 `API_PROXY_URL`。容器启动时会自动将遗留的 `API_URL` 作为两个新变量的兜底值，实现无缝兼容。建议更新配置文件，逐步迁移至新变量。
 
 **1. Docker CLI 示例**
 
 ```bash
-docker run -d -p 8080:80 \
+docker run -d -p 8080:8080 \
+  -v /path/to/config.yaml:/app/config.yaml \
   -e DEFAULT_API_URL=https://api.openai.com/v1 \
-  -e ENABLE_API_PROXY=true \
-  -e LOCK_API_PROXY=true \
-  -e API_PROXY_URL=https://api.openai.com/v1 \
+  -e AUTH_BACKEND_URL= \
   ghcr.io/cooksleep/gpt_image_playground:latest
 ```
 
-**隐藏真实 API 地址示例（OpenAI 兼容接口）：**
+> `config.yaml` 需包含数据库连接与 JWT/OIDC 配置，`database.host` 指向可连通的 PostgreSQL。若不需要登录，可省略 `-e AUTH_BACKEND_URL=`（或设为 `disabled`），此时无需配置 OIDC 提供商。
 
-```bash
-docker run -d -p 8080:80 \
-  -e DEFAULT_API_URL= \
-  -e API_PROXY_URL=https://real-api.example.com/v1 \
-  -e ENABLE_API_PROXY=true \
-  -e LOCK_API_PROXY=true \
-  ghcr.io/cooksleep/gpt_image_playground:latest
-```
-
-> 上例中设置页的 API URL 为空，实际请求通过代理转发到 `API_PROXY_URL`。
-
-**隐藏真实 API 地址示例（同步自定义服务商配置）：**
-
-```bash
-docker run -d -p 8080:80 \
-  -e DEFAULT_API_URL='https://example.com/?settings={"customProviders":[...],"profiles":[{"baseUrl":"","apiProxy":true,...}]}' \
-  -e API_PROXY_URL=https://real-api.example.com/v1 \
-  -e ENABLE_API_PROXY=true \
-  -e LOCK_API_PROXY=true \
-  ghcr.io/cooksleep/gpt_image_playground:latest
-```
-
-> 上例中 `DEFAULT_API_URL` 为同步自定义服务商配置分享 URL，profile 的 `baseUrl` 留空且 `apiProxy:true`；真实 API 地址仅在 `API_PROXY_URL` 中配置，前端不可见。异步任务自定义服务商暂不支持开启代理。
-
-*(注：使用 host 网络时加 `--network host`，修改容器监听端口使用 `-e PORT=28080`)*
-
-**2. Docker Compose 示例**
+**2. Docker Compose 示例（含 PostgreSQL）**
 
 ```yaml
 services:
@@ -284,14 +245,34 @@ services:
     image: ghcr.io/cooksleep/gpt_image_playground:latest
     environment:
       - DEFAULT_API_URL=https://api.openai.com/v1
+      - AUTH_BACKEND_URL=
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
     ports:
-      - "8080:80"
+      - "8080:8080"
+    depends_on:
+      - db
     restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=change-me
+      - POSTGRES_DB=gpt_image
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:
 ```
+
+> 上例中 `config.yaml` 的 `database.host` 应填 compose 服务名 `db`。后端配置文件的完整字段说明见 [`backend/README.md`](backend/README.md)。
 
 **更新说明：**
 
-使用 `latest` 标签时，重新拉取镜像并重启即可更新（如 `docker compose pull && docker compose up -d`）。若需固定版本可使用官方提供的版本号标签（如 `0.2.x`）。
+使用 `latest` 标签时，重新拉取镜像并重启即可更新（如 `docker compose pull && docker compose up -d`）。若需固定版本可使用官方提供的版本号标签。
 
 </details>
 
@@ -300,11 +281,20 @@ services:
 
 **1. 环境准备与启动**
 
-你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://api.openai.com/v1`）。然后安装依赖并启动：
+你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://api.openai.com/v1`）。可参考根目录的 `.env.example`（含全部可用变量及说明），复制为 `.env.local` 后按需修改。然后安装依赖并启动：
 
 **导入自定义服务商配置**：`VITE_DEFAULT_API_URL` 除了填写普通 API 地址外，也支持直接填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL。设为配置 URL 时，页面启动后会自动导入其中的自定义服务商和 API 配置，设置页显示的是配置 JSON 中 profile 定义的 `baseUrl`（而非配置 URL 本身）。
 
 **仅展示默认配置**：在 `.env.local` 中加入 `VITE_SHOW_DEFAULT_CONFIG_ONLY=true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`VITE_DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
+
+**登录认证（可选）**：通过 `VITE_AUTH_BACKEND_URL` 控制是否启用 OIDC 登录。启用后进入首页时若无有效登录态，会在首页之上弹出登录弹窗强制登录。取值规则：
+
+- 不设置该变量：禁用认证，直接进入首页（纯静态部署默认行为）。
+- `VITE_AUTH_BACKEND_URL=disabled`：显式禁用认证。
+- `VITE_AUTH_BACKEND_URL=`（空串）：启用认证并使用同源后端（推荐生产部署，由 Nginx 反代 `/auth`、`/api/v1`）。
+- `VITE_AUTH_BACKEND_URL=https://your-backend`：启用认证并跨域调用指定后端（开发环境常用）。
+
+> 认证后端的部署与 OIDC 提供商配置见 `backend/README.md`。
 
 ```bash
 npm install

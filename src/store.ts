@@ -788,6 +788,8 @@ interface AppState {
   // 设置
   settings: AppSettings
   setSettings: (s: Partial<AppSettings>) => void
+  oidcApiOverride: { apiKey?: string; model?: string } | null
+  setOidcApiOverride: (apiOverride: { apiKey?: string; model?: string } | null) => void
   dismissedCodexCliPrompts: string[]
   dismissCodexCliPrompt: (key: string) => void
 
@@ -1265,6 +1267,12 @@ export const useStore = create<AppState>()(
             ? { reusedTaskApiProfileId: null, reusedTaskApiProfileName: null, reusedTaskApiProfileMissing: false }
             : {}),
         }
+      }),
+      oidcApiOverride: null,
+      setOidcApiOverride: (apiOverride) => set({
+        oidcApiOverride: apiOverride && (apiOverride.apiKey || apiOverride.model)
+          ? { ...apiOverride }
+          : null,
       }),
       dismissedCodexCliPrompts: [],
       dismissCodexCliPrompt: (key) => set((st) => ({
@@ -2320,9 +2328,10 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
-  const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
+export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; apiOverride?: { apiKey?: string; model?: string } } = {}) {
+  const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, oidcApiOverride, showToast, setConfirmDialog } =
     useStore.getState()
+  const apiOverride = options.apiOverride ?? oidcApiOverride ?? undefined
 
   const normalizedSettings = normalizeSettings(settings)
   let activeProfile = getActiveApiProfile(settings)
@@ -2351,9 +2360,20 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   if (validateApiProfile(activeProfile)) {
-    showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
-    useStore.getState().setShowSettings(true)
-    return
+    // 若调用方提供了 apiKey/model 覆盖（例如 InputBar 中选择的 OIDC apiKey 与模型），
+    // 则在校验时忽略对应字段缺失的问题。
+    const validationMsg = validateApiProfile(activeProfile)
+    const ignorable = (() => {
+      if (!validationMsg) return true
+      if (validationMsg === '缺少 API Key' && apiOverride?.apiKey) return true
+      if (validationMsg === '缺少模型 ID' && apiOverride?.model) return true
+      return false
+    })()
+    if (!ignorable) {
+      showToast(`请先完善请求 API 配置：${validationMsg}`, 'error')
+      useStore.getState().setShowSettings(true)
+      return
+    }
   }
 
   if (!prompt.trim()) {
@@ -2420,7 +2440,10 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     apiProfileId: activeProfile.id,
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
-    apiModel: activeProfile.model,
+    apiModel: apiOverride?.model || activeProfile.model,
+    ...(apiOverride && (apiOverride.apiKey || apiOverride.model)
+      ? { apiOverride: { ...apiOverride } }
+      : {}),
     inputImageIds: orderedInputImages.map((i) => i.id),
     maskTargetImageId,
     maskImageId,
@@ -4307,7 +4330,14 @@ async function executeTask(taskId: string) {
     })
     return
   }
-  const activeProfile = taskProfile ?? getActiveApiProfile(settings)
+  const baseProfile = taskProfile ?? getActiveApiProfile(settings)
+  const activeProfile = task.apiOverride && (task.apiOverride.apiKey || task.apiOverride.model)
+    ? {
+        ...baseProfile,
+        ...(task.apiOverride.apiKey ? { apiKey: task.apiOverride.apiKey } : {}),
+        ...(task.apiOverride.model ? { model: task.apiOverride.model } : {}),
+      }
+    : baseProfile
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
   const taskProvider = task.apiProvider ?? activeProfile.provider
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
@@ -4705,9 +4735,19 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord) {
-  const { settings } = useStore.getState()
+  const { settings, oidcApiOverride } = useStore.getState()
   const activeProfile = getActiveApiProfile(settings)
-  const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
+  const apiOverride = oidcApiOverride?.apiKey
+    ? { ...oidcApiOverride }
+    : task.apiOverride && (task.apiOverride.apiKey || task.apiOverride.model)
+    ? { ...task.apiOverride }
+    : undefined
+  const requestSettings = createSettingsForApiProfile(settings, {
+    ...activeProfile,
+    ...(apiOverride?.apiKey ? { apiKey: apiOverride.apiKey } : {}),
+    ...(apiOverride?.model ? { model: apiOverride.model } : {}),
+  })
+  const normalizedParams = normalizeParamsForSettings(task.params, requestSettings, { hasInputImages: task.inputImageIds.length > 0 })
   const shouldUseTransparentOutput = normalizedParams.output_format === 'png' && normalizedParams.transparent_output
   const taskParams = shouldUseTransparentOutput
     ? getTransparentRequestParams(normalizedParams)
@@ -4724,7 +4764,8 @@ export async function retryTask(task: TaskRecord) {
     apiProfileId: activeProfile.id,
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
-    apiModel: activeProfile.model,
+    apiModel: apiOverride?.model || activeProfile.model,
+    ...(apiOverride ? { apiOverride } : {}),
     inputImageIds: [...task.inputImageIds],
     maskTargetImageId: task.maskTargetImageId ?? null,
     maskImageId: task.maskImageId ?? null,
@@ -5225,4 +5266,3 @@ export async function addImageFromUrl(src: string): Promise<void> {
   cacheImage(id, dataUrl)
   useStore.getState().addInputImage({ id, dataUrl })
 }
-

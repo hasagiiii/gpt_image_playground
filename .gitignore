@@ -1,4 +1,13 @@
 node_modules/
 dist/
+# Docker 构建时从仓库根拷入的前端产物（go:embed 用），不入库
+backend/internal/web/dist/
 dev-proxy.config.json
 .wrangler/
+.claude/
+.codebuddy/
+.codex/
+
+# 本地环境变量（含密钥，不入库）
+.env.local
+.env.*.local
