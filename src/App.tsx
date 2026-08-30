@@ -3,7 +3,7 @@ import { LOCAL_PROJECT_ID, initStore, useStore } from './store'
 import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
 import { isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/apiProfiles'
 import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
-import { getAppViewFromUrl, getProjectIdFromUrl, updateAdminUrl, updateMaterialsUrl, updateWorkspaceUrl } from './lib/projectRoute'
+import { getAppViewFromUrl, getProjectIdFromUrl, updateAdminUrl, updateAdminUsersUrl, updateMaterialsUrl, updateWorkspaceUrl } from './lib/projectRoute'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
 import Header from './components/Header'
@@ -24,6 +24,7 @@ import ImageContextMenu from './components/ImageContextMenu'
 import AppSidebar, { type AppView } from './components/AppSidebar'
 import MaterialLibrary from './components/MaterialLibrary'
 import AdminAnnouncements from './components/AdminAnnouncements'
+import AdminUsers from './components/AdminUsers'
 import AnnouncementNotice from './components/AnnouncementNotice'
 import SupportPromptModal from './components/SupportPromptModal'
 import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
@@ -48,6 +49,11 @@ export default function App() {
     if (nextView === 'admin') {
       useStore.getState().setActiveProjectId(null)
       updateAdminUrl()
+      return
+    }
+    if (nextView === 'admin-users') {
+      useStore.getState().setActiveProjectId(null)
+      updateAdminUsersUrl()
       return
     }
     if (nextView === 'materials') {
@@ -159,7 +165,7 @@ export default function App() {
     <>
       <Header view={view} onNavigate={navigateView} />
       <AppSidebar view={view} collapsed={sidebarCollapsed} onChange={navigateView} onCollapsedChange={setSidebarCollapsed} />
-      {view === 'admin' ? <div className={`min-h-[calc(100vh-4rem)] pt-11 transition-[padding] duration-200 lg:pt-0 ${sidebarCollapsed ? 'lg:pl-16' : 'lg:pl-56'}`}><AdminAnnouncements /></div> : view === 'materials' ? (
+      {view === 'admin' ? <div className={`min-h-[calc(100vh-4rem)] pt-11 transition-[padding] duration-200 lg:pt-0 ${sidebarCollapsed ? 'lg:pl-16' : 'lg:pl-56'}`}><AdminAnnouncements /></div> : view === 'admin-users' ? <div className={`min-h-[calc(100vh-4rem)] pt-11 transition-[padding] duration-200 lg:pt-0 ${sidebarCollapsed ? 'lg:pl-16' : 'lg:pl-56'}`}><AdminUsers /></div> : view === 'materials' ? (
         <div data-material-library-root data-drag-select-surface className={`min-h-[calc(100vh-4rem)] pt-11 transition-[padding] duration-200 lg:pt-0 ${sidebarCollapsed ? 'lg:pl-16' : 'lg:pl-56'}`}>
           <MaterialLibrary />
         </div>

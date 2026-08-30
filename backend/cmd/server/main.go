@@ -157,6 +157,13 @@ func main() {
 		}
 		return authSvc.IsAdmin(user), nil
 	}).Register(api)
+	handlers.NewAdminHandler(userRepo, projectRepo, func(ctx context.Context, userID string) (bool, error) {
+		user, err := userRepo.FindByID(ctx, userID)
+		if err != nil {
+			return false, err
+		}
+		return authSvc.IsAdmin(user), nil
+	}).Register(api)
 
 	// 前端 SPA fallback：所有 API 路由之后挂载，仅接管未匹配路由。
 	// 带 -tags embed 构建时服务嵌入的前端产物并注入运行时配置；否则为空 FS（本地开发交给 vite）。

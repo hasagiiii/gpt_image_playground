@@ -8,6 +8,9 @@ import { DEFAULT_PARAMS, type Project, type TaskRecord } from '../types'
 const mocks = vi.hoisted(() => ({
   state: { current: {} as Record<string, unknown> },
   updateProjectCanvas: vi.fn(),
+  clearProjectImageRedoHistory: vi.fn(),
+  undoProjectImageHistory: vi.fn(async () => true),
+  redoProjectImageHistory: vi.fn(async () => true),
   openImageFavoritePicker: vi.fn(),
   setDetailImage: vi.fn(),
   setLightboxImageId: vi.fn(),
@@ -118,6 +121,9 @@ describe('ProjectCanvas interactions', () => {
       projectCanvasCache: {},
       selectedTaskIds: [],
       updateProjectCanvas: mocks.updateProjectCanvas,
+      clearProjectImageRedoHistory: mocks.clearProjectImageRedoHistory,
+      undoProjectImageHistory: mocks.undoProjectImageHistory,
+      redoProjectImageHistory: mocks.redoProjectImageHistory,
       setDetailImage: mocks.setDetailImage,
       setLightboxImageId: mocks.setLightboxImageId,
       setSelectedTaskIds: mocks.setSelectedTaskIds,
@@ -395,6 +401,7 @@ describe('ProjectCanvas interactions', () => {
     expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
       items: expect.objectContaining({ 'image-a': expect.objectContaining({ x: 40, y: 20 }) }),
     }))
+    expect(mocks.clearProjectImageRedoHistory).toHaveBeenCalledWith('project-a')
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })))
     expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
@@ -405,6 +412,14 @@ describe('ProjectCanvas interactions', () => {
     expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
       items: expect.objectContaining({ 'image-a': expect.objectContaining({ x: 40, y: 20 }) }),
     }))
+  })
+
+  it('uses project image history when canvas history is empty', () => {
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })))
+    expect(mocks.undoProjectImageHistory).toHaveBeenCalledWith('project-a')
+
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true, cancelable: true })))
+    expect(mocks.redoProjectImageHistory).toHaveBeenCalledWith('project-a')
   })
 
   it('does not rearrange automatically laid out images when undo history is empty', async () => {

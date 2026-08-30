@@ -88,6 +88,11 @@ backend/
 | PUT/DELETE | `/api/v1/projects/:id/tasks/:taskId` | 异步保存或删除单条生成记录，无需重新上传项目 ZIP |
 | GET/POST | `/api/v1/projects/:id/images` | 查询或保存项目图片 |
 | GET/DELETE | `/api/v1/projects/:id/images/:imageId` | 读取或删除项目图片 |
+| GET | `/api/v1/admin/users` | 管理员查看所有用户的公开资料 |
+| GET | `/api/v1/admin/users/:userId/projects` | 管理员查看指定用户的在线画布列表 |
+| GET | `/api/v1/admin/users/:userId/projects/:projectId` | 管理员只读下载指定用户的项目归档 |
+| GET | `/api/v1/admin/users/:userId/projects/:projectId/images` | 管理员查看指定画布的图片列表 |
+| GET | `/api/v1/admin/users/:userId/projects/:projectId/images/:imageId` | 管理员只读读取指定画布图片 |
 | POST/DELETE | `/api/v1/files` | 上传或删除 Composite 参考图，后台代理上游 File API |
 | POST | `/api/v1/materials` | 上传素材库图片，后台通过 Inner API RPC 返回 `file_url` |
 | POST | `/api/v1/materials/batch-delete` | 批量删除素材，JSON `ids` 最多 100 个，后台调用 `BatchDeleteMaterials` RPC |

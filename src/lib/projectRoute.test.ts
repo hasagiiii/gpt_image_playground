@@ -15,4 +15,8 @@ describe('project route', () => {
   it('recognizes the administrator announcements view', () => {
     expect(getAppViewFromUrl('http://localhost:5173/admin/announcements')).toBe('admin')
   })
+
+  it('recognizes the administrator users view', () => {
+    expect(getAppViewFromUrl('http://localhost:5173/admin/users')).toBe('admin-users')
+  })
 })

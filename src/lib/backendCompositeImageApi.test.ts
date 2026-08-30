@@ -88,6 +88,33 @@ describe('callBackendCompositeImageApi', () => {
     expect(result?.actualCost).toBe(0.125)
   })
 
+  it('unwraps nested data responses from Composite', async () => {
+    vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      data: {
+        status: 'COMPLETED',
+        actual_cost: 0.64,
+        images: [{
+          content_type: 'image/jpeg',
+          file_name: 'gpt-image-2_a_dog-0.jpg',
+          height: 1024,
+          url: 'data:image/jpeg;base64,AAECAw==',
+          width: 1024,
+        }],
+      },
+    }), { status: 200 }))
+
+    const result = await queryBackendCompositeImageTask({
+      apiKey: 'composite-key',
+      model: 'openai/gpt-image-2',
+      requestId: 'nested-request',
+      params: { ...DEFAULT_PARAMS },
+    })
+
+    expect(result?.rawImageUrls).toEqual(['data:image/jpeg;base64,AAECAw=='])
+    expect(result?.actualCost).toBe(0.64)
+    expect(result?.images).toEqual(['data:image/jpeg;base64,AAECAw=='])
+  })
+
   it.each(['IN_QUEUE', 'IN_PROGRESS'])('treats %s as pending', async (status) => {
     vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({ status }), { status: 200 }))
 

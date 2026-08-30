@@ -1,7 +1,7 @@
-import { BellIcon, ChevronLeftIcon, ChevronRightIcon, CollectionManageIcon, HomeIcon } from './icons'
+import { BellIcon, ChevronLeftIcon, ChevronRightIcon, CollectionManageIcon, HomeIcon, UsersIcon } from './icons'
 import { useAuth } from '../auth/AuthContext'
 
-export type AppView = 'workspace' | 'materials' | 'admin'
+export type AppView = 'workspace' | 'materials' | 'admin' | 'admin-users'
 
 export default function AppSidebar({ view, collapsed, onChange, onCollapsedChange }: {
   view: AppView
@@ -45,6 +45,10 @@ export default function AppSidebar({ view, collapsed, onChange, onCollapsedChang
               <BellIcon className="h-[18px] w-[18px] shrink-0" />
               <span className={`overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-in-out ${collapsed ? 'pointer-events-none max-w-0 opacity-0' : 'max-w-32 opacity-100 delay-75'}`}>公告</span>
             </button>
+            <button type="button" onClick={() => onChange('admin-users')} className={`flex h-10 w-full items-center rounded-lg text-sm font-medium transition ${collapsed ? 'justify-center px-0' : 'gap-3 px-3 text-left'} ${view === 'admin-users' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.05] dark:hover:text-white'}`} title={collapsed ? '用户管理' : undefined} aria-label="用户管理">
+              <UsersIcon className="h-[18px] w-[18px] shrink-0" />
+              <span className={`overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-in-out ${collapsed ? 'pointer-events-none max-w-32 opacity-0' : 'max-w-32 opacity-100 delay-75'}`}>用户管理</span>
+            </button>
           </>}
         </nav>
       </aside>
@@ -63,6 +67,10 @@ export default function AppSidebar({ view, collapsed, onChange, onCollapsedChang
           <button type="button" onClick={() => onChange('admin')} className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium ${view === 'admin' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
             <BellIcon className="h-4 w-4" />
             公告
+          </button>
+          <button type="button" onClick={() => onChange('admin-users')} className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium ${view === 'admin-users' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
+            <UsersIcon className="h-4 w-4" />
+            用户管理
           </button>
         </>}
       </nav>

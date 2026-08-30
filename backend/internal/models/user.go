@@ -32,6 +32,26 @@ type PublicProfile struct {
 	Claims       map[string]interface{} `json:"claims,omitempty"`
 }
 
+// AdminProfile 是管理员用户列表使用的资料子集，不暴露 OIDC sub 和原始 claims。
+type AdminProfile struct {
+	ID           string     `json:"id"`
+	OIDCProvider string     `json:"oidc_provider"`
+	Email        string     `json:"email,omitempty"`
+	Name         string     `json:"name,omitempty"`
+	PictureURL   string     `json:"picture_url,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+}
+
+func (u *User) ToAdminProfile() AdminProfile {
+	return AdminProfile{
+		ID: u.ID, OIDCProvider: u.OIDCProvider, Email: u.Email, Name: u.Name,
+		PictureURL: u.PictureURL, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
+		LastLoginAt: u.LastLoginAt,
+	}
+}
+
 // ToPublicProfile 转换为对外可见的资料
 func (u *User) ToPublicProfile() PublicProfile {
 	var claims map[string]interface{}

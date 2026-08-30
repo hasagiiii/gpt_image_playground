@@ -813,6 +813,9 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const updateProjectCanvas = useStore((s) => s.updateProjectCanvas)
   const updateProjectCanvasViewport = useStore((s) => s.updateProjectCanvasViewport)
   const flushProjectCanvasOnExit = useStore((s) => s.flushProjectCanvasOnExit)
+  const clearProjectImageRedoHistory = useStore((s) => s.clearProjectImageRedoHistory)
+  const undoProjectImageHistory = useStore((s) => s.undoProjectImageHistory)
+  const redoProjectImageHistory = useStore((s) => s.redoProjectImageHistory)
   const setDetailImage = useStore((s) => s.setDetailImage)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
   const selectedTaskIds = useStore((s) => s.selectedTaskIds)
@@ -832,6 +835,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const historyProjectRef = useRef<string | null>(canvasProjectId)
   const historyBaselineRef = useRef<ProjectCanvasState | null>(null)
   const historyInternalCanvasRef = useRef<ProjectCanvasState | null>(null)
+  const historyImageIdsRef = useRef<string[]>([])
   const undoStackRef = useRef<ProjectCanvasState[]>([])
   const redoStackRef = useRef<ProjectCanvasState[]>([])
   const historyApplyingRef = useRef(false)
@@ -919,12 +923,17 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const preserveLocalViewport = canvasProjectRef.current === canvasProjectId && viewportDirtyRef.current
     if (preserveLocalViewport) next.viewport = canvasRef.current.viewport
     const historySourceChanged = historyInternalCanvasRef.current === null || !canvasItemsEqual(historyInternalCanvasRef.current, next)
+    const historyImageIdsChanged = historyImageIdsRef.current.length !== projectImageIds.length
+      || historyImageIdsRef.current.some((id, index) => id !== projectImageIds[index])
     if (historyProjectRef.current !== canvasProjectId || historyBaselineRef.current === null || historySourceChanged) {
       historyProjectRef.current = canvasProjectId
       historyBaselineRef.current = Object.keys(sourceCanvas?.items ?? {}).length > 0 ? cloneCanvasState(next) : null
       undoStackRef.current = []
       redoStackRef.current = []
+    } else if (historyImageIdsChanged) {
+      redoStackRef.current = []
     }
+    historyImageIdsRef.current = [...projectImageIds]
     historyInternalCanvasRef.current = cloneCanvasState(next)
     canvasProjectRef.current = canvasProjectId
     canvasRef.current = next
@@ -1049,13 +1058,14 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
     undoStackRef.current = [...undoStackRef.current, cloneCanvasState(previous)].slice(-30)
     redoStackRef.current = []
+    if (canvasProjectId) clearProjectImageRedoHistory(canvasProjectId)
     historyBaselineRef.current = cloneCanvasState(next)
   }
 
   const applyCanvasHistory = (direction: 'undo' | 'redo') => {
     const source = direction === 'undo' ? undoStackRef.current : redoStackRef.current
     const target = source.pop()
-    if (!target) return
+    if (!target) return false
     const current = cloneCanvasState(canvasRef.current)
     const destination = direction === 'undo' ? redoStackRef.current : undoStackRef.current
     destination.push(current)
@@ -1082,6 +1092,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       historyInternalCanvasRef.current = next
       updateProjectCanvas(canvasProjectId, next)
     }
+    return true
   }
 
   const persistCanvas = (next: ProjectCanvasState, delay = 0, recordHistory = true) => {
@@ -2167,7 +2178,10 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       const modifier = event.ctrlKey || event.metaKey
       if (modifier && !event.altKey && !event.repeat && (key === 'z' || key === 'y')) {
         event.preventDefault()
-        applyCanvasHistory(key === 'y' || event.shiftKey ? 'redo' : 'undo')
+        const direction = key === 'y' || event.shiftKey ? 'redo' : 'undo'
+        if (applyCanvasHistory(direction) || !canvasProjectId) return
+        const applyImageHistory = direction === 'undo' ? undoProjectImageHistory : redoProjectImageHistory
+        if (typeof applyImageHistory === 'function') void applyImageHistory(canvasProjectId)
         return
       }
       if (!selectedKey || event.repeat || (event.key !== 'Backspace' && event.key !== 'Delete')) return
@@ -2176,7 +2190,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [applyCanvasHistory, handleDelete, selectedKey])
+  }, [applyCanvasHistory, canvasProjectId, handleDelete, redoProjectImageHistory, selectedKey, undoProjectImageHistory])
 
   const toolbarButtonClass = 'flex h-8 w-8 items-center justify-center rounded text-gray-600 transition hover:bg-gray-100 hover:text-gray-950 dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white'
 

@@ -115,6 +115,19 @@ function getActualCost(value: unknown) {
   return Number.isFinite(cost) && cost >= 0 ? cost : undefined
 }
 
+function normalizeCompositeStatus(value: unknown): CompositeStatusResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record = value as Record<string, unknown>
+  const nested = record.data
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    const nestedRecord = nested as Record<string, unknown>
+    if ('status' in nestedRecord || 'images' in nestedRecord || 'actual_cost' in nestedRecord || 'message' in nestedRecord || 'error' in nestedRecord) {
+      return nestedRecord as CompositeStatusResponse
+    }
+  }
+  return record as CompositeStatusResponse
+}
+
 async function readCompositeTaskResult(options: {
   apiKey: string
   model: string
@@ -124,7 +137,7 @@ async function readCompositeTaskResult(options: {
 }): Promise<CallApiResult | null> {
   const modelPath = normalizeCompositeModelPath(options.model)
   const resultPath = `/api/v1/model/${modelPath}/requests/${encodeURIComponent(options.requestId)}`
-  const status = await requestJson(resultPath, options.apiKey, options.clientRequestId) as CompositeStatusResponse
+  const status = normalizeCompositeStatus(await requestJson(resultPath, options.apiKey, options.clientRequestId))
   const statusText = typeof status.status === 'string' ? status.status.trim().toUpperCase() : ''
   if (!statusText) throw new Error('Composite 上游返回了无效的任务状态')
   switch (statusText) {

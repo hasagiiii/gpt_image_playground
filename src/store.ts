@@ -90,6 +90,20 @@ export const DEFAULT_FAVORITE_COLLECTION_NAME = '默认'
 
 const imageCache = new Map<string, string>()
 const thumbnailCache = new Map<string, { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }>()
+interface ProjectImageHistoryEntry {
+  projectId: string
+  beforeTasks: TaskRecord[]
+  afterTasks: TaskRecord[]
+  beforeCanvas?: ProjectCanvasState
+  afterCanvas?: ProjectCanvasState
+  imageRecords: StoredImage[]
+  imagesReady: Promise<void>
+}
+
+const projectImageUndoStacks = new Map<string, ProjectImageHistoryEntry[]>()
+const projectImageRedoStacks = new Map<string, ProjectImageHistoryEntry[]>()
+let applyingProjectImageHistory = false
+
 const thumbnailBackfillIds = new Map<string, 'visible' | 'background'>()
 const thumbnailBackfillRunningIds = new Set<string>()
 const thumbnailSubscribers = new Map<string, Set<(thumbnail: { dataUrl: string; width?: number; height?: number }) => void>>()
@@ -199,6 +213,101 @@ function cacheImage(id: string, dataUrl: string) {
     if (oldestKey == null) break
     imageCache.delete(oldestKey)
   }
+}
+
+function taskBelongsToProject(task: TaskRecord, projectId: string) {
+  return projectId === LOCAL_PROJECT_ID ? !task.projectId : task.projectId === projectId
+}
+
+function getProjectTaskSnapshot(tasks: TaskRecord[], projectId: string) {
+  return tasks.filter((task) => taskBelongsToProject(task, projectId))
+}
+
+function getTaskOutputIds(tasks: TaskRecord[]) {
+  return Array.from(new Set(tasks.flatMap((task) => task.outputImages)))
+}
+
+function getTaskImageIds(tasks: TaskRecord[]) {
+  const ids = new Set<string>()
+  for (const task of tasks) addTaskReferencedImageIds(ids, task)
+  return Array.from(ids)
+}
+
+function cloneProjectCanvas(canvas?: ProjectCanvasState) {
+  return canvas ? normalizeProjectCanvas(canvas) : undefined
+}
+
+function getProjectCanvasSnapshot(projectId: string) {
+  return cloneProjectCanvas(useStore.getState().projects.find((project) => project.id === projectId)?.canvas)
+}
+
+function removeProjectCanvasItems(canvas: ProjectCanvasState | undefined, imageIds: Iterable<string>) {
+  if (!canvas) return undefined
+  const items = { ...canvas.items }
+  for (const imageId of imageIds) delete items[imageId]
+  return { ...canvas, items }
+}
+
+function haveTaskOutputsChanged(beforeTasks: TaskRecord[], afterTasks: TaskRecord[]) {
+  const before = getTaskOutputIds(beforeTasks)
+  const after = getTaskOutputIds(afterTasks)
+  return before.length !== after.length || before.some((id, index) => id !== after[index])
+}
+
+function getChangedProjectIds(beforeTasks: TaskRecord[], afterTasks: TaskRecord[]) {
+  const projectIds = new Set<string>()
+  for (const task of [...beforeTasks, ...afterTasks]) {
+    projectIds.add(task.projectId ?? LOCAL_PROJECT_ID)
+  }
+  return Array.from(projectIds).filter((projectId) =>
+    haveTaskOutputsChanged(getProjectTaskSnapshot(beforeTasks, projectId), getProjectTaskSnapshot(afterTasks, projectId)),
+  )
+}
+
+function recordProjectImageHistory(
+  projectId: string,
+  beforeTasks: TaskRecord[],
+  afterTasks: TaskRecord[],
+  imageRecords?: StoredImage[],
+  beforeCanvas?: ProjectCanvasState,
+  afterCanvas?: ProjectCanvasState,
+) {
+  if (applyingProjectImageHistory) return
+  const before = getProjectTaskSnapshot(beforeTasks, projectId)
+  const after = getProjectTaskSnapshot(afterTasks, projectId)
+  if (!haveTaskOutputsChanged(before, after)) return
+  const ids = Array.from(new Set([...getTaskImageIds(before), ...getTaskImageIds(after)]))
+  const currentCanvas = getProjectCanvasSnapshot(projectId)
+  const entry: ProjectImageHistoryEntry = {
+    projectId,
+    beforeTasks: before,
+    afterTasks: after,
+    beforeCanvas: cloneProjectCanvas(beforeCanvas ?? currentCanvas),
+    afterCanvas: cloneProjectCanvas(afterCanvas ?? beforeCanvas ?? currentCanvas),
+    imageRecords: imageRecords ?? [],
+    imagesReady: imageRecords
+      ? Promise.resolve()
+      : Promise.all(ids.map((id) => readProjectImageRecord(id))).then((records) => {
+          entry.imageRecords = records.filter((record): record is StoredImage => Boolean(record))
+        }),
+  }
+  const undoStack = projectImageUndoStacks.get(projectId) ?? []
+  undoStack.push(entry)
+  if (undoStack.length > 30) undoStack.splice(0, undoStack.length - 30)
+  projectImageUndoStacks.set(projectId, undoStack)
+  projectImageRedoStacks.delete(projectId)
+}
+
+async function readProjectImageRecord(id: string) {
+  const cached = getCachedImage(id)
+  const record = await getImage(id)
+  if (record || !cached) return record
+  return { id, dataUrl: cached, source: 'generated' as const, createdAt: Date.now() }
+}
+
+async function captureProjectImageRecords(imageIds: Iterable<string>) {
+  const records = await Promise.all(Array.from(new Set(imageIds)).map((id) => readProjectImageRecord(id)))
+  return records.filter((record): record is StoredImage => Boolean(record))
 }
 
 function getCachedThumbnail(id: string) {
@@ -966,6 +1075,9 @@ interface AppState {
   updateProjectCanvas: (id: string, canvas: ProjectCanvasState) => void
   updateProjectCanvasViewport: (id: string, viewport: ProjectCanvasViewport) => void
   flushProjectCanvasOnExit: (id: string, canvas: ProjectCanvasState, force?: boolean) => void
+  clearProjectImageRedoHistory: (projectId: string) => void
+  undoProjectImageHistory: (projectId: string) => Promise<boolean>
+  redoProjectImageHistory: (projectId: string) => Promise<boolean>
   setActiveProjectId: (id: string | null) => void
   deleteProject: (id: string) => Promise<void>
   legacyProjectSaving: boolean
@@ -1520,6 +1632,11 @@ export const useStore = create<AppState>()(
           void saveOnlineProjectCanvas(updated, canvas, { keepalive: true }).catch(() => undefined)
         }
       },
+      clearProjectImageRedoHistory: (projectId) => {
+        projectImageRedoStacks.delete(projectId)
+      },
+      undoProjectImageHistory: (projectId) => applyProjectImageHistory(projectId, 'undo'),
+      redoProjectImageHistory: (projectId) => applyProjectImageHistory(projectId, 'redo'),
       setActiveProjectId: (activeProjectId) => {
         const changed = get().activeProjectId !== activeProjectId
         set({
@@ -1547,6 +1664,8 @@ export const useStore = create<AppState>()(
         const isLocalProject = id === LOCAL_PROJECT_ID
         const project = get().projects.find((item) => item.id === id)
         if (!project && !isLocalProject) return
+        projectImageUndoStacks.delete(id)
+        projectImageRedoStacks.delete(id)
         const timer = onlineProjectSyncTimers.get(id)
         if (timer) clearTimeout(timer)
         onlineProjectSyncTimers.delete(id)
@@ -2102,12 +2221,20 @@ export const useStore = create<AppState>()(
 
       // Tasks
       tasks: [],
-      setTasks: (tasks) => set(() => ({
-        tasks,
-        ...(countSuccessfulOutputImages(tasks) <= SUPPORT_PROMPT_IMAGE_THRESHOLD
-          ? { supportPromptSkippedForImportedData: false }
-          : {}),
-      })),
+      setTasks: (tasks) => {
+        const previousTasks = get().tasks
+        if (get().projectsLoaded && !applyingProjectImageHistory) {
+          for (const projectId of getChangedProjectIds(previousTasks, tasks)) {
+            recordProjectImageHistory(projectId, previousTasks, tasks)
+          }
+        }
+        set(() => ({
+          tasks,
+          ...(countSuccessfulOutputImages(tasks) <= SUPPORT_PROMPT_IMAGE_THRESHOLD
+            ? { supportPromptSkippedForImportedData: false }
+            : {}),
+        }))
+      },
       favoriteCollections: [createDefaultFavoriteCollection()],
       setFavoriteCollections: (favoriteCollections) => set((state) => {
         const nextCollections = ensureDefaultFavoriteCollection(normalizeFavoriteCollections(favoriteCollections))
@@ -2645,6 +2772,60 @@ function touchProject(id?: string, syncArchive = true) {
   }))
   queueProjectSave(updated)
   if (syncArchive) scheduleOnlineProjectSync(id)
+}
+
+async function applyProjectImageHistory(projectId: string, direction: 'undo' | 'redo') {
+  const source = direction === 'undo' ? projectImageUndoStacks : projectImageRedoStacks
+  const destination = direction === 'undo' ? projectImageRedoStacks : projectImageUndoStacks
+  const sourceStack = source.get(projectId) ?? []
+  const entry = sourceStack.pop()
+  if (!entry) return false
+  source.set(projectId, sourceStack)
+
+  await entry.imagesReady.catch((err) => {
+    console.warn('项目图片历史记录读取失败，将仅恢复任务记录：', err)
+  })
+  const state = useStore.getState()
+  const currentTasks = state.tasks
+  const currentProjectTasks = getProjectTaskSnapshot(currentTasks, projectId)
+  const targetTasks = direction === 'undo' ? entry.beforeTasks : entry.afterTasks
+  const targetIds = new Set(getTaskImageIds(targetTasks))
+  const recordsById = new Map(entry.imageRecords.map((record) => [record.id, record]))
+  const recordsToRestore = Array.from(targetIds)
+    .map((imageId) => recordsById.get(imageId))
+    .filter((record): record is StoredImage => Boolean(record))
+  for (const record of recordsToRestore) cacheImage(record.id, record.dataUrl)
+  await Promise.all(recordsToRestore.map((record) => putImage(record)))
+  const firstProjectTaskIndex = currentTasks.findIndex((task) => taskBelongsToProject(task, projectId))
+  const restoredTasks = currentTasks.filter((task) => !taskBelongsToProject(task, projectId))
+  restoredTasks.splice(firstProjectTaskIndex < 0 ? restoredTasks.length : firstProjectTaskIndex, 0, ...targetTasks)
+  applyingProjectImageHistory = true
+  try {
+    state.setTasks(restoredTasks)
+  } finally {
+    applyingProjectImageHistory = false
+  }
+  const project = useStore.getState().projects.find((item) => item.id === projectId)
+  const historyCanvas = direction === 'undo' ? entry.beforeCanvas : entry.afterCanvas
+  if (project?.canvas || historyCanvas) {
+    const targetCanvas = ensureProjectCanvas(historyCanvas ?? project?.canvas, getTaskOutputIds(targetTasks))
+    useStore.getState().updateProjectCanvas(projectId, {
+      ...targetCanvas,
+      viewport: project?.canvas?.viewport ?? targetCanvas.viewport,
+    })
+  }
+  await Promise.all(targetTasks.map((task) => putTask(task)))
+  await Promise.all(currentProjectTasks
+    .filter((task) => !targetTasks.some((target) => target.id === task.id))
+    .map((task) => dbDeleteTask(task.id)))
+  await deleteUnreferencedImageIds(getTaskImageIds(currentProjectTasks).filter((imageId) => !targetIds.has(imageId)))
+  const nextStack = destination.get(projectId) ?? []
+  nextStack.push(entry)
+  if (nextStack.length > 30) nextStack.splice(0, nextStack.length - 30)
+  destination.set(projectId, nextStack)
+  touchProject(projectId, false)
+  scheduleOnlineProjectSync(projectId, 0)
+  return true
 }
 
 export function getCodexCliPromptKey(settings: AppSettings): string {
@@ -4215,7 +4396,13 @@ async function initializeStore() {
   await Promise.all(tasks
     .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload)
     .map((task) => putTask(task)))
-  useStore.getState().setTasks(tasks)
+  // 初始化时灌入已持久化任务不是用户操作，不能写入图片撤销历史。
+  applyingProjectImageHistory = true
+  try {
+    useStore.getState().setTasks(tasks)
+  } finally {
+    applyingProjectImageHistory = false
+  }
   onlineProjectCacheReady = true
   const projectsToSync = new Set([
     ...projects.filter((project) => project.syncPending && isActiveProjectRecord(project.id)).map((project) => project.id),
@@ -7325,7 +7512,16 @@ export async function removeOutputImage(task: TaskRecord, imageId: string) {
   if (!result) return
   const state = useStore.getState()
   const tasks = state.tasks.map((item) => item.id === task.id ? result.task : item)
-  state.setTasks(tasks)
+  const beforeCanvas = getProjectCanvasSnapshot(task.projectId ?? '')
+  const afterCanvas = removeProjectCanvasItems(beforeCanvas, result.removedImageIds)
+  const removedImageRecords = await captureProjectImageRecords(result.removedImageIds)
+  applyingProjectImageHistory = true
+  try {
+    state.setTasks(tasks)
+  } finally {
+    applyingProjectImageHistory = false
+  }
+  if (task.projectId) recordProjectImageHistory(task.projectId, state.tasks, tasks, removedImageRecords, beforeCanvas, afterCanvas)
   await putTask(result.task)
 
   if (task.projectId) {
@@ -7359,13 +7555,37 @@ export async function removeMultipleTasks(taskIds: string[]) {
 
   // 收集所有被删除任务的关联图片
   const deletedImageIds = new Set<string>()
+  const deletedCanvasImageIdsByProject = new Map<string, Set<string>>()
   for (const t of tasks) {
     if (toDelete.has(t.id)) {
       addTaskReferencedImageIds(deletedImageIds, t)
+      const projectId = t.projectId ?? LOCAL_PROJECT_ID
+      const imageIds = deletedCanvasImageIdsByProject.get(projectId) ?? new Set<string>()
+      for (const imageId of [...t.outputImages, ...(t.transparentOriginalImages ?? [])]) imageIds.add(imageId)
+      deletedCanvasImageIdsByProject.set(projectId, imageIds)
     }
   }
+  const beforeCanvases = new Map(Array.from(deletedCanvasImageIdsByProject.keys()).map((projectId) => [projectId, getProjectCanvasSnapshot(projectId)]))
 
-  setTasks(remaining)
+  const removedImageRecords = await captureProjectImageRecords(deletedImageIds)
+
+  applyingProjectImageHistory = true
+  try {
+    setTasks(remaining)
+  } finally {
+    applyingProjectImageHistory = false
+  }
+  for (const projectId of new Set(deletedTasks.map((task) => task.projectId ?? LOCAL_PROJECT_ID))) {
+    const beforeCanvas = beforeCanvases.get(projectId)
+    recordProjectImageHistory(
+      projectId,
+      tasks,
+      remaining,
+      removedImageRecords,
+      beforeCanvas,
+      removeProjectCanvasItems(beforeCanvas, deletedCanvasImageIdsByProject.get(projectId) ?? []),
+    )
+  }
   for (const id of taskIds) {
     await dbDeleteTask(id)
   }
@@ -7438,11 +7658,20 @@ export async function removeTask(task: TaskRecord) {
     ...(task.transparentOriginalImages || []),
     ...(task.streamPartialImageIds || []),
   ])
+  const beforeCanvas = getProjectCanvasSnapshot(task.projectId ?? '')
+  const afterCanvas = removeProjectCanvasItems(beforeCanvas, [...task.outputImages, ...(task.transparentOriginalImages ?? [])])
 
   // 从列表移除
   const remaining = await scrubAgentOutputPayloadsForDeletedTasks([task], tasks.filter((t) => t.id !== task.id))
   await deleteOnlineTaskRecord(task)
-  setTasks(remaining)
+  const removedImageRecords = await captureProjectImageRecords(taskImageIds)
+  applyingProjectImageHistory = true
+  try {
+    setTasks(remaining)
+  } finally {
+    applyingProjectImageHistory = false
+  }
+  if (task.projectId) recordProjectImageHistory(task.projectId, tasks, remaining, removedImageRecords, beforeCanvas, afterCanvas)
   await dbDeleteTask(task.id)
 
   // 找出其他任务仍引用的图片

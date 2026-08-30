@@ -218,8 +218,9 @@ func (h *ProjectImageHandler) Save(c *gin.Context) {
 		return
 	}
 	mimeType := strings.TrimSpace(header.Header.Get("Content-Type"))
-	if mimeType == "" {
-		mimeType = http.DetectContentType(data)
+	detectedMimeType := http.DetectContentType(data)
+	if !strings.HasPrefix(mimeType, "image/") {
+		mimeType = detectedMimeType
 	}
 	if !strings.HasPrefix(mimeType, "image/") {
 		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "uploaded file must be an image"})

@@ -46,6 +46,33 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*models.User,
 	return scanUser(row)
 }
 
+// List 返回所有用户，供管理员只读查看。
+func (r *UserRepository) List(ctx context.Context) ([]models.User, error) {
+	const q = `
+		SELECT id, oidc_provider, oidc_sub, COALESCE(email,''), COALESCE(name,''),
+		       COALESCE(picture_url,''), COALESCE(raw_claims,'{}'::jsonb),
+		       created_at, updated_at, last_login_at
+		FROM users
+		ORDER BY last_login_at DESC NULLS LAST, created_at DESC, id`
+	rows, err := r.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	users := make([]models.User, 0)
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, *user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return users, nil
+}
+
 // UpsertFromOIDC 在 OIDC 登录成功后写入或刷新用户资料，并更新 last_login_at
 func (r *UserRepository) UpsertFromOIDC(ctx context.Context, u *models.User) (*models.User, error) {
 	if u.OIDCProvider == "" || u.OIDCSub == "" {
@@ -72,7 +99,11 @@ func (r *UserRepository) UpsertFromOIDC(ctx context.Context, u *models.User) (*m
 	return scanUser(row)
 }
 
-func scanUser(row *sql.Row) (*models.User, error) {
+type userScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUser(row userScanner) (*models.User, error) {
 	var u models.User
 	var lastLogin sql.NullTime
 	if err := row.Scan(

@@ -91,8 +91,12 @@ func newProjectImageRouterWithUploader(store projectImageStore, uploader ...proj
 	return r
 }
 
-func newProjectImageUploadRequest(t *testing.T, image []byte) *http.Request {
+func newProjectImageUploadRequest(t *testing.T, image []byte, contentTypes ...string) *http.Request {
 	t.Helper()
+	contentType := "image/png"
+	if len(contentTypes) > 0 {
+		contentType = contentTypes[0]
+	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for key, value := range map[string]string{
@@ -108,7 +112,7 @@ func newProjectImageUploadRequest(t *testing.T, image []byte) *http.Request {
 	}
 	header := make(textproto.MIMEHeader)
 	header.Set("Content-Disposition", `form-data; name="image"; filename="image-a.png"`)
-	header.Set("Content-Type", "image/png")
+	header.Set("Content-Type", contentType)
 	part, err := writer.CreatePart(header)
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +148,20 @@ func TestProjectImageHandlerSave(t *testing.T) {
 	}
 	if !bytes.Equal(store.data, data) || len(store.image.SHA256) != 64 {
 		t.Fatal("image bytes or sha256 was not saved")
+	}
+}
+
+func TestProjectImageHandlerSaveDetectsImageWhenContentTypeIsGeneric(t *testing.T) {
+	data := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+	store := &projectImageStoreStub{}
+	w := httptest.NewRecorder()
+	newProjectImageRouter(store).ServeHTTP(w, newProjectImageUploadRequest(t, data, "application/octet-stream"))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", w.Code, w.Body.String())
+	}
+	if store.image == nil || store.image.MIMEType != "image/png" {
+		t.Fatalf("want detected image/png MIME type, got %#v", store.image)
 	}
 }
 

@@ -307,7 +307,7 @@ vi.mock('./lib/agentApi', () => ({
     }
   }),
 }))
-import { clearAgentConversations, clearImages, clearProjects, clearTasks, getAllAgentConversations, getAllProjects, getAllTasks, getImage, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
+import { clearAgentConversations, clearImages, clearProjects, clearTasks, getAllAgentConversations, getAllProjects, getAllTasks, getImage, putAgentConversation, putImage, putProject, putTask as putDbTask } from './lib/db'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { queryImageStatuses } from './lib/imageStatusApi'
@@ -315,7 +315,7 @@ import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
 import { buildLegacyProjectArchive, clearLegacyProjectUploadId, deleteOnlineProject, downloadOnlineProject, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
-import { LOCAL_PROJECT_ID, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, renameFavoriteCollection, reuseConfig, retryTask, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { LOCAL_PROJECT_ID, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeOutputImage, removeTask, renameFavoriteCollection, reuseConfig, retryTask, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -628,6 +628,77 @@ describe('online canvas persistence', () => {
     await vi.waitFor(() => expect(saveOnlineProjectViewport).toHaveBeenCalledWith(expect.objectContaining({ id: project.id }), { x: 40, y: 20, scale: 1.5 }))
     expect(useStore.getState().projects[0]?.updatedAt).not.toBe(project.updatedAt)
     expect(useStore.getState().projects[0]?.contentUpdatedAt).toBe(project.contentUpdatedAt)
+  })
+
+  it('undoes and redoes generated and deleted project images', async () => {
+    const project: Project = {
+      id: 'project-image-history',
+      title: '图片历史项目',
+      initialPrompt: '',
+      storage: 'local',
+      createdAt: 1,
+      updatedAt: 1,
+      canvas: {
+        version: 1,
+        viewport: { x: 0, y: 0, scale: 1 },
+        items: {
+          'history-image': { x: 360, y: 140, width: 240, z: 2, favoriteCollectionIds: [] },
+        },
+      },
+    }
+    const image = { id: 'history-image', dataUrl: 'data:image/png;base64,history', source: 'generated' as const, createdAt: 1 }
+    const before = task({ id: 'history-task', projectId: project.id, outputImages: [] })
+    const after = { ...before, outputImages: [image.id], status: 'done' as const }
+    await putImage(image)
+    useStore.setState({ projects: [project], projectsLoaded: true, tasks: [before] })
+
+    useStore.getState().setTasks([after])
+    expect((await useStore.getState().undoProjectImageHistory(project.id))).toBe(true)
+    expect(useStore.getState().tasks).toEqual([before])
+    expect((await useStore.getState().redoProjectImageHistory(project.id))).toBe(true)
+    expect(useStore.getState().tasks).toEqual([after])
+
+    await removeOutputImage(after, image.id)
+    expect(useStore.getState().tasks[0]?.outputImages).toEqual([])
+    expect((await useStore.getState().undoProjectImageHistory(project.id))).toBe(true)
+    expect(useStore.getState().tasks[0]?.outputImages).toEqual([image.id])
+    expect(useStore.getState().projects[0]?.canvas?.items[image.id]).toMatchObject({ x: 360, y: 140 })
+    expect(await getImage(image.id)).toMatchObject({ id: image.id, dataUrl: image.dataUrl })
+    expect((await useStore.getState().redoProjectImageHistory(project.id))).toBe(true)
+    expect(useStore.getState().tasks[0]?.outputImages).toEqual([])
+    expect(useStore.getState().projects[0]?.canvas?.items[image.id]).toBeUndefined()
+    expect(await getImage(image.id)).toBeUndefined()
+  })
+
+  it('does not create image history while hydrating persisted tasks', async () => {
+    const project: Project = {
+      id: 'project-image-history-hydration',
+      title: '图片历史初始化项目',
+      initialPrompt: '',
+      storage: 'local',
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const persistedTask = task({
+      id: 'hydrated-image-task',
+      projectId: project.id,
+      outputImages: ['hydrated-image'],
+    })
+    await clearProjects()
+    await clearTasks()
+    await putProject(project)
+    await putDbTask(persistedTask)
+    useStore.setState({ projects: [], tasks: [], projectsLoaded: false, activeProjectId: project.id })
+
+    try {
+      await initStore()
+
+      expect((await useStore.getState().undoProjectImageHistory(project.id))).toBe(false)
+      expect(useStore.getState().tasks).toEqual([persistedTask])
+    } finally {
+      await clearProjects()
+      await clearTasks()
+    }
   })
 })
 
