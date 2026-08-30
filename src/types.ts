@@ -337,6 +337,8 @@ export interface Project {
   canvas?: ProjectCanvasState
   createdAt: number
   updatedAt: number
+  /** 项目内容最后修改时间，不包含画布视口变化 */
+  contentUpdatedAt?: number
 }
 
 // ===== Agent 模式 =====

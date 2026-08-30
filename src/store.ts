@@ -665,6 +665,9 @@ function normalizeProjects(value: unknown): Project[] {
       ...(canvas ? { canvas } : {}),
       createdAt,
       updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : createdAt,
+      contentUpdatedAt: typeof item.contentUpdatedAt === 'number'
+        ? item.contentUpdatedAt
+        : (typeof item.updatedAt === 'number' ? item.updatedAt : createdAt),
     })
   }
   return projects
@@ -1364,6 +1367,7 @@ export const useStore = create<AppState>()(
           defaultFavoriteCollectionId: defaultCollection.id,
           createdAt: now,
           updatedAt: now,
+          contentUpdatedAt: now,
         }
         get().setAppMode('gallery')
         set((state) => ({
@@ -1383,10 +1387,12 @@ export const useStore = create<AppState>()(
         const project = get().projects.find((item) => item.id === id)
         const normalizedTitle = title.replace(/\s+/g, ' ').trim()
         if (!project || !normalizedTitle) return
+        const now = Date.now()
         const updated = {
           ...project,
           title: createProjectTitle(normalizedTitle),
-          updatedAt: Date.now(),
+          updatedAt: now,
+          contentUpdatedAt: now,
         }
         set((state) => ({
           projects: [updated, ...state.projects.filter((item) => item.id !== id)],
@@ -1400,7 +1406,8 @@ export const useStore = create<AppState>()(
         void renameOnlineProject(project.remoteId, updated.title).catch((err) => {
           const current = get().projects.find((item) => item.id === id)
           if (current?.title === updated.title) {
-            const restored = { ...project, updatedAt: Date.now() }
+            const now = Date.now()
+            const restored = { ...project, updatedAt: now, contentUpdatedAt: now }
             set((state) => ({
               projects: [restored, ...state.projects.filter((item) => item.id !== id)],
             }))
@@ -1421,12 +1428,16 @@ export const useStore = create<AppState>()(
       updateProjectCanvas: (id, canvas) => {
         const project = get().projects.find((item) => item.id === id)
         const now = Date.now()
+        const hasCanvasContentChange = project
+          ? JSON.stringify(project.canvas?.items ?? {}) !== JSON.stringify(canvas.items)
+          : true
         const updated: Project | null = project
           ? {
               ...project,
               canvas,
               ...(project.storage === 'online' ? { syncPending: true } : {}),
               updatedAt: now,
+              ...(hasCanvasContentChange ? { contentUpdatedAt: now } : {}),
             }
           : id === LOCAL_PROJECT_ID
             ? {
@@ -1437,6 +1448,7 @@ export const useStore = create<AppState>()(
                 canvas,
                 createdAt: now,
                 updatedAt: now,
+                contentUpdatedAt: now,
               }
           : null
         if (!updated) return
@@ -1467,6 +1479,7 @@ export const useStore = create<AppState>()(
                 canvas,
                 createdAt: now,
                 updatedAt: now,
+                contentUpdatedAt: now,
               }
             : null
         if (!updated) return
@@ -1489,11 +1502,14 @@ export const useStore = create<AppState>()(
           || onlineProjectCanvasSyncQueues.has(id)
           || Boolean(project.syncPending)
         if (!hasPendingSave) return
+        const hasCanvasContentChange = JSON.stringify(project.canvas?.items ?? {}) !== JSON.stringify(canvas.items)
+        const now = Date.now()
         const updated: Project = {
           ...project,
           canvas,
           ...(project.storage === 'online' ? { syncPending: true } : {}),
-          updatedAt: Date.now(),
+          updatedAt: now,
+          ...(hasCanvasContentChange ? { contentUpdatedAt: now } : {}),
         }
         set((state) => ({
           projectCanvasCache: { ...state.projectCanvasCache, [id]: canvas },
@@ -2617,10 +2633,12 @@ function touchProject(id?: string, syncArchive = true) {
   if (!id) return
   const project = useStore.getState().projects.find((item) => item.id === id)
   if (!project) return
+  const now = Date.now()
   const updated = {
     ...project,
     ...(project.storage === 'online' && syncArchive ? { syncPending: true } : {}),
-    updatedAt: Date.now(),
+    updatedAt: now,
+    contentUpdatedAt: now,
   }
   useStore.setState((state) => ({
     projects: [updated, ...state.projects.filter((item) => item.id !== id)],
@@ -3909,6 +3927,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
     let project: Project = {
       ...remote,
       initialPrompt: cached?.initialPrompt ?? '',
+      contentUpdatedAt: cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
       ...(cached?.canvas ? { canvas: cached.canvas } : {}),
       ...(!shouldLoadContents ? { remoteArchiveSha256: cached?.remoteArchiveSha256 } : {}),
     }
@@ -3949,6 +3968,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
           project = {
             ...remote,
             initialPrompt: archivedProject?.initialPrompt ?? cached?.initialPrompt ?? '',
+            contentUpdatedAt: archivedProject?.contentUpdatedAt ?? cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
             defaultFavoriteCollectionId,
             ...(remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas
               ? { canvas: remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas }
@@ -4026,7 +4046,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
     projects.push(project)
   }
 
-  projects.sort((a, b) => b.updatedAt - a.updatedAt)
+  projects.sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt))
   tasks = [...new Map(tasks.map((task) => [task.id, task])).values()]
   return { projects, tasks, agentConversations, images, thumbnails, favoriteCollections }
 }
@@ -4058,7 +4078,7 @@ async function initializeStore() {
   let projects = normalizeProjects([
     ...useStore.getState().projects,
     ...storedProjectRecords,
-  ]).sort((a, b) => b.updatedAt - a.updatedAt)
+  ]).sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt))
   const projectCanvasCache = useStore.getState().projectCanvasCache
   console.info('[项目画布] 启动本地缓存', {
     activeProjectId: useStore.getState().activeProjectId,
@@ -4103,7 +4123,7 @@ async function initializeStore() {
     }
   }
   if (useStore.getState().projects !== publishedProjectState) {
-    projects = normalizeProjects([...useStore.getState().projects, ...projects]).sort((a, b) => b.updatedAt - a.updatedAt)
+    projects = normalizeProjects([...useStore.getState().projects, ...projects]).sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt))
   }
   if (useStore.getState().tasks !== initialTaskState) {
     storedTasks = [...new Map([...storedTasks, ...useStore.getState().tasks].map((task) => [task.id, task])).values()]

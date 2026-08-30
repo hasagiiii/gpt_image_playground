@@ -164,7 +164,7 @@ export default function ProjectHome() {
   const sortedProjects = useMemo(
     () => projects
       .filter((project) => project.id !== LOCAL_PROJECT_ID)
-      .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || a.id.localeCompare(b.id)),
+      .sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt) || b.createdAt - a.createdAt || a.id.localeCompare(b.id)),
     [projects],
   )
   const [prompt, setPrompt] = useState('')

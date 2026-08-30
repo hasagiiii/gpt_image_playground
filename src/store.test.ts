@@ -189,6 +189,14 @@ vi.mock('./lib/onlineProjects', () => ({
     created_at: '2026-08-16T00:00:00Z',
     updated_at: '2026-08-16T00:00:00Z',
   })),
+  saveOnlineProjectViewport: vi.fn(async (project: { id: string; title: string }) => ({
+    id: project.id,
+    title: project.title,
+    archive_size: 7,
+    archive_sha256: 'viewport-sha256',
+    created_at: '2026-08-16T00:00:00Z',
+    updated_at: '2026-08-16T00:00:00Z',
+  })),
   getOnlineProjectCanvas: vi.fn(async () => null),
   deleteOnlineProjectTask: vi.fn(async () => ({
     id: 'project-a',
@@ -306,7 +314,7 @@ import { queryImageStatuses } from './lib/imageStatusApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
-import { buildLegacyProjectArchive, clearLegacyProjectUploadId, deleteOnlineProject, downloadOnlineProject, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
+import { buildLegacyProjectArchive, clearLegacyProjectUploadId, deleteOnlineProject, downloadOnlineProject, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
 import { LOCAL_PROJECT_ID, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, renameFavoriteCollection, reuseConfig, retryTask, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
@@ -540,6 +548,86 @@ describe('online canvas persistence', () => {
 
     await vi.waitFor(() => expect(saveOnlineProjectCanvas).toHaveBeenCalledWith(expect.objectContaining({ id: project.id }), canvas))
     expect(useStore.getState().projects[0]).toMatchObject({ syncPending: false, remoteArchiveSha256: 'canvas-sha256' })
+  })
+
+  it('updates record time but preserves content time when saving a viewport change', () => {
+    const project: Project = {
+      id: 'project-viewport',
+      title: '视口项目',
+      initialPrompt: '',
+      storage: 'local',
+      createdAt: 1,
+      updatedAt: 123,
+      contentUpdatedAt: 100,
+      canvas: {
+        version: 1,
+        viewport: { x: 0, y: 0, scale: 1 },
+        items: {},
+      },
+    }
+    useStore.setState({ projects: [project], projectCanvasCache: {}, tasks: [] })
+
+    useStore.getState().updateProjectCanvasViewport(project.id, { x: 40, y: 20, scale: 1.5 })
+
+    expect(useStore.getState().projects[0]).toMatchObject({
+      id: project.id,
+      contentUpdatedAt: project.contentUpdatedAt,
+      canvas: { viewport: { x: 40, y: 20, scale: 1.5 } },
+    })
+    expect(useStore.getState().projects[0]?.updatedAt).not.toBe(project.updatedAt)
+  })
+
+  it('updates record time but preserves content time when canvas items stay unchanged', () => {
+    const project: Project = {
+      id: 'project-canvas-viewport',
+      title: '画布视口项目',
+      initialPrompt: '',
+      storage: 'local',
+      createdAt: 1,
+      updatedAt: 123,
+      contentUpdatedAt: 100,
+      canvas: {
+        version: 1,
+        viewport: { x: 0, y: 0, scale: 1 },
+        items: {},
+      },
+    }
+    useStore.setState({ projects: [project], projectCanvasCache: {}, tasks: [] })
+
+    useStore.getState().updateProjectCanvas(project.id, {
+      ...project.canvas!,
+      viewport: { x: 40, y: 20, scale: 1.5 },
+    })
+
+    expect(useStore.getState().projects[0]?.updatedAt).not.toBe(project.updatedAt)
+    expect(useStore.getState().projects[0]?.contentUpdatedAt).toBe(project.contentUpdatedAt)
+  })
+
+  it('preserves content time after syncing an online viewport change', async () => {
+    const project: Project = {
+      id: 'project-online-viewport',
+      remoteId: 'project-online-viewport',
+      title: '在线视口项目',
+      initialPrompt: '',
+      storage: 'online',
+      syncPending: false,
+      createdAt: 1,
+      updatedAt: 123,
+      contentUpdatedAt: 100,
+      canvas: {
+        version: 1,
+        viewport: { x: 0, y: 0, scale: 1 },
+        items: {},
+      },
+    }
+    useStore.setState({ projects: [project], projectCanvasCache: {}, tasks: [] })
+    vi.mocked(saveOnlineProjectViewport).mockClear()
+
+    useStore.getState().updateProjectCanvasViewport(project.id, { x: 40, y: 20, scale: 1.5 })
+
+    await vi.waitFor(() => expect(saveOnlineProjectViewport).toHaveBeenCalledWith(expect.objectContaining({ id: project.id }), { x: 40, y: 20, scale: 1.5 }))
+    expect(useStore.getState().projects[0]?.updatedAt).not.toBe(project.updatedAt)
+    expect(useStore.getState().projects[0]?.contentUpdatedAt).toBe(project.contentUpdatedAt)
   })
 })
 

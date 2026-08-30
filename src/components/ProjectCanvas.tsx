@@ -812,7 +812,6 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const streamPreviewSlots = useStore((s) => s.streamPreviewSlots)
   const updateProjectCanvas = useStore((s) => s.updateProjectCanvas)
   const updateProjectCanvasViewport = useStore((s) => s.updateProjectCanvasViewport)
-  const touchProjectUpdatedAt = useStore((s) => s.touchProjectUpdatedAt)
   const flushProjectCanvasOnExit = useStore((s) => s.flushProjectCanvasOnExit)
   const setDetailImage = useStore((s) => s.setDetailImage)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
@@ -1559,7 +1558,6 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     canvasRef.current = next
     setCanvas(next)
     if (!canvasProjectId) return
-    if (!viewportDirtyRef.current && typeof touchProjectUpdatedAt === 'function') touchProjectUpdatedAt(canvasProjectId)
     viewportDirtyRef.current = true
     if (viewportPersistTimerRef.current != null) window.clearTimeout(viewportPersistTimerRef.current)
     viewportPersistTimerRef.current = window.setTimeout(() => {

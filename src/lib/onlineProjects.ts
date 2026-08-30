@@ -49,6 +49,7 @@ export function getOnlineProjectRecord(project: Project) {
     canvas: project.canvas,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
+    contentUpdatedAt: project.contentUpdatedAt,
   }
 }
 
@@ -97,6 +98,7 @@ async function buildProjectArchive(state: ProjectArchiveState, project: Project 
     canvas: project.canvas,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
+    contentUpdatedAt: project.contentUpdatedAt,
   }] : []
   const { bytes } = buildExportZip({
     options: { exportConfig: false, exportTasks: true },
@@ -369,6 +371,8 @@ export async function getOnlineProjectCanvas(projectId: string): Promise<Project
 }
 
 export function createOnlineProject(response: OnlineProjectResponse): Project {
+  const createdAt = Date.parse(response.created_at) || Date.now()
+  const updatedAt = Date.parse(response.updated_at) || Date.now()
   return {
     id: response.id,
     title: response.title,
@@ -377,8 +381,9 @@ export function createOnlineProject(response: OnlineProjectResponse): Project {
     remoteId: response.id,
     remoteArchiveSha256: response.archive_sha256,
     syncPending: false,
-    createdAt: Date.parse(response.created_at) || Date.now(),
-    updatedAt: Date.parse(response.updated_at) || Date.now(),
+    createdAt,
+    updatedAt,
+    contentUpdatedAt: updatedAt,
   }
 }
 
