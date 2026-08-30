@@ -1256,7 +1256,9 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
 
       const previews = streamPreviewSlots[task.id] ?? {}
       if (task.status === 'running') {
-        const count = Math.max(0, task.params.n - task.outputImages.length - (task.outputErrors?.length ?? 0))
+        const count = task.params.n > 1
+          ? 1
+          : Math.max(0, task.params.n - task.outputImages.length - (task.outputErrors?.length ?? 0))
         const placeholderDimensions = getPlaceholderDimensions(task)
         for (let index = 0; index < count; index++) {
           const slot = String(task.outputImages.length + index)

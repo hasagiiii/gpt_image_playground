@@ -272,6 +272,15 @@ describe('ProjectCanvas interactions', () => {
     expect(node.style.width).toBe('1024px')
   })
 
+  it('shows one generating placeholder when multiple outputs are requested', async () => {
+    const project = { ...createProject(), canvas: undefined }
+    const task = { ...createTask(), outputImages: [], status: 'running' as const, params: { ...DEFAULT_PARAMS, n: 4 } }
+    mocks.state.current = { ...mocks.state.current, projects: [project], tasks: [task], activeProjectId: 'project-a', projectsLoaded: true }
+    await act(async () => root.render(<ProjectCanvas />))
+
+    expect(host.querySelectorAll('[data-canvas-node]')).toHaveLength(1)
+  })
+
   it('allows the generating placeholder to move without persisting a canvas patch', async () => {
     const project = { ...createProject(), canvas: undefined }
     const task = { ...createTask(), outputImages: [], status: 'running' as const }
