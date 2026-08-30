@@ -58,14 +58,13 @@ export async function callBackendImageApi(options: {
   model: string
   apiMode: 'images' | 'responses'
   allowPromptRewrite: boolean
-  codexCli: boolean
   prompt: string
   params: TaskParams
   inputImageDataUrls: string[]
   maskDataUrl?: string
   onImageStatusRequestCreated?: (request: { requestId: string; requestIndex?: number }) => void
 }): Promise<CallApiResult> {
-  const requestCount = options.apiMode === 'responses' ? Math.max(1, options.params.n) : 1
+  const requestCount = options.apiMode === 'responses' ? 1 : Math.max(1, options.params.n)
   const requestIds = Array.from({ length: requestCount }, (_, requestIndex) => {
     const requestId = createImageStatusRequestId()
     options.onImageStatusRequestCreated?.({
@@ -97,7 +96,6 @@ export async function callBackendImageApi(options: {
     model: options.model,
     api_mode: options.apiMode,
     allow_prompt_rewrite: options.allowPromptRewrite,
-    codex_cli: options.codexCli,
     request_ids: requestIds,
     prompt: options.prompt,
     params: options.params,
@@ -120,7 +118,13 @@ export async function callBackendImageApi(options: {
     status: resp.status,
     data: formatImageApiLogValue(data),
   })
-  if (!resp.ok) throw new Error(data?.message || `后端生图失败：HTTP ${resp.status}`)
+  if (!resp.ok) {
+    const error = Object.assign(new Error(data?.message || `后端生图失败：HTTP ${resp.status}`), {
+      status: resp.status,
+      rawResponsePayload: data ? JSON.stringify(data) : undefined,
+    })
+    throw error
+  }
 
   const images = Array.isArray(data?.images) ? data.images.filter((item): item is string => typeof item === 'string' && item.startsWith('data:image/')) : []
   if (images.length === 0) throw new Error('后端生图接口没有返回图片')

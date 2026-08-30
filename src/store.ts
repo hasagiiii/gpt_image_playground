@@ -13,6 +13,8 @@ import type {
   InputImage,
   MaskDraft,
   Project,
+  ProjectCanvasState,
+  ProjectCanvasViewport,
   StoredImage,
   StoredImageThumbnail,
   TaskRecord,
@@ -54,7 +56,7 @@ import {
   storeImageWithSize,
 } from './lib/db'
 import { createRequestId, getAccessToken, isAuthEnabled } from './auth/api'
-import { buildLegacyProjectArchive, buildOnlineProjectArchive, clearLegacyProjectUploadId, createOnlineProject, deleteOnlineProject, deleteOnlineProjectImage, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getLegacyProjectUploadId, getTaskReferencedImageIds, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectTask, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
+import { buildLegacyProjectArchive, buildOnlineProjectArchive, clearLegacyProjectUploadId, createOnlineProject, deleteOnlineProject, deleteOnlineProjectImage, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getLegacyProjectUploadId, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
 import { callImageApi } from './lib/api'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
@@ -73,6 +75,9 @@ import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
 import { getAgentConversationProjectId, getChangedAgentConversationProjectIds } from './lib/agentConversationScope'
+import { ensureProjectCanvas, normalizeProjectCanvas, removeCanvasFavoriteCollection } from './lib/projectCanvas'
+import { getTaskOutputImageSlots, removeTaskOutputImage as removeTaskOutputImageRecord } from './lib/singleImageOperations'
+import { playCompletionSound } from './lib/completionSound'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const ALL_PROJECTS_ID = '__all_projects__'
@@ -106,11 +111,14 @@ const compositeRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const imageStatusRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const agentImageStatusRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const activeTaskExecutions = new Set<string>()
 const agentRoundControllers = new Map<string, AbortController>()
 const projectPersistenceQueues = new Map<string, Promise<IDBValidKey>>()
 const onlineProjectSyncTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const onlineProjectSyncQueues = new Map<string, Promise<void>>()
 const onlineProjectSyncErrors = new Set<string>()
+const onlineProjectCanvasSyncQueues = new Map<string, Promise<void>>()
+const onlineProjectCanvasSyncErrors = new Set<string>()
 const onlineTaskSyncQueues = new Map<string, Promise<void>>()
 const onlineTaskSyncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const onlineTaskSyncErrors = new Set<string>()
@@ -230,7 +238,13 @@ export async function ensureImageCached(id: string): Promise<string | undefined>
 
 export async function ensureImageThumbnailCached(id: string): Promise<{ dataUrl: string; width?: number; height?: number } | undefined> {
   const cached = getCachedThumbnail(id)
-  if (cached) return cached
+  if (cached) {
+    const image = await getImage(id)
+    if (!image?.width || !image.height || (cached.width === image.width && cached.height === image.height)) return cached
+    const corrected = { ...cached, width: image.width, height: image.height }
+    cacheThumbnail(id, corrected)
+    return corrected
+  }
 
   const rec = await getStoredFreshImageThumbnail(id)
   if (!rec?.thumbnailDataUrl) {
@@ -241,10 +255,12 @@ export async function ensureImageThumbnailCached(id: string): Promise<{ dataUrl:
     return { dataUrl: image.dataUrl, width: image.width, height: image.height }
   }
 
+  const image = await getImage(id)
+
   const thumbnail = {
     dataUrl: rec.thumbnailDataUrl,
-    width: rec.width,
-    height: rec.height,
+    width: image?.width ?? rec.width,
+    height: image?.height ?? rec.height,
     thumbnailVersion: rec.thumbnailVersion,
   }
   cacheThumbnail(id, thumbnail)
@@ -345,18 +361,18 @@ function startThumbnailBackfill(id: string) {
   void (async () => {
     if (getCachedThumbnail(id)) return
 
-    const thumbnail = await getImageThumbnail(id)
+    const [thumbnail, image] = await Promise.all([getImageThumbnail(id), getImage(id)])
     if (thumbnail?.thumbnailDataUrl) {
       cacheThumbnail(id, {
         dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
+        width: image?.width ?? thumbnail.width,
+        height: image?.height ?? thumbnail.height,
         thumbnailVersion: thumbnail.thumbnailVersion,
       })
       notifyImageThumbnail(id, {
         dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
+        width: image?.width ?? thumbnail.width,
+        height: image?.height ?? thumbnail.height,
       })
     }
   })().catch(() => {
@@ -633,6 +649,7 @@ function normalizeProjects(value: unknown): Project[] {
     const title = typeof item.title === 'string' ? item.title.trim() : ''
     if (!title && !initialPrompt) continue
     const createdAt = typeof item.createdAt === 'number' ? item.createdAt : Date.now()
+    const canvas = normalizeProjectCanvas(item.canvas)
     ids.add(item.id)
     projects.push({
       id: item.id,
@@ -645,11 +662,22 @@ function normalizeProjects(value: unknown): Project[] {
       ...(item.defaultFavoriteCollectionId === null || typeof item.defaultFavoriteCollectionId === 'string'
         ? { defaultFavoriteCollectionId: item.defaultFavoriteCollectionId }
         : {}),
+      ...(canvas ? { canvas } : {}),
       createdAt,
       updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : createdAt,
     })
   }
   return projects
+}
+
+function normalizeProjectCanvasCache(value: unknown) {
+  if (!isRecord(value)) return {}
+  const cache: Record<string, ProjectCanvasState> = {}
+  for (const [projectId, rawCanvas] of Object.entries(value)) {
+    const canvas = normalizeProjectCanvas(rawCanvas)
+    if (canvas) cache[projectId] = canvas
+  }
+  return cache
 }
 
 function createProjectTitle(prompt: string) {
@@ -752,6 +780,7 @@ function ensureProjectFavoriteCollections(collections: FavoriteCollection[], pro
   const legacyCollections = getFavoriteCollectionsForProject(normalized)
   const next = [...normalized]
   for (const project of projects) {
+    if (project.id === LOCAL_PROJECT_ID) continue
     if (getFavoriteCollectionsForProject(next, project.id).length > 0) continue
     if (legacyCollections.length > 0) {
       next.push(...legacyCollections.map((collection) => ({ ...collection, projectId: project.id })))
@@ -810,6 +839,7 @@ export function getPersistedState(state: AppState) {
     dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
     appMode: state.appMode,
     activeProjectId: state.activeProjectId,
+    projectCanvasCache: state.projectCanvasCache,
     galleryInputDraft: settings.persistInputOnRestart && galleryInputDraft
       ? { ...galleryInputDraft, inputImages: galleryInputDraft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) }
       : null,
@@ -885,12 +915,14 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     ? ensureDefaultFavoriteCollection(normalizeFavoriteCollections(persisted.favoriteCollections))
     : currentState.favoriteCollections
   const defaultFavoriteCollectionId = resolveDefaultFavoriteCollectionId(favoriteCollections, persisted.defaultFavoriteCollectionId)
+  const projectCanvasCache = normalizeProjectCanvasCache(persisted.projectCanvasCache)
   return {
     ...currentState,
     ...persisted,
     settings,
     appMode,
     activeProjectId,
+    projectCanvasCache,
     galleryInputDraft: galleryInputDraft && !isEmptyAgentInputDraft(galleryInputDraft) ? galleryInputDraft : null,
     agentConversations,
     activeAgentConversationId,
@@ -902,6 +934,7 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     defaultFavoriteCollectionId,
     activeFavoriteCollectionId: null,
     favoritePickerTaskIds: null,
+    favoritePickerImageIds: null,
     supportPromptDismissed: Boolean(persisted.supportPromptDismissed),
     supportPromptOpen: Boolean(persisted.supportPromptOpen),
     supportPromptSkippedForImportedData: Boolean(persisted.supportPromptSkippedForImportedData),
@@ -921,10 +954,15 @@ interface AppState {
 
   // 项目
   projects: Project[]
+  projectCanvasCache: Record<string, ProjectCanvasState>
   projectsLoaded: boolean
   activeProjectId: string | null
   createProject: (prompt: string, options?: { autoRecord?: boolean }) => string
   renameProject: (id: string, title: string) => void
+  touchProjectUpdatedAt: (id: string) => void
+  updateProjectCanvas: (id: string, canvas: ProjectCanvasState) => void
+  updateProjectCanvasViewport: (id: string, viewport: ProjectCanvasViewport) => void
+  flushProjectCanvasOnExit: (id: string, canvas: ProjectCanvasState, force?: boolean) => void
   setActiveProjectId: (id: string | null) => void
   deleteProject: (id: string) => Promise<void>
   legacyProjectSaving: boolean
@@ -1009,7 +1047,9 @@ interface AppState {
   openManageCollectionsModal: () => void
   closeManageCollectionsModal: () => void
   favoritePickerTaskIds: string[] | null
+  favoritePickerImageIds: string[] | null
   openFavoritePicker: (taskIds: string[]) => void
+  openImageFavoritePicker: (imageIds: string[]) => void
   closeFavoritePicker: () => void
   streamPreviews: Record<string, string>
   streamPreviewSlots: Record<string, Record<string, string>>
@@ -1035,7 +1075,9 @@ interface AppState {
 
   // UI
   detailTaskId: string | null
+  detailImageId: string | null
   setDetailTaskId: (id: string | null) => void
+  setDetailImage: (taskId: string, imageId: string) => void
   lightboxImageId: string | null
   lightboxImageList: string[]
   setLightboxImageId: (id: string | null, list?: string[]) => void
@@ -1304,6 +1346,7 @@ export const useStore = create<AppState>()(
     (set, get) => ({
       // Projects
       projects: [],
+      projectCanvasCache: {},
       projectsLoaded: false,
       activeProjectId: null,
       legacyProjectSaving: false,
@@ -1366,6 +1409,101 @@ export const useStore = create<AppState>()(
           get().showToast(err instanceof Error ? err.message : String(err), 'error')
         })
       },
+      touchProjectUpdatedAt: (id) => {
+        const project = get().projects.find((item) => item.id === id)
+        if (!project) return
+        const updated = { ...project, updatedAt: Date.now() }
+        set((state) => ({
+          projects: state.projects.map((item) => item.id === id ? updated : item),
+        }))
+        queueProjectSave(updated)
+      },
+      updateProjectCanvas: (id, canvas) => {
+        const project = get().projects.find((item) => item.id === id)
+        const now = Date.now()
+        const updated: Project | null = project
+          ? {
+              ...project,
+              canvas,
+              ...(project.storage === 'online' ? { syncPending: true } : {}),
+              updatedAt: now,
+            }
+          : id === LOCAL_PROJECT_ID
+            ? {
+                id: LOCAL_PROJECT_ID,
+                title: '本地数据',
+                initialPrompt: '',
+                storage: 'local',
+                canvas,
+                createdAt: now,
+                updatedAt: now,
+              }
+          : null
+        if (!updated) return
+        set((state) => ({
+          projectCanvasCache: { ...state.projectCanvasCache, [id]: canvas },
+          projects: project
+            ? state.projects.map((item) => item.id === id ? updated : item)
+            : [updated, ...state.projects],
+        }))
+        queueProjectSave(updated)
+        if (updated.storage === 'online' && updated.remoteId) queueOnlineProjectCanvasSync(updated)
+      },
+      updateProjectCanvasViewport: (id, viewport) => {
+        const project = get().projects.find((item) => item.id === id)
+        const baseCanvas = project?.canvas ?? get().projectCanvasCache[id]
+        if (!baseCanvas && id !== LOCAL_PROJECT_ID) return
+        if (baseCanvas && baseCanvas.viewport.x === viewport.x && baseCanvas.viewport.y === viewport.y && baseCanvas.viewport.scale === viewport.scale) return
+        const canvas = { ...(baseCanvas ?? ensureProjectCanvas(undefined, [])), viewport }
+        const now = Date.now()
+        const updated: Project | null = project
+          ? { ...project, canvas, updatedAt: now }
+          : id === LOCAL_PROJECT_ID
+            ? {
+                id: LOCAL_PROJECT_ID,
+                title: '本地数据',
+                initialPrompt: '',
+                storage: 'local',
+                canvas,
+                createdAt: now,
+                updatedAt: now,
+              }
+            : null
+        if (!updated) return
+        set((state) => ({
+          projectCanvasCache: { ...state.projectCanvasCache, [id]: canvas },
+          projects: project
+            ? state.projects.map((item) => item.id === id ? updated : item)
+            : [updated, ...state.projects],
+        }))
+        queueProjectSave(updated)
+        if (updated.storage === 'online' && updated.remoteId) queueOnlineProjectViewportSync(updated)
+      },
+      flushProjectCanvasOnExit: (id, canvas, force = false) => {
+        const project = get().projects.find((item) => item.id === id)
+        if (!project) return
+        const hasPendingSave = force
+          || projectPersistenceQueues.has(id)
+          || onlineProjectSyncTimers.has(id)
+          || onlineProjectSyncQueues.has(id)
+          || onlineProjectCanvasSyncQueues.has(id)
+          || Boolean(project.syncPending)
+        if (!hasPendingSave) return
+        const updated: Project = {
+          ...project,
+          canvas,
+          ...(project.storage === 'online' ? { syncPending: true } : {}),
+          updatedAt: Date.now(),
+        }
+        set((state) => ({
+          projectCanvasCache: { ...state.projectCanvasCache, [id]: canvas },
+          projects: state.projects.map((item) => item.id === id ? updated : item),
+        }))
+        queueProjectSave(updated)
+        if (updated.storage === 'online' && updated.remoteId) {
+          void saveOnlineProjectCanvas(updated, canvas, { keepalive: true }).catch(() => undefined)
+        }
+      },
       setActiveProjectId: (activeProjectId) => {
         const changed = get().activeProjectId !== activeProjectId
         set({
@@ -1397,6 +1535,7 @@ export const useStore = create<AppState>()(
         if (timer) clearTimeout(timer)
         onlineProjectSyncTimers.delete(id)
         await onlineProjectSyncQueues.get(id)?.catch(() => undefined)
+        await onlineProjectCanvasSyncQueues.get(id)?.catch(() => undefined)
         if (project?.storage === 'online' && project.remoteId) {
           try {
             await deleteOnlineProject(project.remoteId)
@@ -1440,6 +1579,7 @@ export const useStore = create<AppState>()(
             : false
           return {
             projects: current.projects.filter((item) => item.id !== id),
+            projectCanvasCache: Object.fromEntries(Object.entries(current.projectCanvasCache).filter(([projectId]) => projectId !== id)),
             favoriteCollections: current.favoriteCollections.filter((collection) => isLocalProject ? Boolean(collection.projectId) : collection.projectId !== id),
             tasks: current.tasks.filter((task) => isLocalProject ? Boolean(task.projectId) : task.projectId !== id),
             agentConversations: current.agentConversations.filter((conversation) => !deletedConversationIds.has(conversation.id)),
@@ -1983,12 +2123,18 @@ export const useStore = create<AppState>()(
       openManageCollectionsModal: () => set({ isManageCollectionsModalOpen: true }),
       closeManageCollectionsModal: () => set({ isManageCollectionsModalOpen: false }),
       favoritePickerTaskIds: null,
+      favoritePickerImageIds: null,
       openFavoritePicker: (taskIds) => {
         if (!taskIds.length) return
         dismissAllTooltips()
-        set({ favoritePickerTaskIds: Array.from(new Set(taskIds)).filter(Boolean) })
+        set({ favoritePickerTaskIds: Array.from(new Set(taskIds)).filter(Boolean), favoritePickerImageIds: null })
       },
-      closeFavoritePicker: () => set({ favoritePickerTaskIds: null }),
+      openImageFavoritePicker: (imageIds) => {
+        if (!imageIds.length) return
+        dismissAllTooltips()
+        set({ favoritePickerImageIds: Array.from(new Set(imageIds)).filter(Boolean), favoritePickerTaskIds: null })
+      },
+      closeFavoritePicker: () => set({ favoritePickerTaskIds: null, favoritePickerImageIds: null }),
       streamPreviews: {},
       streamPreviewSlots: {},
       setTaskStreamPreview: (taskId, image, requestIndex = 0) => set((s) => {
@@ -2055,9 +2201,14 @@ export const useStore = create<AppState>()(
 
       // UI
       detailTaskId: null,
+      detailImageId: null,
       setDetailTaskId: (detailTaskId) => {
         if (detailTaskId) dismissAllTooltips()
-        set({ detailTaskId })
+        set({ detailTaskId, detailImageId: null })
+      },
+      setDetailImage: (detailTaskId, detailImageId) => {
+        dismissAllTooltips()
+        set({ detailTaskId, detailImageId })
       },
       lightboxImageId: null,
       lightboxImageList: [],
@@ -2280,6 +2431,76 @@ function queueProjectSave(project: Project) {
     .catch((err) => console.error('项目保存失败：', err))
     .finally(() => {
       if (projectPersistenceQueues.get(project.id) === saving) projectPersistenceQueues.delete(project.id)
+  })
+}
+
+function queueOnlineProjectCanvasSync(project: Project) {
+  const previous = onlineProjectCanvasSyncQueues.get(project.id)
+  const syncing = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async () => {
+    const latest = useStore.getState().projects.find((item) => item.id === project.id)
+    if (latest?.storage !== 'online' || !latest.remoteId || !latest.canvas) return
+    const version = latest.updatedAt
+    const response = await saveOnlineProjectCanvas(latest, latest.canvas)
+    const current = useStore.getState().projects.find((item) => item.id === latest.id)
+    if (!current) return
+    const hasArchiveSync = onlineProjectSyncTimers.has(current.id) || onlineProjectSyncQueues.has(current.id)
+    const updated = {
+      ...current,
+      remoteArchiveSha256: response.archive_sha256,
+      syncPending: hasArchiveSync || current.updatedAt !== version,
+    }
+    useStore.setState((state) => ({
+      projects: state.projects.map((item) => item.id === current.id ? updated : item),
+    }))
+    queueProjectSave(updated)
+    onlineProjectCanvasSyncErrors.delete(project.id)
+  })
+  onlineProjectCanvasSyncQueues.set(project.id, syncing)
+  void syncing
+    .catch((err) => {
+      console.error('在线项目画布保存失败：', err)
+      if (onlineProjectCanvasSyncErrors.has(project.id)) return
+      onlineProjectCanvasSyncErrors.add(project.id)
+      useStore.getState().showToast('画布位置保存失败，请稍后重试', 'error')
+    })
+    .finally(() => {
+      if (onlineProjectCanvasSyncQueues.get(project.id) === syncing) onlineProjectCanvasSyncQueues.delete(project.id)
+    })
+}
+
+function queueOnlineProjectViewportSync(project: Project) {
+  const previous = onlineProjectCanvasSyncQueues.get(project.id)
+  const syncing = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async () => {
+    const latest = useStore.getState().projects.find((item) => item.id === project.id)
+    if (latest?.storage !== 'online' || !latest.remoteId || !latest.canvas) return
+    const version = latest.updatedAt
+    const response = await saveOnlineProjectViewport(latest, latest.canvas.viewport)
+    const current = useStore.getState().projects.find((item) => item.id === latest.id)
+    if (!current) return
+    const hasArchiveSync = onlineProjectSyncTimers.has(current.id) || onlineProjectSyncQueues.has(current.id)
+    const changedWhileSyncing = current.updatedAt !== version
+    const updated = {
+      ...current,
+      remoteArchiveSha256: response.archive_sha256,
+      syncPending: hasArchiveSync || current.updatedAt !== version,
+      updatedAt: changedWhileSyncing ? current.updatedAt : Date.parse(response.updated_at) || current.updatedAt,
+    }
+    useStore.setState((state) => ({
+      projects: state.projects.map((item) => item.id === current.id ? updated : item),
+    }))
+    queueProjectSave(updated)
+    onlineProjectCanvasSyncErrors.delete(project.id)
+  })
+  onlineProjectCanvasSyncQueues.set(project.id, syncing)
+  void syncing
+    .catch((err) => {
+      console.error('在线项目视口保存失败：', err)
+      if (onlineProjectCanvasSyncErrors.has(project.id)) return
+      onlineProjectCanvasSyncErrors.add(project.id)
+      useStore.getState().showToast('画布视口保存失败，请稍后重试', 'error')
+    })
+    .finally(() => {
+      if (onlineProjectCanvasSyncQueues.get(project.id) === syncing) onlineProjectCanvasSyncQueues.delete(project.id)
     })
 }
 
@@ -2421,6 +2642,11 @@ function isRunningOpenAITask(task: TaskRecord) {
   return task.status === 'running' && isOpenAITask(task)
 }
 
+function hasActiveAgentRoundController(task: TaskRecord) {
+  if (!isAgentTask(task) || !task.agentConversationId || !task.agentRoundId) return false
+  return agentRoundControllers.has(getAgentRoundControllerKey(task.agentConversationId, task.agentRoundId))
+}
+
 function hasImageStatusRequestIds(task: TaskRecord) {
   return Boolean(task.imageStatusRequestIds?.length)
 }
@@ -2437,7 +2663,7 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId || task.compositeRequestId || hasImageStatusRequestIds(task)) return task
+    if (!isRunningOpenAITask(task) || activeTaskExecutions.has(task.id) || hasActiveAgentRoundController(task) || task.customTaskId || task.compositeRequestId || hasImageStatusRequestIds(task)) return task
 
     const updated: TaskRecord = {
       ...task,
@@ -2682,6 +2908,12 @@ function isApiRequestNetworkError(err: unknown): boolean {
     return /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(message)
   }
   return false
+}
+
+function getApiErrorStatus(err: unknown) {
+  if (!err || typeof err !== 'object' || !('status' in err)) return 0
+  const status = (err as { status?: unknown }).status
+  return typeof status === 'number' && Number.isFinite(status) ? status : 0
 }
 
 function getApiModeApiName(apiMode: ApiMode) {
@@ -3640,6 +3872,11 @@ async function recoverImageStatusTask(taskId: string) {
 
 async function loadOnlineProjectCache(localProjects: Project[], localTasks: TaskRecord[], localConversations: AgentConversation[], localImageIds: string[], activeProjectId: string | null) {
   const responses = await listOnlineProjects()
+  console.info('[项目画布] 在线项目列表', {
+    activeProjectId,
+    count: responses.length,
+    projectIds: responses.map((response) => response.id),
+  })
   const remoteIds = new Set(responses.map((response) => response.id))
   const retainedProjects = localProjects.filter((project) =>
     project.storage !== 'online' || remoteIds.has(project.remoteId ?? project.id) || (project.syncPending && !project.remoteArchiveSha256),
@@ -3660,11 +3897,24 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
     const cached = localProjects.find((project) => project.id === response.id || project.remoteId === response.id)
     const remote = createOnlineProject(response)
     const shouldLoadContents = activeProjectId === null || activeProjectId === ALL_PROJECTS_ID || activeProjectId === response.id || cached?.id === activeProjectId
+    const shouldRefreshArchive = shouldLoadContents && cached?.remoteArchiveSha256 !== response.archive_sha256
+    const shouldRefreshCanvas = shouldRefreshArchive && activeProjectId !== null && activeProjectId !== ALL_PROJECTS_ID
+    console.info('[项目画布] 本地缓存信息', {
+      projectId: response.id,
+      localArchiveSha256: cached?.remoteArchiveSha256 ?? null,
+      remoteArchiveSha256: response.archive_sha256,
+      canvas: cached?.canvas ?? null,
+      shouldRefreshArchive,
+    })
     let project: Project = {
       ...remote,
       initialPrompt: cached?.initialPrompt ?? '',
+      ...(cached?.canvas ? { canvas: cached.canvas } : {}),
       ...(!shouldLoadContents ? { remoteArchiveSha256: cached?.remoteArchiveSha256 } : {}),
     }
+    let remoteCanvas: ProjectCanvasState | null = null
+    let canvasMigrationNeeded = false
+    let shouldLoadArchiveContents = shouldRefreshArchive
     if (cached?.syncPending) {
       project = {
         ...cached,
@@ -3672,38 +3922,56 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
         remoteId: response.id,
         syncPending: true,
       }
-    } else if (shouldLoadContents && cached?.remoteArchiveSha256 !== response.archive_sha256) {
-      try {
-        const parsed = readOnlineProjectArchive(await downloadOnlineProject(response.id))
-        const archivedProject = normalizeProjects(parsed.project ? [parsed.project] : [])[0]
-        const projectFavoriteCollections = normalizeFavoriteCollections(parsed.favoriteCollections)
-          .map((collection) => ({ ...collection, projectId: remote.id }))
-        const defaultFavoriteCollectionId = resolveDefaultFavoriteCollectionId(
-          projectFavoriteCollections,
-          parsed.defaultFavoriteCollectionId,
-        )
-        project = {
-          ...remote,
-          initialPrompt: archivedProject?.initialPrompt ?? cached?.initialPrompt ?? '',
-          defaultFavoriteCollectionId,
+    } else {
+      if (shouldRefreshCanvas) {
+        try {
+          remoteCanvas = await getOnlineProjectCanvas(response.id)
+          canvasMigrationNeeded = !remoteCanvas
+          shouldLoadArchiveContents = shouldRefreshArchive && (!cached || !remoteCanvas)
+          if (remoteCanvas) project = { ...project, canvas: remoteCanvas }
+        } catch (err) {
+          canvasMigrationNeeded = true
+          shouldLoadArchiveContents = shouldRefreshArchive
+          console.warn(`在线项目 ${response.id} 画布读取失败，将使用图片列表恢复：`, err)
         }
-        tasks = [
-          ...tasks.filter((task) => task.projectId !== project.id),
-          ...parsed.tasks.map((task) => ({ ...task, projectId: project.id })),
-        ]
-        agentConversations = mergeAgentConversationsForStorage(
-          agentConversations.filter((conversation) => conversation.projectId !== project.id),
-          normalizeAgentConversations(parsed.agentConversations).map((conversation) => ({ ...conversation, projectId: project.id })),
-        )
-        images.push(...parsed.images)
-        for (const image of parsed.images) availableImageIds.add(image.id)
-        thumbnails.push(...parsed.thumbnails)
-        favoriteCollections.push(...projectFavoriteCollections)
-      } catch (err) {
-        console.warn(`在线项目 ${response.id} 内容加载失败：`, err)
-        project = {
-          ...project,
-          remoteArchiveSha256: cached?.remoteArchiveSha256,
+      }
+      if (shouldLoadArchiveContents) {
+        try {
+          const parsed = readOnlineProjectArchive(await downloadOnlineProject(response.id))
+          const archivedProject = normalizeProjects(parsed.project ? [parsed.project] : [])[0]
+          if (archivedProject?.canvas) canvasMigrationNeeded = false
+          const projectFavoriteCollections = normalizeFavoriteCollections(parsed.favoriteCollections)
+            .map((collection) => ({ ...collection, projectId: remote.id }))
+          const defaultFavoriteCollectionId = resolveDefaultFavoriteCollectionId(
+            projectFavoriteCollections,
+            parsed.defaultFavoriteCollectionId,
+          )
+          project = {
+            ...remote,
+            initialPrompt: archivedProject?.initialPrompt ?? cached?.initialPrompt ?? '',
+            defaultFavoriteCollectionId,
+            ...(remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas
+              ? { canvas: remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas }
+              : {}),
+          }
+          tasks = [
+            ...tasks.filter((task) => task.projectId !== project.id),
+            ...parsed.tasks.map((task) => ({ ...task, projectId: project.id })),
+          ]
+          agentConversations = mergeAgentConversationsForStorage(
+            agentConversations.filter((conversation) => conversation.projectId !== project.id),
+            normalizeAgentConversations(parsed.agentConversations).map((conversation) => ({ ...conversation, projectId: project.id })),
+          )
+          images.push(...parsed.images)
+          for (const image of parsed.images) availableImageIds.add(image.id)
+          thumbnails.push(...parsed.thumbnails)
+          favoriteCollections.push(...projectFavoriteCollections)
+        } catch (err) {
+          console.warn(`在线项目 ${response.id} 内容加载失败：`, err)
+          project = {
+            ...project,
+            remoteArchiveSha256: cached?.remoteArchiveSha256,
+          }
         }
       }
     }
@@ -3717,26 +3985,36 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
         for (const remoteImage of remoteImages) {
           if (coverImageId && activeProjectId === null && remoteImage.image_id !== coverImageId) continue
           try {
-            if (remoteImage.image_url) {
-              if (availableImageIds.has(remoteImage.image_id)) continue
-              images.push({
-                id: remoteImage.image_id,
-                dataUrl: remoteImage.image_url,
-                source: remoteImage.source,
-                width: remoteImage.width,
-                height: remoteImage.height,
-                createdAt: Date.parse(remoteImage.created_at) || undefined,
-              })
-            } else {
-              // 旧记录即使本地已有缓存也要请求一次，以便重试后台转存。
-              const image = await downloadOnlineProjectImage(response.id, remoteImage)
-              if (!availableImageIds.has(remoteImage.image_id) || /^https?:\/\//i.test(image.dataUrl)) {
-                images.push(image)
-              }
+            const hasLocalImage = availableImageIds.has(remoteImage.image_id)
+            if (remoteImage.image_url && hasLocalImage) continue
+            // 本地没有图片时必须下载并转成 Data URL，供 Responses API 使用。
+            const image = await downloadOnlineProjectImage(response.id, remoteImage, { forceDataUrl: true })
+            if (!hasLocalImage) {
+              images.push(image)
             }
             availableImageIds.add(remoteImage.image_id)
           } catch (err) {
             console.warn(`在线项目 ${response.id} 图片 ${remoteImage.image_id} 加载失败：`, err)
+          }
+        }
+        if (canvasMigrationNeeded && shouldRefreshCanvas) {
+          const projectTasks = tasks.filter((task) => task.projectId === project.id)
+          const imageIds = Array.from(new Set([
+            ...projectTasks.flatMap((task) => task.outputImages),
+            ...remoteImages.map((image) => image.image_id),
+          ]))
+          const initializedCanvas = ensureProjectCanvas(undefined, imageIds)
+          try {
+            const saved = await saveOnlineProjectCanvas(project, initializedCanvas)
+            project = {
+              ...project,
+              canvas: initializedCanvas,
+              remoteArchiveSha256: saved.archive_sha256,
+              syncPending: false,
+            }
+            canvasMigrationNeeded = false
+          } catch (err) {
+            console.warn(`在线项目 ${response.id} 画布迁移保存失败：`, err)
           }
         }
       } catch (err) {
@@ -3781,13 +4059,27 @@ async function initializeStore() {
     ...useStore.getState().projects,
     ...storedProjectRecords,
   ]).sort((a, b) => b.updatedAt - a.updatedAt)
+  const projectCanvasCache = useStore.getState().projectCanvasCache
+  console.info('[项目画布] 启动本地缓存', {
+    activeProjectId: useStore.getState().activeProjectId,
+    localProjectCount: projects.length,
+    canvasCacheProjectIds: Object.keys(projectCanvasCache),
+  })
+  if (Object.keys(projectCanvasCache).length > 0) {
+    projects = projects.map((project) => projectCanvasCache[project.id]
+      ? { ...project, canvas: projectCanvasCache[project.id] }
+      : project)
+  }
   let importedFavoriteCollections: FavoriteCollection[] = []
   let importedImages: StoredImage[] = []
   let importedThumbnails: StoredImageThumbnail[] = []
   let onlineListLoaded = false
   useStore.setState({ projects, projectsLoaded: true })
   const publishedProjectState = useStore.getState().projects
-  if (isAuthEnabled() && getAccessToken()) {
+  const authEnabled = isAuthEnabled()
+  const hasAccessToken = Boolean(getAccessToken())
+  console.info('[项目画布] 在线同步条件', { authEnabled, hasAccessToken })
+  if (authEnabled && hasAccessToken) {
     try {
       const online = await loadOnlineProjectCache(projects, storedTasks, storedAgentConversations, storedImageIds, useStore.getState().activeProjectId)
       projects = online.projects
@@ -4184,7 +4476,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       await storeImageReference(img.id, img.dataUrl)
       continue
     }
-    await storeImage(img.dataUrl)
+    await storeImage(img.dataUrl, 'upload', { preferredId: img.id })
   }
 
   const normalizedParams = normalizeParamsForSettings(params, requestSettings, { hasInputImages: orderedInputImages.length > 0 })
@@ -4643,12 +4935,20 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[], options
   const transparentOriginalImageIds: string[] = []
   const storedImageIds: string[] = []
   const storedProjectImages: StoredImage[] = []
+  const state = useStore.getState()
+  const canvasProjectId = task.projectId ?? LOCAL_PROJECT_ID
+  const project = state.projects.find((item) => item.id === canvasProjectId)
+  const reservedIds = new Set([
+    ...Object.keys(project?.canvas?.items ?? {}),
+    ...Object.keys(state.projectCanvasCache[canvasProjectId]?.items ?? {}),
+  ])
 
   try {
     for (const dataUrl of images) {
       let outputDataUrl = dataUrl
       if (task.transparentOutput) {
-        const original = await storeImageWithSize(dataUrl, 'generated')
+        const original = await storeImageWithSize(dataUrl, 'generated', { reservedIds })
+        reservedIds.add(original.id)
         storedImageIds.push(original.id)
         storedProjectImages.push({ ...original, dataUrl, source: 'generated' })
         cacheImage(original.id, dataUrl)
@@ -4666,7 +4966,8 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[], options
         }
       }
 
-      const stored = await storeImageWithSize(outputDataUrl, 'generated')
+      const stored = await storeImageWithSize(outputDataUrl, 'generated', { reservedIds })
+      reservedIds.add(stored.id)
       storedImageIds.push(stored.id)
       storedProjectImages.push({ ...stored, dataUrl: outputDataUrl, source: 'generated' })
       cacheImage(stored.id, outputDataUrl)
@@ -4762,12 +5063,17 @@ async function createAgentGeneratedImagesInputItem(round: AgentRound, tasks: Tas
       imageIndex += 1
       continue
     }
-    for (const imageId of task.outputImages) {
+    for (const imageId of getTaskOutputImageSlots(task)) {
+      const refId = getAgentGeneratedImageReferenceId(round, imageIndex)
+      if (!imageId) {
+        contentParts.push({ type: 'input_text', text: `<removed_ref id="${refId}" />` })
+        imageIndex += 1
+        continue
+      }
       const dataUrl = await ensureImageCached(imageId)
       if (dataUrl) {
         contentParts.push({ type: 'input_image', image_url: dataUrl })
       }
-      const refId = getAgentGeneratedImageReferenceId(round, imageIndex)
       const prompt = truncateAgentReferencePrompt(task.prompt || '')
       const promptAttribute = prompt ? ` prompt="${escapeXmlAttribute(prompt)}"` : ''
       contentParts.push({ type: 'input_text', text: `<ref id="${refId}"${promptAttribute} />` })
@@ -4785,18 +5091,23 @@ async function createAgentBatchImagesInputItem(round: AgentRound, tasks: TaskRec
   for (const taskId of round.outputTaskIds) {
     if (batchTaskIds.includes(taskId)) break
     const task = tasks.find((item) => item.id === taskId)
-    baseImageIndex += task ? task.outputImages.length : 1
+    baseImageIndex += task ? getTaskOutputImageSlots(task).length : 1
   }
   let imageIndex = baseImageIndex
   for (const taskId of batchTaskIds) {
     const task = tasks.find((item) => item.id === taskId)
     if (!task || task.status !== 'done') continue
-    for (const imgId of task.outputImages) {
+    for (const imgId of getTaskOutputImageSlots(task)) {
+      const refId = getAgentGeneratedImageReferenceId(round, imageIndex)
+      if (!imgId) {
+        contentParts.push({ type: 'input_text', text: `<removed_ref id="${refId}" />` })
+        imageIndex += 1
+        continue
+      }
       const dataUrl = await ensureImageCached(imgId)
       if (dataUrl) {
         contentParts.push({ type: 'input_image', image_url: dataUrl })
       }
-      const refId = getAgentGeneratedImageReferenceId(round, imageIndex)
       const prompt = truncateAgentReferencePrompt(task.prompt || '')
       const promptAttribute = prompt ? ` prompt="${escapeXmlAttribute(prompt)}"` : ''
       contentParts.push({ type: 'input_text', text: `<ref id="${refId}"${promptAttribute} />` })
@@ -5127,7 +5438,7 @@ export async function submitAgentMessage() {
   const inputImageIds = uniqueIds(orderedInputImages.map((image) => image.id))
 
   for (const image of orderedInputImages) {
-    await storeImage(image.dataUrl)
+    await storeImage(image.dataUrl, 'upload', { preferredId: image.id })
   }
 
   const requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
@@ -5820,6 +6131,7 @@ async function executeAgentRound(
         input: apiInputForTurn,
         maskDataUrl,
         signal: controller.signal,
+        forceStream: requestSettings.agentApiConfigMode !== 'hybrid',
         onImageStatusRequestCreated: (request) => {
           addImageStatusRequestIdToAgentRound(conversationId, roundId, request.requestId, activeProfile.id)
         },
@@ -5845,37 +6157,29 @@ async function executeAgentRound(
               }))
             }
           : undefined,
-        onImageToolStarted: shouldStreamAssistantMessage
-          ? async ({ toolCallId }) => {
-              if (controller.signal.aborted) return
-              await ensureStreamingAgentTask(toolCallId)
-            }
-          : undefined,
-        onImagePartialImage: shouldStreamAssistantMessage
-          ? async ({ toolCallId, image, partialImageIndex }) => {
-              if (controller.signal.aborted) return
-              const taskId = await ensureStreamingAgentTask(toolCallId)
-              if (controller.signal.aborted) return
-              useStore.getState().setTaskStreamPreview(taskId, image, partialImageIndex)
-              if (partialImageIndex === 0 || partialImageIndex == null) {
-                void persistTaskStreamPartialImage(taskId, image)
-              }
-            }
-          : undefined,
-        onImageToolCompleted: shouldStreamAssistantMessage
-          ? async (image) => {
-              if (controller.signal.aborted) return
-              await completeAgentImageTask(image)
-            }
-          : undefined,
-        onImageToolFailed: shouldStreamAssistantMessage
-          ? async ({ toolCallId, error }) => {
-              if (controller.signal.aborted) return
-              await ensureStreamingAgentTask(toolCallId)
-              if (controller.signal.aborted) return
-              failAgentImageTask(toolCallId, error)
-            }
-          : undefined,
+        onImageToolStarted: async ({ toolCallId }) => {
+          if (controller.signal.aborted) return
+          await ensureStreamingAgentTask(toolCallId)
+        },
+        onImagePartialImage: async ({ toolCallId, image, partialImageIndex }) => {
+          if (controller.signal.aborted) return
+          const taskId = await ensureStreamingAgentTask(toolCallId)
+          if (controller.signal.aborted) return
+          useStore.getState().setTaskStreamPreview(taskId, image, partialImageIndex)
+          if (partialImageIndex === 0 || partialImageIndex == null) {
+            void persistTaskStreamPartialImage(taskId, image)
+          }
+        },
+        onImageToolCompleted: async (image) => {
+          if (controller.signal.aborted) return
+          await completeAgentImageTask(image)
+        },
+        onImageToolFailed: async ({ toolCallId, error }) => {
+          if (controller.signal.aborted) return
+          await ensureStreamingAgentTask(toolCallId)
+          if (controller.signal.aborted) return
+          failAgentImageTask(toolCallId, error)
+        },
       })
       if (controller.signal.aborted) throw createAgentAbortError()
 
@@ -5952,6 +6256,7 @@ async function executeAgentRound(
           agentToolAction: image.action,
         }
         useStore.getState().setTasks([task, ...useStore.getState().tasks])
+        playCompletionSound()
         attachTaskToAgentRound(task.id)
         await putTask(task)
         await uploadGeneratedProjectImages(task, [{ ...stored, dataUrl: image.dataUrl, source: 'generated' }])
@@ -6190,6 +6495,7 @@ async function executeTask(taskId: string) {
     })
     return
   }
+  activeTaskExecutions.add(taskId)
   const baseProfile = taskProfile ?? getActiveApiProfile(settings)
   const resolvedProfile = task.apiOverride && (task.apiOverride.apiKey || task.apiOverride.model)
     ? {
@@ -6332,7 +6638,6 @@ async function executeTask(taskId: string) {
           model: activeProfile.model,
           apiMode: activeProfile.apiMode,
           allowPromptRewrite: requestSettings.allowPromptRewrite,
-          codexCli: activeProfile.codexCli,
           prompt,
           params: task.params,
           inputImageDataUrls: inputDataUrls,
@@ -6484,7 +6789,16 @@ async function executeTask(taskId: string) {
     const latestCompositeRequestInfo = compositeRequestInfo ?? (latestTask.compositeRequestId
       ? { requestId: latestTask.compositeRequestId, statusUrl: latestTask.compositeStatusUrl }
       : null)
-    if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isFalConnectionRecoverableError(err)) {
+    if (getApiErrorStatus(err) === 524 && latestTask.imageStatusRequestIds?.length && (latestTask.apiProvider ?? 'openai') !== 'fal') {
+      updateExecutingTask({
+        status: 'running',
+        error: null,
+        imageStatusRecoverable: true,
+        finishedAt: null,
+        elapsed: null,
+      })
+      scheduleImageStatusRecovery(taskId, 0)
+    } else if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isFalConnectionRecoverableError(err)) {
       updateExecutingTask({
         status: 'error',
         error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
@@ -6555,6 +6869,7 @@ async function executeTask(taskId: string) {
       useStore.getState().showToast(errorMessage, 'error')
     }
   } finally {
+    activeTaskExecutions.delete(taskId)
     touchProject(task.projectId, false)
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
     for (const imgId of task.inputImageIds) {
@@ -6581,11 +6896,13 @@ function normalizeFavoritePatch(task: TaskRecord, patch: Partial<TaskRecord>, de
 export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>, syncOnline = true) {
   const state = useStore.getState()
   const { tasks, setTasks } = state
+  const previousTask = tasks.find((task) => task.id === taskId)
   const updated = tasks.map((t) =>
     t.id === taskId ? { ...t, ...normalizeFavoritePatch(t, patch, getFavoriteDefaultForProject(state, t.projectId)) } : t,
   )
   const task = updated.find((t) => t.id === taskId)
   setTasks(updated)
+  if (previousTask?.status !== 'done' && task?.status === 'done' && task.outputImages.length > 0) playCompletionSound()
   maybeOpenSupportPrompt(tasks, updated, taskId)
   return task ? putTask(task, syncOnline) : undefined
 }
@@ -6606,6 +6923,19 @@ export function getTaskFavoriteCollectionIds(task: TaskRecord) {
   if (ids.length > 0) return ids
   const defaultFavoriteCollectionId = getFavoriteDefaultForProject(useStore.getState(), task.projectId)
   return task.isFavorite && defaultFavoriteCollectionId ? [defaultFavoriteCollectionId] : []
+}
+
+export function getImageFavoriteCollectionIds(imageId: string, task?: TaskRecord) {
+  const state = useStore.getState()
+  const owner = task ?? state.tasks.find((item) => item.outputImages.includes(imageId))
+  const projectId = owner?.projectId ?? (owner ? LOCAL_PROJECT_ID : undefined)
+  const project = projectId ? state.projects.find((item) => item.id === projectId) : undefined
+  const ids = project?.canvas?.items[imageId]?.favoriteCollectionIds
+  return ids !== undefined ? normalizeFavoriteCollectionIds(ids) : owner ? getTaskFavoriteCollectionIds(owner) : []
+}
+
+export function isImageFavorite(imageId: string, task?: TaskRecord) {
+  return getImageFavoriteCollectionIds(imageId, task).length > 0
 }
 
 function normalizeTaskFavoriteState(task: TaskRecord, collections: FavoriteCollection[]): TaskRecord {
@@ -6717,18 +7047,50 @@ export async function updateTasksFavoriteCollections(taskIds: string[], collecti
   showToast(ids.length ? '收藏夹已更新' : '已取消收藏', 'success')
 }
 
-export async function deleteFavoriteCollection(collectionId: string, deleteTasks = false) {
+export async function updateImagesFavoriteCollections(imageIds: string[], collectionIds: string[]) {
+  const ids = Array.from(new Set(imageIds)).filter(Boolean)
+  if (!ids.length) return
+  const state = useStore.getState()
+  const tasks = state.tasks.filter((task) => task.outputImages.some((imageId) => ids.includes(imageId)))
+  const ownerProjectId = tasks.find((task) => task.projectId)?.projectId
+  const projectId = ownerProjectId ?? (tasks.length ? LOCAL_PROJECT_ID : undefined)
+  const project = projectId ? state.projects.find((item) => item.id === projectId) : undefined
+  if (!project) return
+
+  const validCollectionIds = new Set(getFavoriteCollectionsForProject(state.favoriteCollections, ownerProjectId).map((collection) => collection.id))
+  const favoriteCollectionIds = normalizeFavoriteCollectionIds(collectionIds).filter((id) => validCollectionIds.has(id))
+  const projectTasks = state.tasks.filter((task) => projectId === LOCAL_PROJECT_ID ? !task.projectId : task.projectId === projectId)
+  const outputImageIds = projectTasks.flatMap((task) => task.outputImages)
+  const legacyFavoriteIdsByImage = Object.fromEntries(projectTasks.flatMap((task) =>
+    task.outputImages.map((imageId) => [imageId, getTaskFavoriteCollectionIds(task)]),
+  ))
+  const canvas = ensureProjectCanvas(project.canvas, outputImageIds, legacyFavoriteIdsByImage)
+  const items = { ...canvas.items }
+  for (const imageId of ids) {
+    const item = items[imageId]
+    if (item) items[imageId] = { ...item, favoriteCollectionIds }
+  }
+  state.updateProjectCanvas(project.id, { ...canvas, items })
+  state.showToast(favoriteCollectionIds.length ? '收藏夹已更新' : '已取消收藏', 'success')
+}
+
+export async function deleteFavoriteCollection(collectionId: string, deleteImages = false) {
   if (!collectionId || collectionId === ALL_FAVORITES_COLLECTION_ID) return
   const state = useStore.getState()
   const projectId = getFavoriteScopeProjectId(state.activeProjectId)
+  const canvasProjectId = state.activeProjectId === LOCAL_PROJECT_ID ? LOCAL_PROJECT_ID : projectId
   const scopedCollections = getFavoriteCollectionsForProject(state.favoriteCollections, projectId)
   const collection = scopedCollections.find((item) => item.id === collectionId)
   if (!collection || scopedCollections.length <= 1) return
-  const collectionTaskRefs = state.tasks
-    .filter((task) => task.projectId === projectId)
-    .map((task) => ({ task, favoriteIds: getTaskFavoriteCollectionIds(task) }))
-    .filter(({ favoriteIds }) => favoriteIds.includes(collectionId))
-  const taskIds = collectionTaskRefs.map(({ task }) => task.id)
+  const project = canvasProjectId ? state.projects.find((item) => item.id === canvasProjectId) : undefined
+  const projectTasks = state.tasks.filter((task) => canvasProjectId === LOCAL_PROJECT_ID ? !task.projectId : task.projectId === canvasProjectId)
+  const canvas = project ? ensureProjectCanvas(
+    project.canvas,
+    projectTasks.flatMap((task) => task.outputImages),
+    Object.fromEntries(projectTasks.flatMap((task) =>
+      task.outputImages.map((imageId) => [imageId, getTaskFavoriteCollectionIds(task)]),
+    )),
+  ) : undefined
   const nextCollections = state.favoriteCollections.filter((item) => item.id !== collectionId || item.projectId !== projectId)
   const nextScopedCollections = getFavoriteCollectionsForProject(nextCollections, projectId)
   const nextCollectionIdSet = new Set(nextScopedCollections.map((item) => item.id))
@@ -6737,39 +7099,30 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
     useStore.getState().setDefaultFavoriteCollectionId(nextScopedCollections[0]?.id ?? null)
   }
   if (state.activeFavoriteCollectionId === collectionId) state.setActiveFavoriteCollectionId(null)
-  if (deleteTasks) {
-    const idsByTaskToKeep = new Map<string, string[]>()
-    const taskIdsToDelete: string[] = []
-    for (const { task, favoriteIds } of collectionTaskRefs) {
-      const nextIds = favoriteIds.filter((id) => id !== collectionId && nextCollectionIdSet.has(id))
-      if (nextIds.length) {
-        idsByTaskToKeep.set(task.id, nextIds)
-      } else {
-        taskIdsToDelete.push(task.id)
-      }
-    }
-    if (idsByTaskToKeep.size) {
-      const latestTasks = useStore.getState().tasks
-      const updated = latestTasks.map((task) => {
-        const ids = idsByTaskToKeep.get(task.id)
-        return ids ? { ...task, favoriteCollectionIds: ids, isFavorite: true } : task
-      })
-      useStore.getState().setTasks(updated)
-      await Promise.all(updated.filter((task) => idsByTaskToKeep.has(task.id)).map((task) => putTask(task)))
-    }
-    if (taskIdsToDelete.length) await removeMultipleTasks(taskIdsToDelete)
-  } else if (taskIds.length) {
-    const idsByTaskId = new Map(collectionTaskRefs.map(({ task, favoriteIds }) => [
-      task.id,
-      favoriteIds.filter((id) => id !== collectionId && nextCollectionIdSet.has(id)),
-    ]))
-    const updated = state.tasks.map((task) => {
-      const ids = idsByTaskId.get(task.id)
-      if (!ids) return task
-      return { ...task, favoriteCollectionIds: ids, isFavorite: ids.length > 0 }
-    })
-    state.setTasks(updated)
-    await Promise.all(updated.filter((task) => idsByTaskId.has(task.id)).map((task) => putTask(task)))
+  let imageIdsToDelete: string[] = []
+  if (project && canvas) {
+    const result = removeCanvasFavoriteCollection(canvas, collectionId, nextCollectionIdSet, deleteImages)
+    imageIdsToDelete = result.imageIdsToDelete
+    state.updateProjectCanvas(project.id, result.canvas)
+  }
+
+  const changedTaskIds = new Set<string>()
+  const updatedTasks = useStore.getState().tasks.map((task) => {
+    if (task.projectId !== projectId) return task
+    const currentIds = getTaskFavoriteCollectionIds(task)
+    const favoriteCollectionIds = currentIds.filter((id) => id !== collectionId && nextCollectionIdSet.has(id))
+    if (sameFavoriteCollectionIds(currentIds, favoriteCollectionIds)) return task
+    changedTaskIds.add(task.id)
+    return { ...task, favoriteCollectionIds, isFavorite: favoriteCollectionIds.length > 0 }
+  })
+  if (changedTaskIds.size) {
+    useStore.getState().setTasks(updatedTasks)
+    await Promise.all(updatedTasks.filter((task) => changedTaskIds.has(task.id)).map((task) => putTask(task)))
+  }
+
+  for (const imageId of imageIdsToDelete) {
+    const owner = useStore.getState().tasks.find((task) => task.outputImages.includes(imageId))
+    if (owner) await removeOutputImage(owner, imageId)
   }
   useStore.getState().setSelectedFavoriteCollectionIds((ids) => ids.filter((id) => id !== collectionId))
   touchProject(projectId)
@@ -6917,6 +7270,60 @@ export async function editOutputs(task: TaskRecord) {
     }
   }
   showToast(`已添加 ${added} 张输出图到输入`, 'success')
+}
+
+export async function editOutputImage(task: TaskRecord, imageId: string) {
+  const { inputImages, addInputImage, showToast } = useStore.getState()
+  if (!task.outputImages.includes(imageId)) return
+  if (inputImages.some((image) => image.id === imageId)) {
+    showToast('图片已在输入中', 'info')
+    return
+  }
+  if (inputImages.length >= 16) {
+    showToast('参考图数量已达上限（16 张）', 'error')
+    return
+  }
+  const dataUrl = await ensureImageCached(imageId)
+  if (!dataUrl) {
+    showToast('图片已不存在', 'error')
+    return
+  }
+  addInputImage({ id: imageId, dataUrl })
+  showToast('已添加当前图片到输入', 'success')
+}
+
+export function reuseImageConfig(task: TaskRecord, _imageId?: string) {
+  return reuseConfig(task)
+}
+
+export function retryImage(task: TaskRecord) {
+  return retryTask({ ...task, params: { ...task.params, n: 1 } })
+}
+
+export async function removeOutputImage(task: TaskRecord, imageId: string) {
+  const result = removeTaskOutputImageRecord(task, imageId)
+  if (!result) return
+  const state = useStore.getState()
+  const tasks = state.tasks.map((item) => item.id === task.id ? result.task : item)
+  state.setTasks(tasks)
+  await putTask(result.task)
+
+  if (task.projectId) {
+    const project = useStore.getState().projects.find((item) => item.id === task.projectId)
+    if (project?.canvas) {
+      const items = { ...project.canvas.items }
+      delete items[imageId]
+      useStore.getState().updateProjectCanvas(project.id, { ...project.canvas, items })
+    } else {
+      touchProject(task.projectId)
+    }
+  }
+
+  if (state.lightboxImageId === imageId) state.setLightboxImageId(null)
+  if (state.detailImageId === imageId) state.setDetailTaskId(null)
+  await deleteUnreferencedImageIds(result.removedImageIds)
+  if (task.projectId) scheduleOnlineProjectSync(task.projectId, 0)
+  state.showToast('已删除当前图片', 'success')
 }
 
 /** 删除多条任务 */

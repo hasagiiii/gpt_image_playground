@@ -327,7 +327,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true)
   const touchStartY = useRef(-1)
   const conversationLongPressTimer = useRef<number | null>(null)
-  const autoScrollStateRef = useRef<{ conversationId: string | null; lastUserMessageSignature: string | null }>({ conversationId: null, lastUserMessageSignature: null })
+  const autoScrollStateRef = useRef<{ conversationId: string | null; lastUserMessageSignature: string | null; contentSignature: string | null }>({ conversationId: null, lastUserMessageSignature: null, contentSignature: null })
   const errorCopyPointerDownRef = useRef<{ x: number; y: number } | null>(null)
 
   const updateIsScrolledToBottom = useCallback(() => {
@@ -341,13 +341,19 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
     setIsScrolledToBottom(sentinel.getBoundingClientRect().top <= viewportHeight + 24)
   }, [appMode, embedded])
 
-  const scrollToAgentBottom = useCallback(() => {
-    if (embedded && scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior: 'smooth' })
-      return
+  const scrollToAgentBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    let frameCount = 0
+    const apply = () => {
+      if (embedded && scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior })
+      } else {
+        const scrollingElement = document.scrollingElement ?? document.documentElement
+        window.scrollTo({ top: scrollingElement.scrollHeight, behavior })
+      }
+      frameCount += 1
+      if (frameCount < 3) window.requestAnimationFrame(apply)
     }
-    const scrollingElement = document.scrollingElement ?? document.documentElement
-    window.scrollTo({ top: scrollingElement.scrollHeight, behavior: 'smooth' })
+    apply()
   }, [embedded])
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -525,6 +531,18 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
     return messages
   }, [activeRounds, conversation])
 
+  const agentContentSignature = useMemo(() => {
+    const roundIds = new Set(activeRounds.map((round) => round.id))
+    const taskSignature = tasks
+      .filter((task) => task.agentConversationId === conversation?.id || (task.agentRoundId ? roundIds.has(task.agentRoundId) : false))
+      .map((task) => `${task.id}:${task.status}:${task.outputImages.join(',')}:${task.outputErrors?.length ?? 0}`)
+      .sort()
+      .join('|')
+    const messageSignature = activeMessages.map((message) => `${message.id}:${message.role}:${message.content}:${message.outputTaskIds?.join(',') ?? ''}`).join('|')
+    const roundSignature = activeRounds.map((round) => `${round.id}:${round.status}:${round.assistantMessageId ?? ''}:${round.outputTaskIds.join(',')}`).join('|')
+    return `${messageSignature}||${roundSignature}||${taskSignature}`
+  }, [activeMessages, activeRounds, conversation?.id, tasks])
+
   useEffect(() => {
     const conversationId = conversation?.id ?? null
     const lastMessage = activeMessages[activeMessages.length - 1] ?? null
@@ -533,6 +551,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
       : null
     const previous = autoScrollStateRef.current
     const conversationChanged = conversationId !== null && previous.conversationId !== conversationId
+    const contentChanged = conversationId !== null && previous.contentSignature !== null && previous.contentSignature !== agentContentSignature
     const shouldScrollAfterSubmit = appMode === 'agent' &&
       agentScrollToBottomAfterSubmit &&
       previous.conversationId === conversationId &&
@@ -540,24 +559,19 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
       lastUserMessageSignature != null &&
       previous.lastUserMessageSignature !== lastUserMessageSignature
 
-    autoScrollStateRef.current = { conversationId, lastUserMessageSignature }
-    if (!conversationChanged && !shouldScrollAfterSubmit) return
+    autoScrollStateRef.current = { conversationId, lastUserMessageSignature, contentSignature: agentContentSignature }
+    if (!conversationChanged && !shouldScrollAfterSubmit && !contentChanged) return
 
     const frame = window.requestAnimationFrame(() => {
       if (conversationChanged) {
-        if (embedded && scrollContainerRef.current) {
-          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
-        } else {
-          const scrollingElement = document.scrollingElement ?? document.documentElement
-          window.scrollTo({ top: scrollingElement.scrollHeight, behavior: 'auto' })
-        }
+        scrollToAgentBottom('auto')
         updateIsScrolledToBottom()
         return
       }
       scrollToAgentBottom()
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [activeMessages, agentScrollToBottomAfterSubmit, appMode, conversation?.id, embedded, scrollToAgentBottom, updateIsScrolledToBottom])
+  }, [activeMessages, agentContentSignature, agentScrollToBottomAfterSubmit, appMode, conversation?.id, embedded, scrollToAgentBottom, updateIsScrolledToBottom])
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(updateIsScrolledToBottom)
@@ -1177,7 +1191,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
                                 return (
                                   <div key={block.key} className="mt-4 w-full min-w-[16rem] max-w-sm rounded-xl bg-gray-50/50 dark:bg-white/[0.02] border border-dashed border-gray-200 dark:border-white/[0.08] p-4 flex min-h-[120px] flex-col items-center justify-center text-gray-400 dark:text-gray-500" onClick={e => e.stopPropagation()}>
                                     <TrashIcon className="w-6 h-6 mb-2 opacity-50" />
-                                    <span className="text-xs">[Image Removed]</span>
+                                    <span className="text-xs">图片已删除</span>
                                   </div>
                                 )
                               }
@@ -1191,6 +1205,12 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
                                     onEditOutputs={() => editOutputs(block.task)}
                                     onDelete={() => setConfirmDialog({ title: '删除任务', message: '确定要删除这个任务吗？', action: () => removeTask(block.task) })}
                                   />
+                                  {block.task.outputImageSlots?.map((imageId, imageIndex) => imageId === null ? (
+                                    <div key={imageIndex} className="mt-2 flex h-9 items-center gap-2 rounded-md border border-dashed border-gray-200 px-3 text-xs text-gray-400 dark:border-white/[0.08] dark:text-gray-500">
+                                      <TrashIcon className="h-3.5 w-3.5 opacity-60" />
+                                      第 {imageIndex + 1} 张图片已删除
+                                    </div>
+                                  ) : null)}
                                 </div>
                               )
                             }) : isStreamingAssistant ? <AgentStreamingCursor /> : null}
@@ -1351,7 +1371,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
         </div>
 
         <button
-          onClick={scrollToAgentBottom}
+          onClick={() => scrollToAgentBottom()}
           className={`fixed bottom-[calc(var(--input-bar-clearance,12rem)+1.5rem)] left-1/2 -translate-x-1/2 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 backdrop-blur shadow-[0_2px_12px_rgba(0,0,0,0.1)] border border-gray-200/50 text-gray-500 transition-all duration-300 hover:bg-gray-50 hover:text-gray-800 dark:border-white/[0.08] dark:bg-gray-800/90 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200 ${
             !isScrolledToBottom && activeMessages.length > 0 ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
           }`}
