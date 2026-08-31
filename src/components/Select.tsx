@@ -26,13 +26,14 @@ interface SelectProps {
   className?: string
   menuClassName?: string
   onOpenChange?: (isOpen: boolean) => void
+  maxMenuHeight?: number
   iconOnly?: boolean
   iconOnlyIcon?: ReactNode
   iconOnlyLabel?: string
   ariaLabel?: string
 }
 
-export default function Select({ value, onChange, onReorder, options, disabled, className, menuClassName, onOpenChange, iconOnly = false, iconOnlyIcon, iconOnlyLabel, ariaLabel }: SelectProps) {
+export default function Select({ value, onChange, onReorder, options, disabled, className, menuClassName, onOpenChange, maxMenuHeight = DEFAULT_DROPDOWN_MAX_HEIGHT, iconOnly = false, iconOnlyIcon, iconOnlyLabel, ariaLabel }: SelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [menuMaxHeight, setMenuMaxHeight] = useState(DEFAULT_DROPDOWN_MAX_HEIGHT)
   const [placement, setPlacement] = useState<'bottom' | 'top'>('bottom')
@@ -119,14 +120,14 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
       }
       
       let newPlacement: 'bottom' | 'top' = 'bottom'
-      let maxHeight = DEFAULT_DROPDOWN_MAX_HEIGHT
+      let maxHeight = maxMenuHeight
       
       if (availableBelow < 120 && availableAbove > availableBelow) {
         newPlacement = 'top'
-        maxHeight = Math.min(DEFAULT_DROPDOWN_MAX_HEIGHT, Math.floor(availableAbove))
+        maxHeight = Math.min(maxMenuHeight, Math.floor(availableAbove))
       } else {
         newPlacement = 'bottom'
-        maxHeight = Math.min(DEFAULT_DROPDOWN_MAX_HEIGHT, Math.floor(availableBelow))
+        maxHeight = Math.min(maxMenuHeight, Math.floor(availableBelow))
       }
       
       setPlacement(newPlacement)
@@ -140,7 +141,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
       window.removeEventListener('resize', updateMenuMaxHeight)
       window.removeEventListener('scroll', updateMenuMaxHeight, true)
     }
-  }, [isOpen])
+  }, [isOpen, maxMenuHeight])
 
   const handleToggle = (e: React.MouseEvent) => {
     if (disabled) return
@@ -195,6 +196,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
 
       {isOpen && (
         <div
+          data-canvas-scrollable
           className={`absolute z-50 w-full overflow-hidden overflow-y-auto rounded-xl border border-gray-200/60 bg-white/95 py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-xl dark:border-white/[0.08] dark:bg-gray-900/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] dark:ring-white/10 custom-scrollbar ${menuClassName ?? ''} ${
             placement === 'top' ? 'bottom-full mb-1.5 animate-dropdown-up' : 'top-full mt-1.5 animate-dropdown-down'
           }`}

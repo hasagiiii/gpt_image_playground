@@ -2431,6 +2431,7 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
         onChange={(value) => handleModelChange(String(value))}
         disabled={Boolean(resourceApiKey) && (modelsLoading || models.length === 0)}
         options={modelOptions}
+        maxMenuHeight={360}
         className="h-11 rounded-xl border border-transparent bg-gray-50 px-2.5 text-sm font-semibold leading-4 text-gray-800 transition hover:border-gray-200 hover:bg-gray-100 dark:bg-white/[0.05] dark:text-gray-100 dark:hover:border-white/[0.08] dark:hover:bg-white/[0.08]"
         menuClassName="!py-0"
       />
@@ -2482,7 +2483,7 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
           onDownloadSelected={handleDownloadSelected}
           onDeleteSelected={handleDeleteSelected}
         />}
-        <div ref={cardRef} className={`relative origin-bottom-left overflow-hidden transition-[width,height,max-height,padding,border-radius,opacity,transform] duration-300 ease-out bg-white/70 dark:bg-gray-900/70 backdrop-blur-2xl border border-white/50 dark:border-white/[0.08] shadow-[0_8px_30px_rgb(0,0,0,0.08)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] ring-1 ring-black/5 dark:ring-white/10 ${inputBarIsCollapsed ? 'h-[38px] max-h-[38px] w-[38px] rounded-md p-1 ring-0' : 'max-h-[80dvh] rounded-2xl p-3 sm:rounded-3xl sm:p-4'}`}>
+        <div ref={cardRef} className={`relative origin-bottom-left ${inputBarIsCollapsed ? 'overflow-hidden' : 'overflow-visible'} transition-[width,height,max-height,padding,border-radius,opacity,transform] duration-300 ease-out bg-white/70 dark:bg-gray-900/70 backdrop-blur-2xl border border-white/50 dark:border-white/[0.08] shadow-[0_8px_30px_rgb(0,0,0,0.08)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] ring-1 ring-black/5 dark:ring-white/10 ${inputBarIsCollapsed ? 'h-[38px] max-h-[38px] w-[38px] rounded-md p-1 ring-0' : 'max-h-[80dvh] rounded-2xl p-3 sm:rounded-3xl sm:p-4'}`}>
           {inputBarIsCollapsed ? (
             <button
               type="button"
