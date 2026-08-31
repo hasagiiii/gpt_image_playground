@@ -33,6 +33,7 @@ vi.mock('../store', () => ({
   },
   editOutputImage: vi.fn(),
   removeOutputImage: vi.fn(),
+  removeMultipleOutputImages: vi.fn(),
   reuseImageConfig: vi.fn(),
   retryImage: vi.fn(),
   taskMatchesFilterStatus: (task: TaskRecord, status: string) => status === 'all' || task.status === status,
@@ -245,12 +246,15 @@ describe('ProjectCanvas interactions', () => {
     act(() => node.dispatchEvent(pointerEvent('pointerdown', 1, 80, 80)))
 
     const nw = host.querySelector<HTMLButtonElement>('[aria-label="调整图片nw"]')!
-    const rotate = host.querySelector<HTMLButtonElement>('[aria-label="旋转图片"]')!
+    const rotateButtons = host.querySelectorAll<HTMLButtonElement>('[data-canvas-rotation-corner]')
+    const rotate = host.querySelector<HTMLButtonElement>('[data-canvas-rotation-corner="ne"]')!
     expect(nw.style.transform).toBe('scale(0.5)')
     expect(nw.style.left).toBe('-5px')
     expect(nw.style.top).toBe('-5px')
-    expect(rotate.style.transform).toBe('translateX(-50%) scale(0.5)')
-    expect(rotate.style.top).toBe('-29px')
+    expect(rotate.style.transform).toBe('scale(0.5)')
+    expect(rotateButtons).toHaveLength(4)
+    expect(rotate.className).toContain('right-[-44px]')
+    expect(rotate.className).toContain('top-[-44px]')
   })
 
   it('centers the first generated image on the world origin', async () => {
@@ -353,7 +357,7 @@ describe('ProjectCanvas interactions', () => {
     expect(canvas.querySelectorAll('[data-canvas-node]')).toHaveLength(2)
   })
 
-  it('moves one node and pans and zooms the viewport', () => {
+  it('moves one node and pans the viewport with the default wheel action', () => {
     const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
     const canvas = host.querySelector<HTMLElement>('[data-project-canvas]')!
     const world = canvas.firstElementChild as HTMLElement
@@ -385,6 +389,9 @@ describe('ProjectCanvas interactions', () => {
     expect(mocks.updateProjectCanvas).not.toHaveBeenCalled()
 
     act(() => canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 300, clientY: 300, deltaY: -120 })))
+    expect(world.style.transform).toContain('scale(1)')
+    expect(world.style.transform).toContain('translate(82px, 182px)')
+    act(() => canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 300, clientY: 300, ctrlKey: true, deltaY: -120 })))
     expect(world.style.transform).not.toContain('scale(1)')
     expect(mocks.updateProjectCanvas).not.toHaveBeenCalled()
   })

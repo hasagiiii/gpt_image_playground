@@ -4,8 +4,10 @@ import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboar
 import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
 import { useStore } from '../store'
 import { TooltipButton } from './TooltipButton'
-import { AngleIcon, ChevronLeftIcon, CloseIcon, CopyIcon, DownloadIcon, HomeIcon, ImageIcon, InfoIcon, LayersIcon, MapIcon, ScaleIcon, WarningIcon, ZoomInIcon, ZoomOutIcon } from './icons'
+import { AngleIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, HomeIcon, ImageIcon, InfoIcon, LayersIcon, MapIcon, ScaleIcon, WarningIcon, ZoomInIcon, ZoomOutIcon } from './icons'
 import DetailModal from './DetailModal'
+
+const CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-zoom-controls-collapsed'
 
 function getCanvasConnectionPoint(center: { x: number; y: number }, other: { x: number; y: number }, width: number, height: number) {
   const dx = other.x - center.x
@@ -21,6 +23,7 @@ function getCanvasConnectionPoint(center: { x: number; y: number }, other: { x: 
 function getCanvasConnectionPath(start: { x: number; y: number }, end: { x: number; y: number }) {
   const dx = end.x - start.x
   const dy = end.y - start.y
+  if (Math.abs(dy) < 0.5 || Math.abs(dx) < 0.5) return `M ${start.x} ${start.y} L ${end.x} ${end.y}`
   const horizontal = Math.abs(dx) >= Math.abs(dy)
   const offset = Math.max(28, Math.min(120, (horizontal ? Math.abs(dx) : Math.abs(dy)) * 0.45))
   const control = horizontal
@@ -111,7 +114,8 @@ function CanvasEdgeIndicator({
     x: canvasCenter.x + vector.x * edgeScale,
     y: canvasCenter.y + vector.y * edgeScale,
   }
-  const indicatorWidth = 148
+  const compact = containerSize.width < 640
+  const indicatorWidth = compact ? 42 : 104
   const indicatorHeight = 42
   const left = Math.min(Math.max(4, point.x - indicatorWidth / 2), Math.max(4, containerSize.width - indicatorWidth - 4))
   const top = Math.min(Math.max(4, point.y - indicatorHeight / 2), Math.max(4, containerSize.height - indicatorHeight - 4))
@@ -123,7 +127,7 @@ function CanvasEdgeIndicator({
       type="button"
       aria-label={`跳转到${label}`}
       title={`跳转到${label}`}
-      className="absolute z-[35] flex h-[42px] w-[148px] items-center gap-2 rounded-md border border-gray-200 bg-white/95 px-1.5 text-left shadow-md backdrop-blur transition hover:border-[#3f78c5] hover:shadow-lg dark:border-white/[0.12] dark:bg-gray-900/95"
+      className={`absolute z-[35] flex h-[42px] items-center rounded-md border border-gray-200 bg-white/95 text-left shadow-md backdrop-blur transition hover:border-[#3f78c5] hover:shadow-lg dark:border-white/[0.12] dark:bg-gray-900/95 ${compact ? 'w-[42px] justify-center px-1' : 'w-[104px] gap-2 px-1.5'}`}
       style={{ left, top }}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => {
@@ -134,7 +138,7 @@ function CanvasEdgeIndicator({
       <span className={`flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded border ${isError ? 'border-red-200 bg-red-100 text-red-600 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-400' : 'border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800'}`}>
         {node.image?.dataUrl ? <img src={node.image.dataUrl} alt="" draggable={false} className="h-full w-full object-cover" /> : isError ? <WarningIcon className="h-4 w-4" /> : <ImageIcon className="h-4 w-4 text-gray-400 dark:text-gray-500" />}
       </span>
-      <span className="min-w-0 flex-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200">{label}</span>
+      {!compact && <span className="min-w-0 flex-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200">{label}</span>}
     </button>
   )
 }
@@ -146,6 +150,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
   onBack: () => void
 }) {
   const showToast = useStore((state) => state.showToast)
+  const canvasWheelMode = useStore((state) => state.settings?.canvasWheelMode ?? 'pan')
   const containerRef = useRef<HTMLDivElement>(null)
   const zoomInputRef = useRef<HTMLInputElement>(null)
   const zoomControlsRef = useRef<HTMLDivElement>(null)
@@ -159,8 +164,24 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
   const [zoomHelpOpen, setZoomHelpOpen] = useState(false)
   const [layersOpen, setLayersOpen] = useState(false)
   const [minimapOpen, setMinimapOpen] = useState(false)
+  const [zoomControlsCollapsed, setZoomControlsCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
   const [zoomEditing, setZoomEditing] = useState(false)
   const [zoomInput, setZoomInput] = useState(String(Math.round((project.canvas?.viewport.scale ?? 1) * 100)))
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY, String(zoomControlsCollapsed))
+    } catch {
+      // 本地存储不可用时保持内存状态即可
+    }
+  }, [zoomControlsCollapsed])
 
   useEffect(() => {
     setViewport(project.canvas?.viewport ?? { x: 0, y: 0, scale: 1 })
@@ -349,6 +370,8 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     if (event.button !== 0) return
     const target = event.target as Element | null
     if (target?.closest('[data-canvas-node], [data-canvas-toolbar], button, input, textarea, select, [contenteditable="true"]')) return
+    setSelectedImageId(null)
+    setInfoImageId(null)
     event.currentTarget.setPointerCapture(event.pointerId)
     dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, viewport }
   }
@@ -367,9 +390,23 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
 
   const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     const target = event.target as Element | null
-    if (target?.closest('[data-canvas-toolbar]')) return
+    const toolbar = target?.closest('[data-canvas-toolbar]')
+    if (toolbar) {
+      const scrollable = target?.closest<HTMLElement>('[data-canvas-scrollable]')
+      if (scrollable && scrollable.scrollHeight > scrollable.clientHeight) return
+      event.preventDefault()
+      return
+    }
     event.preventDefault()
     const rect = event.currentTarget.getBoundingClientRect()
+    if (canvasWheelMode === 'pan' && !event.ctrlKey) {
+      setViewport((current) => ({
+        ...current,
+        x: current.x - (event.deltaX || 0),
+        y: current.y - (event.deltaY || 0),
+      }))
+      return
+    }
     const factor = Math.exp(-event.deltaY * 0.0015)
     setViewport((current) => zoomCanvasViewport(current, { x: event.clientX - rect.left, y: event.clientY - rect.top }, current.scale * factor))
   }
@@ -448,7 +485,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
   const toolbarButtonClass = 'flex h-8 w-8 items-center justify-center rounded text-gray-600 transition hover:bg-gray-100 hover:text-gray-950 dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white'
 
   const selectedToolbarPosition = selectedGeometry && selectedVisible && containerSize.width > 0 && containerSize.height > 0 ? (() => {
-    const toolbarWidth = 96
+    const toolbarWidth = 42
     const toolbarHeight = 42
     const gap = 34
     const above = selectedGeometry.centerY - selectedGeometry.rotatedHeight / 2 - toolbarHeight - gap
@@ -464,7 +501,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
   })() : null
 
   const transformPanelPosition = selectedGeometry && selectedTransformActive && containerSize.width > 0 && containerSize.height > 0 ? (() => {
-    const panelWidth = 140
+    const panelWidth = 128
     const panelHeight = 80
     const gap = 12
     const preferredLeft = selectedGeometry.centerX - selectedGeometry.rotatedWidth / 2 - panelWidth - gap
@@ -497,7 +534,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
         ref={containerRef}
         data-project-canvas
         data-no-drag-select
-        className="relative min-h-0 flex-1 w-full overflow-hidden border border-gray-200 bg-gray-100 dark:border-white/[0.08] dark:bg-gray-950"
+        className="relative min-h-0 flex-1 w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 dark:border-white/[0.08] dark:bg-gray-950"
         style={{ touchAction: 'none' }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -656,16 +693,13 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
             <TooltipButton tooltip="图片信息" onClick={() => setInfoImageId((current) => current === selectedNode.id ? null : selectedNode.id)} className={toolbarButtonClass}>
               <InfoIcon className="h-4 w-4" />
             </TooltipButton>
-            <TooltipButton tooltip="取消选择" onClick={() => { setSelectedImageId(null); setInfoImageId(null) }} className={toolbarButtonClass}>
-              <CloseIcon className="h-4 w-4" />
-            </TooltipButton>
           </div>
         )}
         {transformPanelPosition && selectedItem && (
           <div
             data-canvas-toolbar
             data-canvas-image-info-panel
-            className="absolute z-40 flex h-[80px] w-[140px] flex-col justify-center gap-0.5 rounded-md border border-gray-200 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
+            className="absolute z-40 flex h-[80px] w-[128px] flex-col justify-center gap-0.5 rounded-md border border-gray-200 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
             style={{ left: transformPanelPosition.left, top: transformPanelPosition.top }}
             onPointerDown={(event) => event.stopPropagation()}
           >
@@ -692,17 +726,24 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
           data-canvas-zoom-controls
           className="pointer-events-auto fixed bottom-2 z-[150] flex items-center rounded-md border border-gray-200 bg-white/95 p-1 text-xs shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95 sm:bottom-3 right-2 sm:right-3"
           style={{ zIndex: 150 }}
-          onWheel={(event) => event.stopPropagation()}
+          onWheel={(event) => {
+            event.stopPropagation()
+            event.preventDefault()
+          }}
         >
-          {layersOpen && (
+          {!zoomControlsCollapsed && layersOpen && (
             <div
               data-canvas-layers-panel
               className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-md border border-gray-200 bg-white/95 p-2 text-xs shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
               onPointerDown={(event) => event.stopPropagation()}
-              onWheel={(event) => event.stopPropagation()}
+              onWheel={(event) => {
+                event.stopPropagation()
+                const scrollable = (event.target as Element).closest<HTMLElement>('[data-canvas-scrollable]')
+                if (!scrollable || scrollable.scrollHeight <= scrollable.clientHeight) event.preventDefault()
+              }}
             >
               <div className="mb-1.5 font-medium text-gray-800 dark:text-gray-100">图层</div>
-              <div className="max-h-64 overflow-y-auto">
+              <div data-canvas-scrollable className="max-h-64 overflow-y-auto overscroll-contain">
                 {[...nodes].sort((a, b) => b.item.z - a.item.z).map((node) => {
                   const label = node.item.name ?? node.id
                   return (
@@ -728,8 +769,11 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
               </div>
             </div>
           )}
-          {minimapOpen && minimapData && (
-            <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()}>
+          {!zoomControlsCollapsed && minimapOpen && minimapData && (
+            <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => {
+              event.stopPropagation()
+              event.preventDefault()
+            }}>
               <div className="relative h-36 overflow-hidden rounded border border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800">
                 <div
                   className="absolute z-20 cursor-move border border-[#3f78c5] bg-[#3f78c5]/10"
@@ -766,6 +810,24 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
               </div>
             </div>
           )}
+          <button
+            type="button"
+            className="flex h-7 w-7 items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-white/[0.08]"
+            aria-label={zoomControlsCollapsed ? '展开画布工具栏' : '收起画布工具栏'}
+            title={zoomControlsCollapsed ? '展开画布工具栏' : '收起画布工具栏'}
+            aria-expanded={!zoomControlsCollapsed}
+            onClick={() => {
+              setZoomControlsCollapsed((collapsed) => !collapsed)
+              setZoomPresetOpen(false)
+              setLayersOpen(false)
+              setMinimapOpen(false)
+              setZoomHelpOpen(false)
+              setZoomEditing(false)
+            }}
+          >
+            {zoomControlsCollapsed ? <ChevronLeftIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
+          </button>
+          <div className={`flex items-center overflow-hidden transition-[max-width,opacity,transform] duration-200 ease-out ${zoomControlsCollapsed ? 'pointer-events-none max-w-0 -translate-x-2 opacity-0' : 'max-w-[28rem] translate-x-0 opacity-100'}`}>
           <button
             type="button"
             className={`flex h-7 w-7 items-center justify-center rounded text-[#3f78c5] transition ${zoomHelpOpen ? 'bg-[#3f78c5]/15' : 'hover:bg-[#3f78c5]/10'}`}
@@ -894,13 +956,20 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
           >
             <ZoomInIcon className="mx-auto h-3.5 w-3.5" />
           </button>
-          {zoomHelpOpen && (
+          </div>
+          {!zoomControlsCollapsed && zoomHelpOpen && (
             <div
               className="absolute bottom-full right-0 mb-2 w-80 rounded-md border border-gray-200 bg-white p-4 text-xs leading-6 text-gray-600 shadow-lg dark:border-white/[0.1] dark:bg-gray-900 dark:text-gray-300"
               onPointerDown={(event) => event.stopPropagation()}
+              onWheel={(event) => {
+                event.stopPropagation()
+                event.preventDefault()
+              }}
             >
               <div className="mb-1 text-sm font-medium text-gray-800 dark:text-gray-100">画布操作说明</div>
-              <div>滚轮 / 双指：缩放画布</div>
+              <div>滚轮：{canvasWheelMode === 'zoom' ? '缩放画布' : '移动位置'}</div>
+              <div>Ctrl + 滚轮：缩放画布</div>
+              <div>双指：缩放画布</div>
               <div>空白拖动：平移画布</div>
               <div>点击图片：选中图片并显示信息</div>
               <div>图层 / 小地图：快速跳转图片</div>

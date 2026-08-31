@@ -18,7 +18,7 @@ import { useTooltip } from '../hooks/useTooltip'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageZipEntries } from '../lib/downloadImages'
 import Select from './Select'
 import ViewportTooltip from './ViewportTooltip'
-import { CloseIcon, CollectionManageIcon, OpenAIIcon } from './icons'
+import { ChevronDownIcon, CloseIcon, CollectionManageIcon, OpenAIIcon } from './icons'
 import ButtonTooltip from './input/buttonTooltip'
 import DragUploadOverlay from './input/dragUploadOverlay'
 import InputBatchBars from './input/inputBatchBars'
@@ -32,6 +32,7 @@ const MODEL_ICON = (
 )
 
 const EMPTY_INPUT_IMAGES: InputImage[] = []
+const INPUT_BAR_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:input-bar-collapsed'
 
 function getMentionTagTextLength(el: Element) {
   return el.textContent?.length ?? 0
@@ -950,6 +951,14 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
   const [attachHover, setAttachHover] = useState(false)
   const [imageHintId, setImageHintId] = useState<string | null>(null)
   const [mobileCollapsed, setMobileCollapsed] = useState(false)
+  const [inputBarCollapsed, setInputBarCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(INPUT_BAR_COLLAPSED_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
   const [showSizePicker, setShowSizePicker] = useState(false)
   const [sizePickerPreview, setSizePickerPreview] = useState<string | null>(null)
   const [showMobileUploadMenu, setShowMobileUploadMenu] = useState(false)
@@ -975,6 +984,22 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
   const [cursorPos, setCursorPos] = useState(0)
   const [menuLeft, setMenuLeft] = useState(0)
   const maskConflictNoticeShownRef = useRef(false)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(INPUT_BAR_COLLAPSED_STORAGE_KEY, String(inputBarCollapsed))
+    } catch {
+      // 本地存储不可用时保持内存状态即可
+    }
+  }, [inputBarCollapsed])
+
+  useEffect(() => {
+    const expandInputBar = () => {
+      if (inputMode !== 'agent') setInputBarCollapsed(false)
+    }
+    window.addEventListener('gpt-image-playground:expand-input-bar', expandInputBar)
+    return () => window.removeEventListener('gpt-image-playground:expand-input-bar', expandInputBar)
+  }, [inputMode])
 
   const updateInputBarClearance = useCallback(() => {
     const bar = cardRef.current?.closest<HTMLElement>('[data-input-bar]')
@@ -2423,6 +2448,11 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
   const paramsPositionClass = agentPanelCollapsed
     ? sidebarCollapsed ? 'xl:left-[calc(50%+32px)] xl:w-[calc(100%-104px)]' : 'xl:left-[calc(50%+112px)] xl:w-[calc(100%-264px)]'
     : sidebarCollapsed ? 'xl:left-[calc(50%-178px)] xl:w-[calc(100%-524px)]' : 'xl:left-[calc(50%-98px)] xl:w-[calc(100%-684px)]'
+  const collapsedParamsPositionClass = agentPanelCollapsed
+    ? sidebarCollapsed ? 'xl:left-[calc(50%+32px)]' : 'xl:left-[calc(50%+112px)]'
+    : sidebarCollapsed ? 'xl:left-[calc(50%-178px)]' : 'xl:left-[calc(50%-98px)]'
+  const collapsedParamsSidebarClass = sidebarCollapsed ? 'lg:left-16' : 'lg:left-56'
+  const inputBarIsCollapsed = inputMode !== 'agent' && inputBarCollapsed
 
   return (
     <>
@@ -2431,9 +2461,11 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
       <div
         data-input-bar
         data-input-mode={inputMode === 'agent' ? 'agent' : 'params'}
-        className={`fixed bottom-4 left-1/2 z-40 w-full -translate-x-1/2 px-3 transition-all duration-300 sm:bottom-6 sm:max-w-4xl sm:px-4 ${inputMode === 'agent' ? 'xl:left-auto xl:right-0 xl:w-[420px] xl:max-w-[420px] xl:translate-x-0 xl:px-3' : paramsPositionClass}`}
+        className={`fixed bottom-2 z-40 px-3 transition-all duration-300 sm:bottom-3 sm:px-4 ${inputBarIsCollapsed
+          ? `left-0 w-full translate-x-0 ${collapsedParamsSidebarClass} ${collapsedParamsPositionClass} xl:w-auto`
+          : `left-1/2 w-full -translate-x-1/2 sm:max-w-4xl ${inputMode === 'agent' ? 'xl:left-auto xl:right-0 xl:w-[420px] xl:max-w-[420px] xl:translate-x-0 xl:px-3' : paramsPositionClass}`} translate-y-0`}
       >
-        <InputBatchBars
+        {!inputBarIsCollapsed && <InputBatchBars
           showFavoriteCollectionBatchBar={showFavoriteCollectionBatchBar}
           showTaskBatchBar={showTaskBatchBar}
           selectedTaskIds={selectedTaskIds}
@@ -2449,8 +2481,30 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
           onToggleFavorite={handleToggleFavorite}
           onDownloadSelected={handleDownloadSelected}
           onDeleteSelected={handleDeleteSelected}
-        />
-        <div ref={cardRef} className="bg-white/70 dark:bg-gray-900/70 backdrop-blur-2xl border border-white/50 dark:border-white/[0.08] shadow-[0_8px_30px_rgb(0,0,0,0.08)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] rounded-2xl sm:rounded-3xl p-3 sm:p-4 ring-1 ring-black/5 dark:ring-white/10">
+        />}
+        <div ref={cardRef} className={`relative origin-bottom-left overflow-hidden transition-[width,height,max-height,padding,border-radius,opacity,transform] duration-300 ease-out bg-white/70 dark:bg-gray-900/70 backdrop-blur-2xl border border-white/50 dark:border-white/[0.08] shadow-[0_8px_30px_rgb(0,0,0,0.08)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] ring-1 ring-black/5 dark:ring-white/10 ${inputBarIsCollapsed ? 'h-[38px] max-h-[38px] w-[38px] rounded-md p-1 ring-0' : 'max-h-[80dvh] rounded-2xl p-3 sm:rounded-3xl sm:p-4'}`}>
+          {inputBarIsCollapsed ? (
+            <button
+              type="button"
+              className="flex h-7 w-7 items-center justify-center rounded text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
+              aria-label="展开下方输入控件"
+              title="展开下方输入控件"
+              aria-expanded={false}
+              onClick={() => setInputBarCollapsed(false)}
+            >
+              <ChevronDownIcon className="h-4 w-4 rotate-180" />
+            </button>
+          ) : <>
+          {inputMode !== 'agent' && <button
+            type="button"
+            className="absolute right-1 top-1 z-10 flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-white/[0.08] dark:hover:text-gray-200"
+            aria-label="收起下方输入控件"
+            title="收起下方输入控件"
+            aria-expanded
+            onClick={() => setInputBarCollapsed(true)}
+          >
+            <ChevronDownIcon className="h-4 w-4" />
+          </button>}
           {/* 移动端拖动条 */}
           <div
             ref={handleRef}
@@ -2925,6 +2979,7 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
             className="hidden"
             onChange={handleReplaceFileUpload}
           />
+          </>}
         </div>
       </div>
       {showMaterialPicker && (

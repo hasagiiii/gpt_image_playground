@@ -178,7 +178,7 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
           <SearchActionButton
             tooltip={favoriteTooltip}
             onClick={handleFavoriteClick}
-            className={`p-2.5 rounded-xl border transition-all ${
+            className={`flex h-[42px] w-[42px] items-center justify-center rounded-xl border p-0 transition-all ${
               filterFavorite
                 ? 'border-yellow-400 bg-yellow-50 dark:bg-yellow-500/10 text-yellow-500'
                 : 'border-gray-200 dark:border-white/[0.08] bg-white dark:bg-gray-900 text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.06]'
@@ -225,7 +225,7 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
                   { label: '生成中', value: 'running' },
                   { label: '失败', value: 'error' },
                 ]}
-                className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-white/[0.08] bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-white/[0.06] text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition"
+                className="h-[42px] rounded-xl border border-gray-200 bg-white px-3 text-sm transition hover:bg-gray-50 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-white/[0.08] dark:bg-gray-900 dark:hover:bg-white/[0.06]"
               />
             </div>
             {isFailedFilter && (

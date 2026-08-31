@@ -20,16 +20,29 @@ type AnnouncementInput = Pick<Announcement, 'title' | 'content' | 'status' | 'no
   ends_at: string | null
 }
 
+// 模块级 Promise 缓存：避免 StrictMode 下公告组件重复发起请求
+let activeAnnouncementPromise: Promise<Announcement | null> | null = null
+
 async function readError(response: Response) {
   const data = await response.json().catch(() => null) as { message?: unknown } | null
   return new Error(typeof data?.message === 'string' ? data.message : `公告接口失败：HTTP ${response.status}`)
 }
 
-export async function fetchActiveAnnouncement() {
-  const response = await authFetch('/api/v1/announcements/active', { cache: 'no-store' })
-  if (response.status === 204 || response.status === 404) return null
-  if (!response.ok) throw await readError(response)
-  return await response.json() as Announcement
+export function fetchActiveAnnouncement() {
+  if (activeAnnouncementPromise) return activeAnnouncementPromise
+
+  const promise = (async () => {
+    const response = await authFetch('/api/v1/announcements/active', { cache: 'no-store' })
+    if (response.status === 204 || response.status === 404) return null
+    if (!response.ok) throw await readError(response)
+    return await response.json() as Announcement
+  })()
+
+  activeAnnouncementPromise = promise
+  void promise.catch(() => {
+    if (activeAnnouncementPromise === promise) activeAnnouncementPromise = null
+  })
+  return promise
 }
 
 export async function listAnnouncementHistory() {

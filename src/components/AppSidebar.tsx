@@ -52,23 +52,23 @@ export default function AppSidebar({ view, collapsed, onChange, onCollapsedChang
           </>}
         </nav>
       </aside>
-      <nav className="fixed left-0 right-0 top-16 z-30 flex h-11 items-center gap-1 border-b border-gray-200 bg-white/95 px-3 backdrop-blur dark:border-white/[0.08] dark:bg-gray-950/95 lg:hidden" aria-label="主菜单">
-        <button type="button" onClick={() => onChange('workspace')} className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium ${view === 'workspace' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
+      <nav className="fixed left-0 right-0 top-16 z-30 flex h-11 items-center gap-1 overflow-x-auto whitespace-nowrap border-b border-gray-200 bg-white/95 px-3 backdrop-blur custom-scrollbar dark:border-white/[0.08] dark:bg-gray-950/95 lg:hidden" aria-label="主菜单">
+        <button type="button" onClick={() => onChange('workspace')} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium ${view === 'workspace' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
           <HomeIcon className="h-4 w-4" />
           工作台
         </button>
-        <button type="button" onClick={() => onChange('materials')} className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium ${view === 'materials' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
+        <button type="button" onClick={() => onChange('materials')} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium ${view === 'materials' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
           <CollectionManageIcon className="h-4 w-4" />
           素材库
         </button>
         {isAdmin && <>
           <div className="mx-1 h-5 border-l border-gray-200 dark:border-white/[0.08]" />
           <span className="shrink-0 px-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400 dark:text-gray-500">管理员</span>
-          <button type="button" onClick={() => onChange('admin')} className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium ${view === 'admin' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
+          <button type="button" onClick={() => onChange('admin')} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium ${view === 'admin' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
             <BellIcon className="h-4 w-4" />
             公告
           </button>
-          <button type="button" onClick={() => onChange('admin-users')} className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium ${view === 'admin-users' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
+          <button type="button" onClick={() => onChange('admin-users')} className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium ${view === 'admin-users' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
             <UsersIcon className="h-4 w-4" />
             用户管理
           </button>

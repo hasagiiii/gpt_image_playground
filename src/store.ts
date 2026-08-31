@@ -176,7 +176,7 @@ function isErrorToastTitle(title: string): boolean {
   return /(?:失败|错误|异常|报错|无法|不能|超时|中断|断开|请先|请输入|已达上限|不存在|已丢失)$/.test(title)
 }
 
-export type SettingsTab = 'general' | 'agent' | 'api' | 'data' | 'about'
+export type SettingsTab = 'general' | 'agent' | 'canvas' | 'api' | 'data' | 'about'
 
 const TIMEOUT_STREAMING_HINT = '也可尝试打开「流式传输」，并提高「请求中间步骤图像数」来维持连接。'
 const TIMEOUT_PARTIAL_IMAGES_ZERO_HINT = '官方流式接口不发送心跳，当前「请求中间步骤图像数」为 0，连接可能因无数据传输而断开。建议提高到 2 或 3。'
@@ -7439,7 +7439,12 @@ export async function retryTask(task: TaskRecord) {
 }
 
 /** 复用配置 */
+function requestInputBarExpansion() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('gpt-image-playground:expand-input-bar'))
+}
+
 export async function reuseConfig(task: TaskRecord) {
+  requestInputBarExpansion()
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
   const normalizedSettings = normalizeSettings(settings)
   const currentProfile = getActiveApiProfile(settings)
@@ -7521,6 +7526,7 @@ export async function editOutputs(task: TaskRecord) {
 }
 
 export async function editOutputImage(task: TaskRecord, imageId: string) {
+  requestInputBarExpansion()
   const { inputImages, addInputImage, showToast } = useStore.getState()
   if (!task.outputImages.includes(imageId)) return
   if (inputImages.some((image) => image.id === imageId)) {
@@ -7581,6 +7587,79 @@ export async function removeOutputImage(task: TaskRecord, imageId: string) {
   await deleteUnreferencedImageIds(result.removedImageIds)
   if (task.projectId) scheduleOnlineProjectSync(task.projectId, 0)
   state.showToast('已删除当前图片', 'success')
+}
+
+/** 批量删除输出图片，并将整个操作记录为一条项目图片历史。 */
+export async function removeMultipleOutputImages(imageIds: string[]) {
+  const ids = Array.from(new Set(imageIds.filter(Boolean)))
+  if (!ids.length) return
+  const state = useStore.getState()
+  const beforeTasks = state.tasks
+  const nextTasks = [...beforeTasks]
+  const removedImageIds = new Set<string>()
+  const changedTaskIds = new Set<string>()
+  const removedOutputImageIds = new Set<string>()
+
+  for (const imageId of ids) {
+    const taskIndex = nextTasks.findIndex((task) => task.outputImages.includes(imageId))
+    if (taskIndex < 0) continue
+    const result = removeTaskOutputImageRecord(nextTasks[taskIndex], imageId)
+    if (!result) continue
+    nextTasks[taskIndex] = result.task
+    changedTaskIds.add(result.task.id)
+    removedOutputImageIds.add(imageId)
+    result.removedImageIds.forEach((id) => removedImageIds.add(id))
+  }
+  if (!changedTaskIds.size) return
+
+  const projectIds = new Set(
+    nextTasks
+      .filter((task) => changedTaskIds.has(task.id))
+      .map((task) => task.projectId ?? LOCAL_PROJECT_ID),
+  )
+  const beforeCanvases = new Map(Array.from(projectIds).map((projectId) => [projectId, getProjectCanvasSnapshot(projectId)]))
+  const afterCanvases = new Map(Array.from(projectIds).map((projectId) => [
+    projectId,
+    removeProjectCanvasItems(beforeCanvases.get(projectId), removedImageIds),
+  ]))
+  const removedImageRecords = await captureProjectImageRecords(removedImageIds)
+
+  applyingProjectImageHistory = true
+  try {
+    state.setTasks(nextTasks)
+  } finally {
+    applyingProjectImageHistory = false
+  }
+  for (const projectId of projectIds) {
+    recordProjectImageHistory(
+      projectId,
+      beforeTasks,
+      nextTasks,
+      removedImageRecords,
+      beforeCanvases.get(projectId),
+      afterCanvases.get(projectId),
+    )
+  }
+  await Promise.all(nextTasks.filter((task) => changedTaskIds.has(task.id)).map((task) => putTask(task)))
+
+  for (const projectId of projectIds) {
+    const project = useStore.getState().projects.find((item) => item.id === projectId)
+    if (project?.canvas) {
+      const items = { ...project.canvas.items }
+      removedImageIds.forEach((id) => delete items[id])
+      useStore.getState().updateProjectCanvas(projectId, { ...project.canvas, items })
+    } else {
+      touchProject(projectId)
+    }
+  }
+
+  for (const imageId of removedOutputImageIds) {
+    if (state.lightboxImageId === imageId) state.setLightboxImageId(null)
+    if (state.detailImageId === imageId) state.setDetailTaskId(null)
+  }
+  await deleteUnreferencedImageIds(removedImageIds)
+  for (const projectId of projectIds) scheduleOnlineProjectSync(projectId, 0)
+  state.showToast(`已删除 ${removedOutputImageIds.size} 张图片`, 'success')
 }
 
 /** 删除多条任务 */

@@ -106,6 +106,38 @@ export function LayersIcon(props: SVGProps<SVGSVGElement>) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 12 9 5 9-5M3 16l9 5 9-5" /></svg>
 }
 
+export function AlignLeftIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M4 4v16" /><rect x="8" y="8" width="14" height="8" rx="1.5" /></svg>
+}
+
+export function AlignCenterHorizontalIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M12 4v16" /><rect x="5" y="8" width="14" height="8" rx="1.5" /></svg>
+}
+
+export function AlignRightIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M20 4v16" /><rect x="3" y="8" width="14" height="8" rx="1.5" /></svg>
+}
+
+export function AlignTopIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M4 4h16" /><rect x="8" y="8" width="8" height="14" rx="1.5" /></svg>
+}
+
+export function AlignCenterVerticalIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M4 12h16" /><rect x="8" y="5" width="8" height="14" rx="1.5" /></svg>
+}
+
+export function AlignBottomIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M4 20h16" /><rect x="8" y="3" width="8" height="14" rx="1.5" /></svg>
+}
+
+export function DistributeHorizontalIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M4 5v14M12 8v8M20 5v14M7 12h10M9 10l-2 2 2 2M15 10l2 2-2 2" /></svg>
+}
+
+export function DistributeVerticalIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M5 4h14M8 12h8M5 20h14M12 7v10M10 9l2-2 2 2M10 15l2 2 2-2" /></svg>
+}
+
 export function MapIcon(props: SVGProps<SVGSVGElement>) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3-6-3Z" /><path d="M9 3v15M15 6v15" /></svg>
 }
@@ -176,6 +208,14 @@ export function CropIcon(props: SVGProps<SVGSVGElement>) {
 
 export function RotateIcon(props: SVGProps<SVGSVGElement>) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8M21 3v5h-5" /></svg>
+}
+
+export function RotateCornerIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M12 3c4.97 0 9 4.03 9 9" />
+    <path d="M7 3 12.5 0.4v5.2Z" fill="currentColor" stroke="none" />
+    <path d="M21 17 18.3 11h5.4Z" fill="currentColor" stroke="none" />
+  </svg>
 }
 
 export function AngleIcon(props: SVGProps<SVGSVGElement>) {
@@ -368,6 +408,15 @@ export function SettingsIcon(props: SVGProps<SVGSVGElement>) {
         strokeWidth={2}
         d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
       />
+    </svg>
+  )
+}
+
+export function KeyboardIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" {...props}>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M6 16h12" />
     </svg>
   )
 }

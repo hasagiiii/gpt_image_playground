@@ -33,9 +33,10 @@ import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdo
 import Select from './Select'
 import { Checkbox } from './Checkbox'
 import ViewportTooltip from './ViewportTooltip'
-import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon } from './icons'
+import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon, KeyboardIcon } from './icons'
 import GeneralSettingsTab from './settings/GeneralSettingsTab'
 import AgentSettingsTab from './settings/AgentSettingsTab'
+import CanvasSettingsTab from './settings/CanvasSettingsTab'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -1192,6 +1193,13 @@ export default function SettingsModal() {
                 Agent 配置
               </button>
               <button
+                onClick={() => setActiveTab('canvas')}
+                className={`whitespace-nowrap flex-shrink-0 flex items-center gap-2.5 px-3 py-2.5 text-sm rounded-xl transition-colors ${activeTab === 'canvas' ? 'bg-white dark:bg-white/[0.08] shadow-sm text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100/80 dark:hover:bg-white/[0.04]'}`}
+              >
+                <KeyboardIcon className="h-4 w-4" />
+                操作配置
+              </button>
+              <button
                 onClick={() => setActiveTab('data')}
                 className={`whitespace-nowrap flex-shrink-0 flex items-center gap-2.5 px-3 py-2.5 text-sm rounded-xl transition-colors ${activeTab === 'data' ? 'bg-white dark:bg-white/[0.08] shadow-sm text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100/80 dark:hover:bg-white/[0.04]'}`}
               >
@@ -1232,6 +1240,13 @@ export default function SettingsModal() {
                 setAgentMaxToolRoundsInput={setAgentMaxToolRoundsInput}
                 commitSettings={commitSettings}
                 commitAgentMaxToolRounds={commitAgentMaxToolRounds}
+              />
+            )}
+
+            {activeTab === 'canvas' && (
+              <CanvasSettingsTab
+                draft={draft}
+                commitSettings={commitSettings}
               />
             )}
             

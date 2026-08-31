@@ -4,6 +4,7 @@ export type ApiMode = 'images' | 'responses'
 export type AppMode = 'gallery' | 'agent'
 export type AgentApiConfigMode = 'off' | 'native' | 'hybrid'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
+export type CanvasWheelMode = 'pan' | 'zoom'
 export const ZIP_DOWNLOAD_ROUTE_VALUES = [
   'task-selection',
   'favorite-collection-selection',
@@ -118,6 +119,7 @@ export interface AppSettings {
   taskCompletionNotification: boolean
   enterSubmit: boolean
   referenceImageEditAction: ReferenceImageEditAction
+  canvasWheelMode: CanvasWheelMode
   zipDownloadRoutes: ZipDownloadRoute[]
   agentScrollToBottomAfterSubmit: boolean
   agentMaxToolRounds: number

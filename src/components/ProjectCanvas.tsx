@@ -10,6 +10,7 @@ import {
   ensureImageThumbnailCached,
   getImageFavoriteCollectionIds,
   removeOutputImage,
+  removeMultipleOutputImages,
   removeTask,
   redownloadTaskImage,
   reuseImageConfig,
@@ -35,12 +36,22 @@ import { uploadMaterialImage } from '../lib/materialApi'
 import { TooltipButton } from './TooltipButton'
 import SearchBar from './SearchBar'
 import {
+  AlignCenterHorizontalIcon,
+  AlignCenterVerticalIcon,
+  AlignLeftIcon,
+  AlignRightIcon,
+  AlignBottomIcon,
+  AlignTopIcon,
   AngleIcon,
   CloudUploadIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   CropIcon,
   CopyIcon,
   DownloadIcon,
+  DistributeHorizontalIcon,
+  DistributeVerticalIcon,
   EditIcon,
   ExportIcon,
   FavoriteIcon,
@@ -53,7 +64,7 @@ import {
   MapIcon,
   RefreshIcon,
   ScaleIcon,
-  RotateIcon,
+  RotateCornerIcon,
   RotateLeftIcon,
   RotateRightIcon,
   ReuseConfigIcon,
@@ -129,6 +140,8 @@ function getSearchSnippet(text: string, query: string, maxLength: number) {
 }
 
 const EMPTY_PROJECT_CANVAS_CACHE: Record<string, ProjectCanvasState> = {}
+const CANVAS_HEADER_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-header-collapsed'
+const CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-zoom-controls-collapsed'
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y)
@@ -157,6 +170,7 @@ function getCanvasConnectionPoint(center: { x: number; y: number }, other: { x: 
 function getCanvasConnectionPath(start: { x: number; y: number }, end: { x: number; y: number }) {
   const dx = end.x - start.x
   const dy = end.y - start.y
+  if (Math.abs(dy) < 0.5 || Math.abs(dx) < 0.5) return `M ${start.x} ${start.y} L ${end.x} ${end.y}`
   const horizontal = Math.abs(dx) >= Math.abs(dy)
   const offset = Math.max(28, Math.min(120, (horizontal ? Math.abs(dx) : Math.abs(dy)) * 0.45))
   const control = horizontal
@@ -222,7 +236,8 @@ function CanvasEdgeIndicator({ node, item, ratio, viewport, containerSize, onCli
     x: canvasCenter.x + vector.x * edgeScale,
     y: canvasCenter.y + vector.y * edgeScale,
   }
-  const indicatorWidth = 148
+  const compact = containerSize.width < 640
+  const indicatorWidth = compact ? 42 : 104
   const indicatorHeight = 42
   const left = Math.min(Math.max(4, point.x - indicatorWidth / 2), Math.max(4, containerSize.width - indicatorWidth - 4))
   const top = Math.min(Math.max(4, point.y - indicatorHeight / 2), Math.max(4, containerSize.height - indicatorHeight - 4))
@@ -235,7 +250,7 @@ function CanvasEdgeIndicator({ node, item, ratio, viewport, containerSize, onCli
       data-canvas-edge-indicator
       aria-label={`跳转到${label}`}
       title={`跳转到${label}`}
-      className="absolute z-[35] flex h-[42px] w-[148px] items-center gap-2 rounded-md border border-gray-200 bg-white/95 px-1.5 text-left shadow-md backdrop-blur transition hover:border-[#3f78c5] hover:shadow-lg dark:border-white/[0.12] dark:bg-gray-900/95"
+      className={`absolute z-[35] flex h-[42px] items-center rounded-md border border-gray-200 bg-white/95 text-left shadow-md backdrop-blur transition hover:border-[#3f78c5] hover:shadow-lg dark:border-white/[0.12] dark:bg-gray-900/95 ${compact ? 'w-[42px] justify-center px-1' : 'w-[104px] gap-2 px-1.5'}`}
       style={{ left, top }}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => {
@@ -246,7 +261,7 @@ function CanvasEdgeIndicator({ node, item, ratio, viewport, containerSize, onCli
       <span className={`flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded border ${isError ? 'border-red-200 bg-red-100 text-red-600 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-400' : 'border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800'}`}>
         {src ? <img src={src} alt="" draggable={false} className="h-full w-full object-cover" /> : isError ? <WarningIcon className="h-4 w-4" /> : <ImageIcon className="h-4 w-4 text-gray-400 dark:text-gray-500" />}
       </span>
-      <span className="min-w-0 flex-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200">{label}</span>
+      {!compact && <span className="min-w-0 flex-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200">{label}</span>}
     </button>
   )
 }
@@ -328,8 +343,6 @@ function CanvasImageNode({
   const flipX = item.operator?.flipX === true
   const flipY = item.operator?.flipY === true
   const handleOffset = -5
-  const rotationOffset = -26 - 6 * handleScale
-  const connectorOffset = -20 * handleScale
 
   const updateDimensions = (width?: number, height?: number) => {
     if (!width || !height) return
@@ -772,6 +785,26 @@ function CanvasImageNode({
       )}
       {selected && showResolution && dimensions && (node.imageId || node.status === 'running' || node.status === 'error') && <span className="absolute bottom-full right-0 mb-4 whitespace-nowrap font-sans text-xs font-medium leading-4 text-[#3f78c5]" style={{ transform: `scale(${metadataScale})`, transformOrigin: 'right bottom' }}>{node.status === 'running' || node.status === 'error' ? `${dimensions.width} × ${dimensions.height}` : `${Math.round(item.width)} × ${Math.round(frameHeight ?? item.width / (dimensions.width / dimensions.height))}`}</span>}
       {selected && node.imageId && !cropEditing && <>
+        {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => {
+          const rotation = corner === 'nw' ? -90 : corner === 'sw' ? 180 : corner === 'se' ? 90 : 0
+          return <button
+            key={`rotate-${corner}`}
+            type="button"
+            data-canvas-handle
+            data-canvas-rotation-corner={corner}
+            aria-label="旋转图片"
+            title="旋转图片"
+            className={`absolute flex h-8 w-8 cursor-grab items-center justify-center rounded-full text-black active:cursor-grabbing ${corner === 'nw' ? 'left-[-44px] top-[-44px]' : corner === 'ne' ? 'right-[-44px] top-[-44px]' : corner === 'sw' ? 'bottom-[-44px] left-[-44px]' : 'right-[-44px] bottom-[-44px]'}`}
+            style={{
+              transform: `${rotation ? `rotate(${rotation}deg) ` : ''}scale(${handleScale})`,
+              transformOrigin: 'center center',
+            }}
+            onPointerDown={onRotateStart}
+            onPointerMove={onRotateMove}
+            onPointerUp={onRotateEnd}
+            onPointerCancel={onRotateEnd}
+          ><RotateCornerIcon className="h-7 w-7" /></button>
+        })}
         {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => <button
           key={corner}
           type="button"
@@ -791,23 +824,6 @@ function CanvasImageNode({
           onPointerUp={onResizeEnd}
           onPointerCancel={onResizeEnd}
         />)}
-        <button
-          type="button"
-          data-canvas-handle
-          aria-label="旋转图片"
-          title="旋转图片"
-          className="absolute left-1/2 flex h-[26px] w-[26px] -translate-x-1/2 cursor-grab items-center justify-center rounded-full bg-[#3f78c5] p-1 text-white shadow-sm active:cursor-grabbing"
-          style={{
-            top: rotationOffset,
-            transform: `translateX(-50%) scale(${handleScale})`,
-            transformOrigin: 'center bottom',
-          }}
-          onPointerDown={onRotateStart}
-          onPointerMove={onRotateMove}
-          onPointerUp={onRotateEnd}
-          onPointerCancel={onRotateEnd}
-        ><RotateIcon className="h-3.5 w-3.5" /></button>
-        <span className="pointer-events-none absolute left-1/2 border-l border-[#3f78c5]" style={{ top: connectorOffset, height: `${20 * handleScale}px`, transform: 'translateX(-50%)', borderLeftWidth: `${handleScale}px` }} />
       </>}
     </div>
   )
@@ -837,6 +853,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
   const selectedTaskIds = useStore((s) => s.selectedTaskIds)
   const setSelectedTaskIds = useStore((s) => s.setSelectedTaskIds)
+  const canvasWheelMode = useStore((s) => s.settings?.canvasWheelMode ?? 'pan')
   const openImageFavoritePicker = useStore((s) => s.openImageFavoritePicker)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const showToast = useStore((s) => s.showToast)
@@ -892,6 +909,22 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const [zoomHelpOpen, setZoomHelpOpen] = useState(false)
   const [layersOpen, setLayersOpen] = useState(false)
   const [minimapOpen, setMinimapOpen] = useState(false)
+  const [zoomControlsCollapsed, setZoomControlsCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
+  const [canvasHeaderCollapsed, setCanvasHeaderCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(CANVAS_HEADER_COLLAPSED_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
   const [editingLayerKey, setEditingLayerKey] = useState<string | null>(null)
   const [layerNameDraft, setLayerNameDraft] = useState('')
   const [zoomEditing, setZoomEditing] = useState(false)
@@ -901,6 +934,22 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const zoomInputRef = useRef<HTMLInputElement>(null)
   const zoomControlsRef = useRef<HTMLDivElement>(null)
   const transientNodeItemsRef = useRef(transientNodeItems)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CANVAS_HEADER_COLLAPSED_STORAGE_KEY, String(canvasHeaderCollapsed))
+    } catch {
+      // 本地存储不可用时保持内存状态即可
+    }
+  }, [canvasHeaderCollapsed])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY, String(zoomControlsCollapsed))
+    } catch {
+      // 本地存储不可用时保持内存状态即可
+    }
+  }, [zoomControlsCollapsed])
 
   const projectTasks = useMemo(() => [...tasks]
     .filter((task) => {
@@ -1253,16 +1302,32 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (!container) return
     const handleWheel = (event: WheelEvent) => {
       const target = event.target
-      if (target instanceof Element && target.closest('[data-canvas-toolbar]')) return
+      if (target instanceof Element) {
+        const toolbar = target.closest('[data-canvas-toolbar]')
+        if (toolbar) {
+          const scrollable = target.closest<HTMLElement>('[data-canvas-scrollable]')
+          if (scrollable && scrollable.scrollHeight > scrollable.clientHeight) return
+          event.preventDefault()
+          return
+        }
+      }
       event.preventDefault()
       const rect = container.getBoundingClientRect()
+      if (canvasWheelMode === 'pan' && !event.ctrlKey) {
+        setViewport({
+          ...canvasRef.current.viewport,
+          x: canvasRef.current.viewport.x - (event.deltaX || 0),
+          y: canvasRef.current.viewport.y - (event.deltaY || 0),
+        })
+        return
+      }
       const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
       const factor = Math.exp(-event.deltaY * 0.0015)
       setViewport(zoomCanvasViewport(canvasRef.current.viewport, point, canvasRef.current.viewport.scale * factor))
     }
     container.addEventListener('wheel', handleWheel, { passive: false })
     return () => container.removeEventListener('wheel', handleWheel)
-  }, [activeProject?.id])
+  }, [activeProject?.id, canvasWheelMode])
 
   const nodes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -1485,6 +1550,46 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const selectedTransformActive = selectedItem
     ? selectedRotation !== 0 || Math.abs(selectedScale - 1) > 0.001
     : false
+  const multiSelectedEntries = useMemo(() => multiSelectedKeys.flatMap((key) => {
+    const node = nodes.find((candidate) => candidate.key === key)
+    const item = nodeItems[key]
+    if (!node || !item || !canvasRef.current.items[key]) return []
+    const ratio = Math.max(0.01, ratios[key] ?? (node.placeholderDimensions
+      ? node.placeholderDimensions.width / node.placeholderDimensions.height
+      : 1))
+    const crop = item.operator?.crop
+    const height = crop
+      ? item.width * crop.height / (ratio * crop.width)
+      : item.width / ratio
+    return [{ key, node, item, height }]
+  }), [multiSelectedKeys, nodeItems, nodes, ratios])
+
+  const multiSelectionBounds = useMemo(() => {
+    if (multiSelectedEntries.length < 2) return null
+    const first = multiSelectedEntries[0]
+    if (!first) return null
+    const getBounds = ({ item, height }: typeof first) => {
+      const rotation = normalizeCanvasRotation(item.rotation ?? item.operator?.rotation ?? 0) * Math.PI / 180
+      const width = Math.abs(Math.cos(rotation)) * item.width + Math.abs(Math.sin(rotation)) * height
+      const rotatedHeight = Math.abs(Math.sin(rotation)) * item.width + Math.abs(Math.cos(rotation)) * height
+      return {
+        left: item.x + item.width / 2 - width / 2,
+        top: item.y + height / 2 - rotatedHeight / 2,
+        right: item.x + item.width / 2 + width / 2,
+        bottom: item.y + height / 2 + rotatedHeight / 2,
+      }
+    }
+    const firstBounds = getBounds(first)
+    return multiSelectedEntries.slice(1).reduce((bounds, entry) => {
+      const next = getBounds(entry)
+      return {
+        left: Math.min(bounds.left, next.left),
+        top: Math.min(bounds.top, next.top),
+        right: Math.max(bounds.right, next.right),
+        bottom: Math.max(bounds.bottom, next.bottom),
+      }
+    }, firstBounds)
+  }, [multiSelectedEntries])
 
   useEffect(() => {
     const taskIds = Array.from(new Set(
@@ -1556,6 +1661,27 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
   })() : null
 
+  const multiToolbarPosition = multiSelectedEntries.length > 1 ? (() => {
+    const scale = canvas.viewport.scale
+    const minX = Math.min(...multiSelectedEntries.map(({ item }) => item.x * scale + canvas.viewport.x))
+    const maxX = Math.max(...multiSelectedEntries.map(({ item }) => (item.x + item.width) * scale + canvas.viewport.x))
+    const minY = Math.min(...multiSelectedEntries.map(({ item }) => item.y * scale + canvas.viewport.y))
+    const maxY = Math.max(...multiSelectedEntries.map(({ item, height }) => (item.y + height) * scale + canvas.viewport.y))
+    const toolbarWidth = 304
+    const toolbarHeight = 42
+    const gap = 12
+    const above = minY - toolbarHeight - gap
+    const below = maxY + gap
+    const canPlaceAbove = above >= 8
+    const canPlaceBelow = below + toolbarHeight <= containerSize.height - 8
+    const preferredTop = canPlaceAbove ? above : canPlaceBelow ? below : Math.max(8, above)
+    const maxLeft = Math.max(8, containerSize.width - toolbarWidth - 8)
+    return {
+      left: Math.round(Math.min(Math.max((minX + maxX - toolbarWidth) / 2, 8), maxLeft)),
+      top: Math.round(Math.min(Math.max(preferredTop, 8), Math.max(8, containerSize.height - toolbarHeight - 8))),
+    }
+  })() : null
+
   const imageInfoPanelPosition = selectedItem && selectedNode?.imageId ? (() => {
     const itemWidth = selectedItem.width
     const selectedCrop = selectedItem.operator?.crop
@@ -1567,7 +1693,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const rotatedHeight = (Math.abs(Math.sin(rotation)) * itemWidth + Math.abs(Math.cos(rotation)) * itemHeight) * canvas.viewport.scale
     const center = selectedItem.x * canvas.viewport.scale + canvas.viewport.x + itemWidth * canvas.viewport.scale / 2
     const centerY = selectedItem.y * canvas.viewport.scale + canvas.viewport.y + itemHeight * canvas.viewport.scale / 2
-    const panelWidth = 140
+    const panelWidth = 128
     const panelHeight = 80
     const gap = 12
     const preferredLeft = center - rotatedWidth / 2 - panelWidth - gap
@@ -2196,6 +2322,88 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     })
   }
 
+  const handleDeleteSelection = () => {
+    if (multiSelectedKeys.length <= 1) {
+      handleDelete()
+      return
+    }
+    const entries = multiSelectedEntries
+    if (entries.length < 2) return
+    setConfirmDialog({
+      title: '删除选中图片',
+      message: `确定要删除选中的 ${entries.length} 张图片吗？`,
+      tone: 'danger',
+      action: () => {
+        setSelectedKey(null)
+        setMultiSelectedKeys([])
+        void (async () => {
+          const imageIds = entries
+            .map((entry) => entry.node.imageId)
+            .filter((imageId): imageId is string => Boolean(imageId))
+          if (imageIds.length > 0) await removeMultipleOutputImages(imageIds)
+
+          const removedTaskIds = new Set<string>()
+          for (const entry of entries.filter((candidate) => !candidate.node.imageId)) {
+            const currentTask = useStore.getState().tasks.find((task) => task.id === entry.node.task.id)
+            if (!currentTask || removedTaskIds.has(currentTask.id)) continue
+            removedTaskIds.add(currentTask.id)
+            await removeTask(currentTask)
+          }
+        })()
+      },
+    })
+  }
+
+  const applyMultiLayout = (mode: 'left' | 'center' | 'right' | 'top' | 'centerVertical' | 'bottom' | 'distributeVertical' | 'distributeHorizontal') => {
+    const entries = multiSelectedEntries
+    if (entries.length < 2 || (mode.startsWith('distribute') && entries.length < 3)) return
+    const nextItems = { ...canvasRef.current.items }
+    if (mode === 'left' || mode === 'center' || mode === 'right') {
+      const minX = Math.min(...entries.map(({ item }) => item.x))
+      const maxRight = Math.max(...entries.map(({ item }) => item.x + item.width))
+      const centerX = (minX + maxRight) / 2
+      for (const { key, item } of entries) {
+        const x = mode === 'left' ? minX : mode === 'right' ? maxRight - item.width : centerX - item.width / 2
+        nextItems[key] = { ...item, x }
+      }
+    } else if (mode === 'top' || mode === 'centerVertical' || mode === 'bottom') {
+      const minY = Math.min(...entries.map(({ item }) => item.y))
+      const maxBottom = Math.max(...entries.map(({ item, height }) => item.y + height))
+      const centerY = (minY + maxBottom) / 2
+      for (const { key, item, height } of entries) {
+        const y = mode === 'top' ? minY : mode === 'bottom' ? maxBottom - height : centerY - height / 2
+        nextItems[key] = { ...item, y }
+      }
+    } else if (mode === 'distributeHorizontal') {
+      const sorted = [...entries].sort((a, b) => a.item.x - b.item.x || a.item.y - b.item.y)
+      const firstLeft = sorted[0].item.x
+      const lastRight = sorted[sorted.length - 1].item.x + sorted[sorted.length - 1].item.width
+      const totalWidth = sorted.reduce((sum, entry) => sum + entry.item.width, 0)
+      const gap = (lastRight - firstLeft - totalWidth) / (sorted.length - 1)
+      let x = firstLeft
+      for (const entry of sorted) {
+        nextItems[entry.key] = { ...entry.item, x }
+        x += entry.item.width + gap
+      }
+    } else {
+      const sorted = [...entries].sort((a, b) => a.item.y - b.item.y || a.item.x - b.item.x)
+      const firstTop = sorted[0].item.y
+      const lastBottom = sorted[sorted.length - 1].item.y + sorted[sorted.length - 1].height
+      const totalHeight = sorted.reduce((sum, entry) => sum + entry.height, 0)
+      const gap = (lastBottom - firstTop - totalHeight) / (sorted.length - 1)
+      let y = firstTop
+      for (const entry of sorted) {
+        nextItems[entry.key] = { ...entry.item, y }
+        y += entry.height + gap
+      }
+    }
+    const changed = entries.some(({ key, item }) => {
+      const next = nextItems[key]
+      return next.x !== item.x || next.y !== item.y
+    })
+    if (changed) persistCanvas({ ...canvasRef.current, items: nextItems }, 0)
+  }
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target
@@ -2210,13 +2418,13 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         if (typeof applyImageHistory === 'function') void applyImageHistory(canvasProjectId)
         return
       }
-      if (!selectedKey || event.repeat || (event.key !== 'Backspace' && event.key !== 'Delete')) return
+      if ((!selectedKey && multiSelectedKeys.length <= 1) || event.repeat || (event.key !== 'Backspace' && event.key !== 'Delete')) return
       event.preventDefault()
-      handleDelete()
+      handleDeleteSelection()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [applyCanvasHistory, canvasProjectId, handleDelete, redoProjectImageHistory, selectedKey, undoProjectImageHistory])
+  }, [applyCanvasHistory, canvasProjectId, handleDeleteSelection, multiSelectedKeys, redoProjectImageHistory, selectedKey, undoProjectImageHistory])
 
   const toolbarButtonClass = 'flex h-8 w-8 items-center justify-center rounded text-gray-600 transition hover:bg-gray-100 hover:text-gray-950 dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white'
 
@@ -2225,7 +2433,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       ref={containerRef}
       data-project-canvas
       data-no-drag-select
-      className="relative h-full min-h-[320px] w-full overflow-hidden border border-gray-200 bg-gray-100 sm:min-h-[420px] dark:border-white/[0.08] dark:bg-gray-950"
+      className="relative h-full min-h-[320px] w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 sm:min-h-[420px] dark:border-white/[0.08] dark:bg-gray-950"
       style={{ touchAction: 'none' }}
       onPointerDown={handleCanvasPointerDown}
       onPointerMove={handleCanvasPointerMove}
@@ -2300,6 +2508,19 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             <span className="absolute left-0 -top-3 h-6 w-px bg-[#3f78c5]" />
           </div>
         )}
+        {multiSelectionBounds && (
+          <div
+            data-canvas-multi-selection
+            className="pointer-events-none absolute z-0 border border-dashed border-[#3f78c5]/70"
+            style={{
+              left: multiSelectionBounds.left - 6 / Math.max(canvas.viewport.scale, 0.01),
+              top: multiSelectionBounds.top - 6 / Math.max(canvas.viewport.scale, 0.01),
+              width: multiSelectionBounds.right - multiSelectionBounds.left + 12 / Math.max(canvas.viewport.scale, 0.01),
+              height: multiSelectionBounds.bottom - multiSelectionBounds.top + 12 / Math.max(canvas.viewport.scale, 0.01),
+              borderWidth: `${1 / Math.max(canvas.viewport.scale, 0.01)}px`,
+            }}
+          />
+        )}
         {visibleNodes.map((node) => (
           <CanvasImageNode
             key={node.key}
@@ -2337,11 +2558,25 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       </div>
 
       <div data-canvas-toolbar className="pointer-events-none absolute inset-x-0 top-4 z-50 flex justify-center px-3 sm:top-5 sm:px-6">
-        <div className="pointer-events-auto flex w-full max-w-3xl items-center gap-2.5">
-          <div className="min-w-0 flex-1">
-            <SearchBar className="m-0" />
+        <div className={`pointer-events-auto flex w-full max-w-3xl items-center gap-2.5 ${canvasHeaderCollapsed ? 'justify-start' : ''}`}>
+          <div className={`min-w-0 transition-[max-width,opacity,transform] duration-200 ease-out ${canvasHeaderCollapsed ? 'pointer-events-none max-w-0 -translate-x-2 overflow-hidden opacity-0' : 'max-w-full flex-1 translate-x-0 overflow-visible opacity-100'}`}>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="h-[42px] min-w-0 flex-1">
+                <SearchBar className="m-0 h-[42px] items-center" />
+              </div>
+              {canvasHeaderControls}
+            </div>
           </div>
-          {canvasHeaderControls}
+          <button
+            type="button"
+            className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white/95 text-gray-500 shadow-sm transition hover:bg-gray-100 hover:text-gray-800 dark:border-white/[0.1] dark:bg-gray-900/95 dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
+            aria-label={canvasHeaderCollapsed ? '展开画布上方控件' : '收起画布上方控件'}
+            title={canvasHeaderCollapsed ? '展开画布上方控件' : '收起画布上方控件'}
+            aria-expanded={!canvasHeaderCollapsed}
+            onClick={() => setCanvasHeaderCollapsed((collapsed) => !collapsed)}
+          >
+            {canvasHeaderCollapsed ? <ChevronRightIcon className="h-4 w-4" /> : <ChevronLeftIcon className="h-4 w-4" />}
+          </button>
         </div>
       </div>
 
@@ -2349,7 +2584,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         <div
           data-canvas-toolbar
           data-canvas-image-info-panel
-          className="absolute z-40 flex h-[80px] w-[140px] flex-col justify-center gap-0.5 rounded-md border border-gray-200 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
+          className="absolute z-40 flex h-[80px] w-[128px] flex-col justify-center gap-0.5 rounded-md border border-gray-200 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
           style={{ left: imageInfoPanelPosition.left, top: imageInfoPanelPosition.top }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -2447,6 +2682,26 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         </div>
       )}
 
+      {multiSelectedEntries.length > 1 && multiToolbarPosition && (
+        <div
+          data-canvas-toolbar
+          className="absolute z-40 flex h-[42px] w-[304px] max-w-[calc(100%-1rem)] items-center justify-center gap-0.5 overflow-x-auto whitespace-nowrap rounded-md border border-gray-200 bg-white/95 p-1 shadow-lg backdrop-blur hide-scrollbar sm:overflow-visible dark:border-white/[0.1] dark:bg-gray-900/95"
+          style={{ left: multiToolbarPosition.left, top: multiToolbarPosition.top }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <TooltipButton tooltip="左对齐" onClick={() => applyMultiLayout('left')} className={toolbarButtonClass}><AlignLeftIcon className="h-4 w-4" /></TooltipButton>
+          <TooltipButton tooltip="水平居中" onClick={() => applyMultiLayout('center')} className={toolbarButtonClass}><AlignCenterHorizontalIcon className="h-4 w-4" /></TooltipButton>
+          <TooltipButton tooltip="右对齐" onClick={() => applyMultiLayout('right')} className={toolbarButtonClass}><AlignRightIcon className="h-4 w-4" /></TooltipButton>
+          <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
+          <TooltipButton tooltip="顶对齐" onClick={() => applyMultiLayout('top')} className={toolbarButtonClass}><AlignTopIcon className="h-4 w-4" /></TooltipButton>
+          <TooltipButton tooltip="垂直居中" onClick={() => applyMultiLayout('centerVertical')} className={toolbarButtonClass}><AlignCenterVerticalIcon className="h-4 w-4" /></TooltipButton>
+          <TooltipButton tooltip="底对齐" onClick={() => applyMultiLayout('bottom')} className={toolbarButtonClass}><AlignBottomIcon className="h-4 w-4" /></TooltipButton>
+          <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
+          <TooltipButton tooltip="垂直打散" disabled={multiSelectedEntries.length < 3} onClick={() => applyMultiLayout('distributeVertical')} className={`${toolbarButtonClass} disabled:cursor-not-allowed disabled:opacity-40`}><DistributeVerticalIcon className="h-4 w-4" /></TooltipButton>
+          <TooltipButton tooltip="水平打散" disabled={multiSelectedEntries.length < 3} onClick={() => applyMultiLayout('distributeHorizontal')} className={`${toolbarButtonClass} disabled:cursor-not-allowed disabled:opacity-40`}><DistributeHorizontalIcon className="h-4 w-4" /></TooltipButton>
+        </div>
+      )}
+
       {(selectedNode?.imageId || selectedNode?.status === 'error') && toolbarPosition && (
         <div
           ref={toolbarRef}
@@ -2469,7 +2724,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
                     const containerRect = container.getBoundingClientRect()
                     const buttonRect = button.getBoundingClientRect()
                     setExportMenuPosition({
-                      left: Math.max(4, Math.min(buttonRect.left - containerRect.left, container.clientWidth - 116)),
+                      left: Math.max(4, Math.min(buttonRect.left - containerRect.left, container.clientWidth - 104)),
                       top: buttonRect.bottom - containerRect.top + 4,
                     })
                   }
@@ -2524,12 +2779,24 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         data-canvas-zoom-controls
         className={`pointer-events-auto fixed bottom-2 z-[150] flex items-center rounded-md border border-gray-200 bg-white/95 p-1 text-xs shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95 sm:bottom-3 ${agentPanelCollapsed ? 'right-2 sm:right-3' : 'right-2 sm:right-3 xl:right-[428px]'}`}
         style={{ zIndex: 150 }}
-        onWheel={(event) => event.stopPropagation()}
+        onWheel={(event) => {
+          event.stopPropagation()
+          event.preventDefault()
+        }}
       >
-        {layersOpen && (
-          <div data-canvas-layers-panel className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-md border border-gray-200 bg-white/95 p-2 text-xs shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+        {!zoomControlsCollapsed && layersOpen && (
+          <div
+            data-canvas-layers-panel
+            className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-md border border-gray-200 bg-white/95 p-2 text-xs shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
+            onPointerDown={(event) => event.stopPropagation()}
+            onWheel={(event) => {
+              event.stopPropagation()
+              const scrollable = (event.target as Element).closest<HTMLElement>('[data-canvas-scrollable]')
+              if (!scrollable || scrollable.scrollHeight <= scrollable.clientHeight) event.preventDefault()
+            }}
+          >
             <div className="mb-1.5 font-medium text-gray-800 dark:text-gray-100">图层</div>
-            <div className="max-h-64 overflow-y-auto">
+            <div data-canvas-scrollable className="max-h-64 overflow-y-auto overscroll-contain">
               {[...nodes].sort((a, b) => (nodeItems[b.key]?.z ?? 0) - (nodeItems[a.key]?.z ?? 0)).map((node) => {
                 const item = nodeItems[node.key]
                 if (!item) return null
@@ -2571,8 +2838,11 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             </div>
           </div>
         )}
-        {minimapOpen && minimapData && (
-          <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()}>
+        {!zoomControlsCollapsed && minimapOpen && minimapData && (
+          <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => {
+            event.stopPropagation()
+            event.preventDefault()
+          }}>
             <div className="relative h-36 overflow-hidden rounded border border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800">
               <div
                 className="absolute z-20 cursor-move border border-[#3f78c5] bg-[#3f78c5]/10"
@@ -2599,6 +2869,24 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             </div>
           </div>
         )}
+        <button
+          type="button"
+          className="flex h-7 w-7 items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-white/[0.08]"
+          aria-label={zoomControlsCollapsed ? '展开画布工具栏' : '收起画布工具栏'}
+          title={zoomControlsCollapsed ? '展开画布工具栏' : '收起画布工具栏'}
+          aria-expanded={!zoomControlsCollapsed}
+          onClick={() => {
+            setZoomControlsCollapsed((collapsed) => !collapsed)
+            setZoomPresetOpen(false)
+            setLayersOpen(false)
+            setMinimapOpen(false)
+            setZoomHelpOpen(false)
+            setZoomEditing(false)
+          }}
+        >
+          {zoomControlsCollapsed ? <ChevronLeftIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
+        </button>
+        <div className={`flex items-center overflow-hidden transition-[max-width,opacity,transform] duration-200 ease-out ${zoomControlsCollapsed ? 'pointer-events-none max-w-0 -translate-x-2 opacity-0' : 'max-w-[28rem] translate-x-0 opacity-100'}`}>
         <button type="button" className={`flex h-7 w-7 items-center justify-center rounded text-[#3f78c5] transition ${zoomHelpOpen ? 'bg-[#3f78c5]/15' : 'hover:bg-[#3f78c5]/10'}`} aria-label="画布操作说明" title="画布操作说明" onClick={() => { setZoomHelpOpen((open) => !open); setZoomPresetOpen(false) }}><InfoIcon className="h-4 w-4" /></button>
         <button type="button" className={`flex h-7 w-7 items-center justify-center rounded transition ${layersOpen ? 'bg-[#3f78c5]/15 text-[#3f78c5]' : 'hover:bg-gray-100 dark:hover:bg-white/[0.08]'}`} aria-label="图层" title="图层" onClick={() => { setLayersOpen((open) => !open); setMinimapOpen(false); setZoomHelpOpen(false) }}><LayersIcon className="h-4 w-4" /></button>
         <button type="button" className={`flex h-7 w-7 items-center justify-center rounded transition ${minimapOpen ? 'bg-[#3f78c5]/15 text-[#3f78c5]' : 'hover:bg-gray-100 dark:hover:bg-white/[0.08]'}`} aria-label="小地图" title="小地图" onClick={() => { setMinimapOpen((open) => !open); setLayersOpen(false); setZoomHelpOpen(false) }}><MapIcon className="h-4 w-4" /></button>
@@ -2647,10 +2935,16 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
           )}
         </div>
         <button type="button" className="h-7 w-7 rounded hover:bg-gray-100 dark:hover:bg-white/[0.08]" aria-label="放大画布" title="放大画布" onClick={() => setViewport(zoomCanvasViewport(canvas.viewport, { x: containerSize.width / 2, y: containerSize.height / 2 }, canvas.viewport.scale * 1.2))}>+</button>
-        {zoomHelpOpen && (
-          <div className="absolute bottom-full right-0 mb-2 w-80 rounded-md border border-gray-200 bg-white p-4 text-xs leading-6 text-gray-600 shadow-lg dark:border-white/[0.1] dark:bg-gray-900 dark:text-gray-300" onPointerDown={(event) => event.stopPropagation()}>
+        </div>
+        {!zoomControlsCollapsed && zoomHelpOpen && (
+          <div className="absolute bottom-full right-0 mb-2 w-80 rounded-md border border-gray-200 bg-white p-4 text-xs leading-6 text-gray-600 shadow-lg dark:border-white/[0.1] dark:bg-gray-900 dark:text-gray-300" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => {
+            event.stopPropagation()
+            event.preventDefault()
+          }}>
             <div className="mb-1 text-sm font-medium text-gray-800 dark:text-gray-100">画布操作说明</div>
-            <div>滚轮 / 双指：缩放画布</div>
+            <div>滚轮：{canvasWheelMode === 'zoom' ? '缩放画布' : '移动位置'}</div>
+            <div>Ctrl + 滚轮：缩放画布</div>
+            <div>双指：缩放画布</div>
             <div>空白拖动：平移画布</div>
             <div>Ctrl + 拖动：框选图片</div>
             <div>Delete / Backspace：删除选中图片</div>

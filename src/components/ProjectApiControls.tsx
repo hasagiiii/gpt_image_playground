@@ -139,7 +139,7 @@ export function ProjectApiKeySelect({ scope = 'gallery', compact = false, iconOn
   }
 
   return (
-    <div className={iconOnly ? 'min-w-0 w-28 shrink-0 mr-1.5' : compact ? 'min-w-0 w-28 shrink-0 sm:w-36' : 'min-w-0 w-28 shrink-0 sm:w-48'}>
+    <div className={iconOnly ? 'min-w-0 w-28 shrink-0 mr-1.5' : compact ? 'min-w-0 w-28 shrink-0 sm:w-36' : 'h-[42px] min-w-0 w-20 shrink-0 sm:w-48'}>
       <Select
         value={apiKey}
         onChange={(value) => handleApiKeyChange(String(value))}
