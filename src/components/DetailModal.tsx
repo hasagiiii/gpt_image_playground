@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
-import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, retryTask } from '../store'
+import type { TaskRecord } from '../types'
+import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, redownloadTaskImage, retryTask } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
@@ -13,11 +14,20 @@ import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
-import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
+import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, RefreshIcon, TrashIcon } from './icons'
 
 import ViewportTooltip from './ViewportTooltip'
 
-export default function DetailModal() {
+type DetailModalProps = {
+  taskOverride?: TaskRecord | null
+  imageIdOverride?: string
+  outputRequestIndexOverride?: number
+  imageOverrides?: Record<string, string>
+  readOnly?: boolean
+  onClose?: () => void
+}
+
+export default function DetailModal({ taskOverride, imageIdOverride, outputRequestIndexOverride, imageOverrides = {}, readOnly = false, onClose }: DetailModalProps = {}) {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
   const detailImageId = useStore((s) => s.detailImageId)
@@ -38,6 +48,7 @@ export default function DetailModal() {
   const [imageSizes, setImageSizes] = useState<Record<string, string>>({})
   const [maskPreviewSrc, setMaskPreviewSrc] = useState('')
   const [now, setNow] = useState(Date.now())
+  const [redownloadPending, setRedownloadPending] = useState(false)
   const [showDebugInfoModal, setShowDebugInfoModal] = useState(false)
   const [showRawUrlsModal, setShowRawUrlsModal] = useState(false)
   const [showRawResponseModal, setShowRawResponseModal] = useState(false)
@@ -61,14 +72,22 @@ export default function DetailModal() {
   const downloadAllTooltip = useTooltip()
   const debugInfoTooltip = useTooltip()
 
+  const close = () => {
+    if (onClose) {
+      onClose()
+      return
+    }
+    setDetailTaskId(null)
+  }
+
   const clearTextSelection = () => {
     const selection = window.getSelection()
     if (selection && !selection.isCollapsed) selection.removeAllRanges()
   }
 
   const task = useMemo(
-    () => tasks.find((t) => t.id === detailTaskId) ?? null,
-    [tasks, detailTaskId],
+    () => taskOverride !== undefined ? taskOverride : tasks.find((t) => t.id === detailTaskId) ?? null,
+    [detailTaskId, taskOverride, tasks],
   )
   const streamPreviewItems = useMemo(() => {
     const slotEntries = streamPreviewSlots
@@ -103,7 +122,7 @@ export default function DetailModal() {
     if (count > 0 && imageIndex >= count) setImageIndex(count - 1)
   }, [imageIndex, streamPreviewItems.length, task, task?.status])
 
-  useCloseOnEscape(Boolean(task), () => setDetailTaskId(null))
+  useCloseOnEscape(Boolean(task), close)
   useCloseOnEscape(showDebugInfoModal, () => setShowDebugInfoModal(false))
   usePreventBackgroundScroll(Boolean(task), [modalRef, debugInfoModalRef, rawUrlsModalRef, rawResponseModalRef])
 
@@ -135,12 +154,12 @@ export default function DetailModal() {
     ])]
     const initial: Record<string, string> = {}
     for (const id of ids) {
-      const cached = getCachedImage(id)
+      const cached = imageOverrides[id] ?? getCachedImage(id)
       if (cached) initial[id] = cached
     }
     setImageSrcs(initial)
     for (const id of ids) {
-      if (initial[id]) continue
+      if (initial[id] || readOnly) continue
       ensureImageCached(id).then((url) => {
         if (!cancelled && url) setImageSrcs((prev) => ({ ...prev, [id]: url }))
       })
@@ -149,7 +168,7 @@ export default function DetailModal() {
     return () => {
       cancelled = true
     }
-  }, [task])
+  }, [imageOverrides, readOnly, task])
 
   const maskTargetId = task?.maskTargetImageId || null
   const maskTargetSrc = maskTargetId ? imageSrcs[maskTargetId] || '' : ''
@@ -180,19 +199,29 @@ export default function DetailModal() {
     })
   }, [task])
   useEffect(() => {
+    if (outputRequestIndexOverride !== undefined) {
+      const index = outputSlots.findIndex((slot) => slot.requestIndex === outputRequestIndexOverride)
+      setImageIndex(index >= 0 ? index : 0)
+      return
+    }
+    if (imageIdOverride) {
+      const index = outputSlots.findIndex((slot) => slot.imageId === imageIdOverride)
+      setImageIndex(index >= 0 ? index : 0)
+      return
+    }
     if (!detailImageId) {
       setImageIndex(0)
       return
     }
     const index = outputSlots.findIndex((slot) => slot.imageId === detailImageId)
     setImageIndex(index >= 0 ? index : 0)
-  }, [detailImageId, detailTaskId, outputSlots])
+  }, [detailImageId, detailTaskId, imageIdOverride, outputRequestIndexOverride, outputSlots])
   const currentOutputSlot = outputSlots[imageIndex]
   const currentOutputImageId = currentOutputSlot?.imageId || ''
   const currentOutputImageIndex = currentOutputSlot?.outputImageIndex ?? -1
   const currentOutputError = currentOutputSlot?.error || ''
   const currentOriginalOutputImageId = currentOutputImageIndex >= 0 ? task?.transparentOriginalImages?.[currentOutputImageIndex] || '' : ''
-  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
+  const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || imageOverrides[currentOutputImageId] || '' : ''
 
   useEffect(() => {
     const outputImageIds = task?.outputImages ?? []
@@ -207,10 +236,10 @@ export default function DetailModal() {
     }
 
     for (const imageId of outputImageIds) {
-      const cached = getCachedImage(imageId)
+      const cached = imageOverrides[imageId] ?? getCachedImage(imageId)
       if (cached) {
         setOutputImage(imageId, cached)
-      } else {
+      } else if (!readOnly) {
         ensureImageCached(imageId)
           .then((dataUrl) => {
             if (dataUrl) setOutputImage(imageId, dataUrl)
@@ -222,7 +251,7 @@ export default function DetailModal() {
     return () => {
       cancelled = true
     }
-  }, [task?.outputImages])
+  }, [imageOverrides, readOnly, task?.outputImages])
 
   useEffect(() => {
     let cancelled = false
@@ -286,6 +315,10 @@ export default function DetailModal() {
   const currentTransparentOutputFailed = Boolean(currentOutputImageId && task.transparentOutput && task.transparentOriginalImages?.[currentOutputImageIndex] === '')
   const outputCompressionText = task.params.output_compression == null ? '未设置' : String(task.params.output_compression)
   const taskIds = getTaskIds(task)
+  const canRedownloadImage = task.status === 'error' && task.outputImages.length === 0 && (
+    rawImageUrls.length > 0 || task.error?.includes('图片链接下载失败') || task.error?.includes('图片 URL 下载失败')
+  )
+  const readOnlyActionClass = readOnly ? 'opacity-40 cursor-not-allowed' : ''
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -307,17 +340,20 @@ export default function DetailModal() {
   }
 
   const handleReuse = () => {
+    if (readOnly) return
     reuseConfig(task)
-    setDetailTaskId(null)
+    close()
   }
 
   const handleEdit = () => {
+    if (readOnly) return
     editOutputs(task)
-    setDetailTaskId(null)
+    close()
   }
 
   const handleDelete = () => {
-    setDetailTaskId(null)
+    if (readOnly) return
+    close()
     setConfirmDialog({
       title: '删除任务',
       message: '确定要删除这个任务吗？关联的图片资源也会被清理（如果没有其他任务引用）。',
@@ -326,6 +362,7 @@ export default function DetailModal() {
   }
 
   const handleToggleFavorite = () => {
+    if (readOnly) return
     openFavoritePicker([task.id])
   }
 
@@ -421,7 +458,7 @@ export default function DetailModal() {
 
   const handleDownloadCurrentOutput = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!currentOutputImageId || !task) return
+    if (readOnly || !currentOutputImageId || !task) return
 
     try {
       const result = await downloadImageIds([currentOutputImageId], `task-${task.id}`)
@@ -438,7 +475,7 @@ export default function DetailModal() {
 
   const handleDownloadCurrentOriginalOutput = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!currentOriginalOutputImageId || !task) return
+    if (readOnly || !currentOriginalOutputImageId || !task) return
 
     try {
       const result = await downloadImageIds([currentOriginalOutputImageId], `task-${task.id}-orig`)
@@ -455,7 +492,7 @@ export default function DetailModal() {
 
   const handleDownloadAllOutputs = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!task?.outputImages?.length) return
+    if (readOnly || !task?.outputImages?.length) return
 
     try {
       const fileNameBase = `task-${task.id}`
@@ -476,7 +513,7 @@ export default function DetailModal() {
   }
 
   const handleDownloadPartialImages = async () => {
-    if (!task || !streamPartialImageIds.length) return
+    if (readOnly || !task || !streamPartialImageIds.length) return
 
     try {
       const fileNameBase = `task-${task.id}-partial`
@@ -497,15 +534,29 @@ export default function DetailModal() {
   }
 
   const handleRetry = () => {
+    if (readOnly) return
     retryTask(task)
-    setDetailTaskId(null)
+    close()
+  }
+
+  const handleRedownload = async () => {
+    if (readOnly || redownloadPending) return
+    setRedownloadPending(true)
+    try {
+      await redownloadTaskImage(task)
+      showToast('图片重新下载成功', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '图片重新下载失败', 'error')
+    } finally {
+      setRedownloadPending(false)
+    }
   }
 
   return (
     <div
       data-no-drag-select
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      onClick={() => setDetailTaskId(null)}
+      onClick={close}
     >
       <div className="absolute inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-md animate-overlay-in" />
       <div
@@ -515,7 +566,7 @@ export default function DetailModal() {
       >
         <div className="flex h-14 items-center justify-end px-4 md:hidden">
           <button
-            onClick={() => setDetailTaskId(null)}
+            onClick={close}
             className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-white/[0.06] transition text-gray-400"
             aria-label="关闭"
           >
@@ -551,12 +602,13 @@ export default function DetailModal() {
                 <div className="relative group flex">
                   <button
                     type="button"
+                    disabled={readOnly}
                     {...downloadImageTooltip.handlers}
                     onClick={(e) => {
                       downloadImageTooltip.handlers.onClick()
                       handleDownloadCurrentOutput(e)
                     }}
-                      className="flex items-center justify-center px-1.5 py-0.5 bg-black/50 text-white rounded backdrop-blur-sm hover:bg-black/70 transition focus:outline-none focus:ring-1 focus:ring-white/50"
+                      className={`flex items-center justify-center px-1.5 py-0.5 bg-black/50 text-white rounded backdrop-blur-sm hover:bg-black/70 transition focus:outline-none focus:ring-1 focus:ring-white/50 disabled:cursor-not-allowed ${readOnlyActionClass}`}
                     aria-label="下载图片"
                   >
                     <DownloadIcon className="h-4 w-4" />
@@ -570,12 +622,13 @@ export default function DetailModal() {
                 <div className="relative group flex">
                   <button
                     type="button"
+                    disabled={readOnly}
                     {...downloadAllTooltip.handlers}
                     onClick={(e) => {
                       downloadAllTooltip.handlers.onClick()
                       handleDownloadAllOutputs(e)
                     }}
-                    className="flex items-center justify-center pl-1.5 pr-2 py-0.5 gap-0.5 bg-black/50 text-white rounded backdrop-blur-sm hover:bg-black/70 transition focus:outline-none focus:ring-1 focus:ring-white/50"
+                    className={`flex items-center justify-center pl-1.5 pr-2 py-0.5 gap-0.5 bg-black/50 text-white rounded backdrop-blur-sm hover:bg-black/70 transition focus:outline-none focus:ring-1 focus:ring-white/50 disabled:cursor-not-allowed ${readOnlyActionClass}`}
                     aria-label="下载全部"
                   >
                     <DownloadIcon className="h-4 w-4" />
@@ -666,12 +719,13 @@ export default function DetailModal() {
                 <div className="absolute bottom-4 right-4 z-20 flex">
                   <button
                     type="button"
+                    disabled={readOnly}
                     {...downloadOriginalImageTooltip.handlers}
                     onClick={(e) => {
                       downloadOriginalImageTooltip.handlers.onClick()
                       handleDownloadCurrentOriginalOutput(e)
                     }}
-                    className="flex items-center justify-center gap-0.5 rounded bg-black/50 py-0.5 pl-1.5 pr-2 text-white backdrop-blur-sm transition hover:bg-black/70 focus:outline-none focus:ring-1 focus:ring-white/50"
+                    className={`flex items-center justify-center gap-0.5 rounded bg-black/50 py-0.5 pl-1.5 pr-2 text-white backdrop-blur-sm transition hover:bg-black/70 focus:outline-none focus:ring-1 focus:ring-white/50 disabled:cursor-not-allowed ${readOnlyActionClass}`}
                     aria-label="下载原图"
                   >
                     <DownloadIcon className="h-4 w-4" />
@@ -808,16 +862,33 @@ export default function DetailModal() {
               <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <p
-                className="overflow-hidden whitespace-pre-line text-base leading-7 text-red-500 break-words"
-                style={{
-                  display: '-webkit-box',
-                  WebkitBoxOrient: 'vertical',
-                  WebkitLineClamp: 10,
-                }}
-              >
-                {task.error || '生成失败'}
-              </p>
+              <div className="flex max-w-full items-start justify-center gap-2">
+                <p
+                  className="min-w-0 flex-1 overflow-hidden whitespace-pre-line text-base leading-7 text-red-500 break-words"
+                  style={{
+                    display: '-webkit-box',
+                    WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: 10,
+                  }}
+                >
+                  {task.error || '生成失败'}
+                </p>
+                {canRedownloadImage && (
+                  <button
+                    type="button"
+                    disabled={readOnly || redownloadPending}
+                    className={`mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-red-500 transition hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50 disabled:cursor-not-allowed ${readOnlyActionClass}`}
+                    aria-label="重新下载图片"
+                    title={redownloadPending ? '正在重新下载' : '重新下载图片'}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void handleRedownload()
+                    }}
+                  >
+                    <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} />
+                  </button>
+                )}
+              </div>
               {(task.requestId || taskIds.length > 0) && (
                 <div className="mt-3 flex max-w-full flex-col items-center gap-1">
                   {task.requestId && <span className="flex max-w-full items-center gap-1 break-all text-base leading-7 text-red-500"><span>request_id: {task.requestId}</span><button type="button" className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-500 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制 request_id" title="复制 request_id" onClick={(event) => { event.stopPropagation(); void handleCopyRequestId() }}><CopyIcon className="h-4 w-4" /></button></span>}
@@ -865,12 +936,13 @@ export default function DetailModal() {
                   <div className="relative group">
                     <button
                       type="button"
+                      disabled={readOnly}
                       {...downloadPartialImagesTooltip.handlers}
                       onClick={() => {
                         downloadPartialImagesTooltip.handlers.onClick()
                         void handleDownloadPartialImages()
                       }}
-                      className="inline-flex items-center justify-center rounded-full border border-amber-200/80 bg-amber-50 px-3 py-1.5 text-amber-600 transition hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400 dark:hover:bg-amber-500/20"
+                      className={`inline-flex items-center justify-center rounded-full border border-amber-200/80 bg-amber-50 px-3 py-1.5 text-amber-600 transition hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400 dark:hover:bg-amber-500/20 disabled:cursor-not-allowed ${readOnlyActionClass}`}
                       aria-label="下载中间步骤图"
                     >
                       <DownloadIcon className="h-4 w-4" />
@@ -883,12 +955,13 @@ export default function DetailModal() {
                 <div className="relative group">
                   <button
                     type="button"
+                    disabled={readOnly}
                     {...retryTooltip.handlers}
                     onClick={() => {
                       retryTooltip.handlers.onClick()
                       handleRetry()
                     }}
-                    className="inline-flex items-center justify-center rounded-full border border-blue-200/80 bg-white/80 px-3 py-1.5 text-blue-500 transition hover:bg-blue-50 dark:border-blue-400/20 dark:bg-white/[0.04] dark:hover:bg-blue-500/10"
+                    className={`inline-flex items-center justify-center rounded-full border border-blue-200/80 bg-white/80 px-3 py-1.5 text-blue-500 transition hover:bg-blue-50 dark:border-blue-400/20 dark:bg-white/[0.04] dark:hover:bg-blue-500/10 disabled:cursor-not-allowed ${readOnlyActionClass}`}
                     aria-label="重试任务"
                   >
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
@@ -927,7 +1000,7 @@ export default function DetailModal() {
         {/* 右侧：信息 */}
         <div className="md:w-1/2 w-full p-5 overflow-y-auto overscroll-contain flex flex-col">
           <button
-            onClick={() => setDetailTaskId(null)}
+            onClick={close}
             className="absolute top-3 right-3 hidden p-1 rounded-full hover:bg-gray-100 dark:hover:bg-white/[0.06] transition text-gray-400 z-10 md:block"
             aria-label="关闭"
           >
@@ -1139,7 +1212,8 @@ export default function DetailModal() {
           <div className="grid grid-cols-4 sm:flex gap-2 pt-4 border-t border-gray-100 dark:border-white/[0.08]">
             <button
               onClick={handleReuse}
-              className="col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition text-sm font-medium whitespace-nowrap"
+              disabled={readOnly}
+              className={`col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 disabled:hover:bg-blue-50 dark:disabled:hover:bg-blue-500/10 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap ${readOnlyActionClass}`}
             >
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
@@ -1148,26 +1222,28 @@ export default function DetailModal() {
             </button>
             <button
               onClick={handleEdit}
-              disabled={!outputLen}
-              className="col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-green-50 dark:bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap"
+              disabled={!outputLen || readOnly}
+              className={`col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-green-50 dark:bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap ${readOnlyActionClass}`}
             >
               <EditIcon className="w-4 h-4 flex-shrink-0" />
               编辑输出
             </button>
             <button
               onClick={handleDelete}
-              className="col-span-3 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition text-sm font-medium whitespace-nowrap"
+              disabled={readOnly}
+              className={`col-span-3 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 disabled:hover:bg-red-50 dark:disabled:hover:bg-red-500/10 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap ${readOnlyActionClass}`}
             >
               <TrashIcon className="w-4 h-4 flex-shrink-0" />
               删除任务
             </button>
             <button
               onClick={handleToggleFavorite}
+              disabled={readOnly}
               className={`col-span-1 sm:flex-none sm:w-11 w-full flex items-center justify-center rounded-xl transition ${
                 task.isFavorite
                   ? 'bg-yellow-50 text-yellow-500 hover:bg-yellow-100 dark:bg-yellow-500/10 dark:hover:bg-yellow-500/20'
                   : 'bg-gray-50 text-gray-400 hover:bg-yellow-50 hover:text-yellow-500 dark:bg-white/[0.04] dark:hover:bg-yellow-500/10'
-              }`}
+              } disabled:cursor-not-allowed ${readOnlyActionClass}`}
               title={task.isFavorite ? '编辑收藏夹' : '收藏任务'}
             >
               <svg className="w-5 h-5" fill={task.isFavorite ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">

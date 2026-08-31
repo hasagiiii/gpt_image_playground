@@ -122,7 +122,8 @@ function normalizeCompositeStatus(value: unknown): CompositeStatusResponse {
   if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
     const nestedRecord = nested as Record<string, unknown>
     if ('status' in nestedRecord || 'images' in nestedRecord || 'actual_cost' in nestedRecord || 'message' in nestedRecord || 'error' in nestedRecord) {
-      return nestedRecord as CompositeStatusResponse
+      // 有些回包把结果放在 data 里，但把 status 留在顶层，直接返回 nested 会丢掉状态。
+      return { ...nestedRecord, ...record } as CompositeStatusResponse
     }
   }
   return record as CompositeStatusResponse
@@ -162,7 +163,15 @@ async function readCompositeTaskResult(options: {
   })
   if (urls.length === 0) throw new Error('Composite 上游没有返回图片')
   const mime = MIME_MAP[options.params.output_format] ?? 'image/png'
-  const images = await Promise.all(urls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
+  let images: string[]
+  try {
+    images = await Promise.all(urls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
+  } catch (err) {
+    if (err instanceof Error) {
+      ;(err as Error & { rawImageUrls?: string[] }).rawImageUrls = urls
+    }
+    throw err
+  }
   return {
     images,
     rawImageUrls: urls,

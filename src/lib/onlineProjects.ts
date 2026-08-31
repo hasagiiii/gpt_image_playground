@@ -273,6 +273,17 @@ export async function listOnlineProjectImages(projectId: string): Promise<Online
 }
 
 export async function downloadOnlineProjectImage(projectId: string, image: OnlineProjectImageResponse, options: { forceDataUrl?: boolean } = {}): Promise<StoredImage> {
+  if (image.image_url) {
+    return {
+      id: image.image_id,
+      dataUrl: image.image_url,
+      source: image.source,
+      width: image.width,
+      height: image.height,
+      createdAt: Date.parse(image.created_at) || undefined,
+    }
+  }
+
   const resp = await authFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(image.image_id)}`)
   if (!resp.ok) {
     const data = await resp.json().catch(() => null) as { message?: string } | null

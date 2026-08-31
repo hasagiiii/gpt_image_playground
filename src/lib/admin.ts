@@ -1,4 +1,4 @@
-import type { Project } from '../types'
+import type { Project, StoredImage } from '../types'
 import { authFetch } from '../auth/api'
 import { blobToDataUrl } from './dataUrl'
 import type { OnlineProjectImageResponse, OnlineProjectResponse } from './onlineProjects'
@@ -46,14 +46,27 @@ export async function listAdminUserProjectImages(userId: string, projectId: stri
   return Array.isArray(data) ? data as OnlineProjectImageResponse[] : []
 }
 
-export async function downloadAdminUserProjectImage(userId: string, projectId: string, image: OnlineProjectImageResponse): Promise<{ id: string; dataUrl: string; width?: number; height?: number }> {
+export async function downloadAdminUserProjectImage(userId: string, projectId: string, image: OnlineProjectImageResponse): Promise<StoredImage> {
+  if (image.image_url) {
+    return {
+      id: image.image_id,
+      dataUrl: image.image_url,
+      source: image.source,
+      width: image.width,
+      height: image.height,
+      createdAt: Date.parse(image.created_at) || undefined,
+    }
+  }
+
   const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(image.image_id)}`)
   if (!resp.ok) throw new Error(await readError(resp, '用户画布图片加载失败'))
   return {
     id: image.image_id,
     dataUrl: await blobToDataUrl(await resp.blob(), image.mime_type),
+    source: image.source,
     width: image.width,
     height: image.height,
+    createdAt: Date.parse(image.created_at) || undefined,
   }
 }
 

@@ -1,4 +1,6 @@
 const PROJECT_QUERY_PARAM = 'project'
+const ADMIN_USERS_USER_QUERY_PARAM = 'user'
+const ADMIN_USERS_PROJECT_QUERY_PARAM = 'project'
 const MATERIALS_PATH = '/materials'
 const ADMIN_PATH = '/admin/announcements'
 const ADMIN_USERS_PATH = '/admin/users'
@@ -52,12 +54,28 @@ export function updateAdminUrl(replace = false) {
   else window.history.pushState(null, '', next)
 }
 
-export function updateAdminUsersUrl(replace = false) {
-  const url = new URL(window.location.href)
+export function getAdminUsersSelectionFromUrl(href = window.location.href) {
+  const url = new URL(href)
+  const userId = url.searchParams.get(ADMIN_USERS_USER_QUERY_PARAM)?.trim()
+  const projectId = userId ? url.searchParams.get(ADMIN_USERS_PROJECT_QUERY_PARAM)?.trim() : ''
+  return {
+    userId: userId || null,
+    projectId: projectId || null,
+  }
+}
+
+export function getAdminUsersUrl(userId: string | null, projectId: string | null, href = window.location.href) {
+  const url = new URL(href)
   url.pathname = ADMIN_USERS_PATH
   url.search = ''
   url.hash = ''
-  const next = `${url.pathname}${url.search}${url.hash}`
+  if (userId) url.searchParams.set(ADMIN_USERS_USER_QUERY_PARAM, userId)
+  if (userId && projectId) url.searchParams.set(ADMIN_USERS_PROJECT_QUERY_PARAM, projectId)
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
+export function updateAdminUsersUrl(userId: string | null, projectId: string | null, replace = false) {
+  const next = getAdminUsersUrl(userId, projectId)
   if (replace) window.history.replaceState(null, '', next)
   else window.history.pushState(null, '', next)
 }

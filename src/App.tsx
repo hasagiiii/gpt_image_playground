@@ -53,7 +53,7 @@ export default function App() {
     }
     if (nextView === 'admin-users') {
       useStore.getState().setActiveProjectId(null)
-      updateAdminUsersUrl()
+      updateAdminUsersUrl(null, null)
       return
     }
     if (nextView === 'materials') {

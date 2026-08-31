@@ -115,6 +115,56 @@ describe('callBackendCompositeImageApi', () => {
     expect(result?.images).toEqual(['data:image/jpeg;base64,AAECAw=='])
   })
 
+  it('keeps top-level status when Composite wraps images in data', async () => {
+    vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      data: {
+        actual_cost: 0.64,
+        images: [{
+          content_type: 'image/jpeg',
+          file_name: 'gpt-image-2_a_bow-0.jpg',
+          height: 1024,
+          url: 'data:image/jpeg;base64,AAECAw==',
+          width: 1024,
+        }],
+      },
+      request_id: '47f3084d-2df5-42a4-8164-66023a857a8f',
+      status: 'COMPLETED',
+    }), { status: 200 }))
+
+    const result = await queryBackendCompositeImageTask({
+      apiKey: 'composite-key',
+      model: 'openai/gpt-image-2',
+      requestId: 'wrapped-request',
+      params: { ...DEFAULT_PARAMS },
+    })
+
+    expect(result?.rawImageUrls).toEqual(['data:image/jpeg;base64,AAECAw=='])
+    expect(result?.actualCost).toBe(0.64)
+    expect(result?.images).toEqual(['data:image/jpeg;base64,AAECAw=='])
+  })
+
+  it('keeps result URLs when downloading a completed image fails', async () => {
+    const url = 'https://cdn.example/result.png'
+    vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      status: 'COMPLETED',
+      images: [{ url }],
+    }), { status: 200 }))
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+
+    const error = await queryBackendCompositeImageTask({
+      apiKey: 'composite-key',
+      model: 'openai/gpt-image-2',
+      requestId: 'download-failed-request',
+      params: { ...DEFAULT_PARAMS },
+    }).then(() => null, (err) => err)
+
+    fetchMock.mockRestore()
+    expect(error).toMatchObject({
+      message: expect.stringContaining('图片链接下载失败'),
+      rawImageUrls: [url],
+    })
+  })
+
   it.each(['IN_QUEUE', 'IN_PROGRESS'])('treats %s as pending', async (status) => {
     vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({ status }), { status: 200 }))
 

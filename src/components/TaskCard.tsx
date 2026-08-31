@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { TaskRecord } from '../types'
-import { useStore, ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail, retryTask } from '../store'
+import { useStore, ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail, retryTask, redownloadTaskImage } from '../store'
 import { formatImageRatio } from '../lib/size'
 import { formatActualCost } from '../lib/cost'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
@@ -9,7 +9,7 @@ import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { uploadMaterialImage } from '../lib/materialApi'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getTaskIds } from '../lib/taskIds'
-import { CloudUploadIcon, CodeIcon, CopyIcon, TransparentBgIcon } from './icons'
+import { CloudUploadIcon, CodeIcon, CopyIcon, DownloadIcon, TransparentBgIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
 interface Props {
@@ -80,6 +80,7 @@ export default function TaskCard({
   const [swipeDirection, setSwipeDirection] = useState<-1 | 0 | 1>(0)
   const [streamPreviewLoaded, setStreamPreviewLoaded] = useState(false)
   const [savingToMaterials, setSavingToMaterials] = useState(false)
+  const [redownloadPending, setRedownloadPending] = useState(false)
   const [actualCostHovered, setActualCostHovered] = useState(false)
   const [actualCostOpen, setActualCostOpen] = useState(false)
   const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
@@ -372,6 +373,9 @@ export default function TaskCard({
   const outputSuccessCount = task.outputImages?.length ?? 0
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
   const hasPartialOutputFailure = task.status === 'done' && outputErrorCount > 0
+  const canRedownloadImage = task.status === 'error' && outputSuccessCount === 0 && (
+    Boolean(task.rawImageUrls?.length) || task.error?.includes('图片链接下载失败') || task.error?.includes('图片 URL 下载失败')
+  )
 
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
@@ -393,6 +397,19 @@ export default function TaskCard({
       showToast('错误原因已复制', 'success')
     } catch (err) {
       showToast(getClipboardFailureMessage('复制错误原因失败', err), 'error')
+    }
+  }
+
+  const handleRedownloadImage = async () => {
+    if (redownloadPending) return
+    setRedownloadPending(true)
+    try {
+      await redownloadTaskImage(task)
+      showToast('图片重新下载成功', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '图片重新下载失败', 'error')
+    } finally {
+      setRedownloadPending(false)
     }
   }
 
@@ -564,6 +581,22 @@ export default function TaskCard({
                       {task.error}
                     </span>
                     <button type="button" className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-500 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制错误原因" title="复制错误原因" onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureError(task.error!) }}><CopyIcon className="h-4 w-4" /></button>
+                    {canRedownloadImage && (
+                      <button
+                        type="button"
+                        disabled={redownloadPending}
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-500 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50"
+                        aria-label="重新下载图片"
+                        title={redownloadPending ? '正在重新下载' : '重新下载图片'}
+                        onTouchStart={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void handleRedownloadImage()
+                        }}
+                      >
+                        <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} />
+                      </button>
+                    )}
                   </span>}
                   {(task.requestId || taskIds.length > 0) && (
                     <span className="flex max-w-full flex-col items-center gap-1 text-center font-mono text-base leading-6 text-red-500/90 dark:text-red-300/90">

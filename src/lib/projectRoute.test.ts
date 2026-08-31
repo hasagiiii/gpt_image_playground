@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getAppViewFromUrl, getProjectIdFromUrl, getProjectUrl } from './projectRoute'
+import { getAdminUsersSelectionFromUrl, getAdminUsersUrl, getAppViewFromUrl, getProjectIdFromUrl, getProjectUrl } from './projectRoute'
 
 describe('project route', () => {
   it('reads the active project from the url', () => {
@@ -18,5 +18,16 @@ describe('project route', () => {
 
   it('recognizes the administrator users view', () => {
     expect(getAppViewFromUrl('http://localhost:5173/admin/users')).toBe('admin-users')
+  })
+
+  it('reads the administrator user and project from the url', () => {
+    expect(getAdminUsersSelectionFromUrl('http://localhost:5173/admin/users?user=user-a&project=project-a')).toEqual({ userId: 'user-a', projectId: 'project-a' })
+    expect(getAdminUsersSelectionFromUrl('http://localhost:5173/admin/users?project=project-a')).toEqual({ userId: null, projectId: null })
+  })
+
+  it('builds the administrator users url', () => {
+    expect(getAdminUsersUrl('user a', 'project-a', 'http://localhost:5173/other?theme=dark#view')).toBe('/admin/users?user=user+a&project=project-a')
+    expect(getAdminUsersUrl('user-a', null, 'http://localhost:5173/admin/users?project=project-a')).toBe('/admin/users?user=user-a')
+    expect(getAdminUsersUrl(null, null, 'http://localhost:5173/admin/users?user=user-a&project=project-a#view')).toBe('/admin/users')
   })
 })

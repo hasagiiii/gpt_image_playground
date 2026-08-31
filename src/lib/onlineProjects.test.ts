@@ -12,7 +12,7 @@ vi.mock('./db', () => ({
   getAllImages: async () => images,
 }))
 
-import { buildLegacyProjectArchive, buildOnlineProjectArchive, deleteOnlineProject, deleteOnlineProjectTask, downloadOnlineProject, getAgentConversationReferencedImageIds, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjects, saveOnlineProjectCanvas, saveOnlineProjectTask, uploadOnlineProjectImage } from './onlineProjects'
+import { buildLegacyProjectArchive, buildOnlineProjectArchive, deleteOnlineProject, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjects, saveOnlineProjectCanvas, saveOnlineProjectTask, uploadOnlineProjectImage } from './onlineProjects'
 
 function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   return {
@@ -209,6 +209,34 @@ describe('onlineProjects', () => {
     expect(form.get('source')).toBe('generated')
     expect(form.get('width')).toBe('1024')
     expect(form.get('image')).toBeInstanceOf(Blob)
+  })
+
+  it('uses the direct image URL when the project image already has one', async () => {
+    const image = {
+      project_id: 'project-a',
+      image_id: 'image-a',
+      image_url: 'https://cdn.example/image-a.png',
+      mime_type: 'image/png',
+      image_size: 4,
+      image_sha256: 'sha256',
+      created_at: '2026-08-16T00:00:00Z',
+      updated_at: '2026-08-16T00:00:00Z',
+      source: 'generated' as const,
+      width: 1024,
+      height: 768,
+    }
+
+    const result = await downloadOnlineProjectImage('project-a', image, { forceDataUrl: true })
+
+    expect(result).toMatchObject({
+      id: 'image-a',
+      dataUrl: 'https://cdn.example/image-a.png',
+      source: 'generated',
+      width: 1024,
+      height: 768,
+      createdAt: Date.parse('2026-08-16T00:00:00Z'),
+    })
+    expect(authFetch).not.toHaveBeenCalled()
   })
 
   it('saves and deletes one task without uploading a project archive', async () => {

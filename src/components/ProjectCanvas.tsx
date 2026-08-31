@@ -11,6 +11,7 @@ import {
   getImageFavoriteCollectionIds,
   removeOutputImage,
   removeTask,
+  redownloadTaskImage,
   reuseImageConfig,
   retryImage,
   subscribeImageThumbnail,
@@ -271,6 +272,7 @@ function CanvasImageNode({
   onCopyImageId,
   onCopyFailureId,
   onCopyFailureError,
+  onRedownloadImage,
   cropEditing,
   onCropCommit,
   onCropCancel,
@@ -298,6 +300,7 @@ function CanvasImageNode({
   onCopyImageId: (imageId: string) => void
   onCopyFailureId: (label: 'request_id' | 'task_id', value: string) => void
   onCopyFailureError: (value: string) => void
+  onRedownloadImage: (task: TaskRecord) => Promise<void>
   cropEditing: boolean
   onCropCommit: (crop: ProjectCanvasCrop) => void
   onCropCancel: () => void
@@ -316,6 +319,7 @@ function CanvasImageNode({
   const [cropDraft, setCropDraft] = useState<ProjectCanvasCrop>(item.operator?.crop ?? { x: 0, y: 0, width: 1, height: 1 })
   const [cropSizeDraft, setCropSizeDraft] = useState({ width: '', height: '' })
   const [cropPanelPosition, setCropPanelPosition] = useState<{ left: number; top: number } | null>(null)
+  const [redownloadPending, setRedownloadPending] = useState(false)
   const onRatioRef = useRef(onRatio)
   const onDimensionsRef = useRef(onDimensions)
   const metadataScale = 1 / Math.max(viewportScale, 0.01)
@@ -332,6 +336,16 @@ function CanvasImageNode({
     setDimensions((current) => current?.width === width && current.height === height ? current : { width, height })
     onRatioRef.current(width / height)
     onDimensionsRef.current(width, height)
+  }
+
+  const handleRedownloadImage = async () => {
+    if (redownloadPending) return
+    setRedownloadPending(true)
+    try {
+      await onRedownloadImage(node.task)
+    } finally {
+      setRedownloadPending(false)
+    }
   }
 
   useEffect(() => {
@@ -594,6 +608,9 @@ function CanvasImageNode({
                       {node.error}
                     </span>
                     <button type="button" data-canvas-handle className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-600 hover:bg-red-200/70 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制错误原因" title="复制错误原因" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCopyFailureError(node.error!) }}><CopyIcon className="h-4 w-4" /></button>
+                    {(node.task.rawImageUrls?.length || node.error?.includes('图片链接下载失败') || node.error?.includes('图片 URL 下载失败')) && node.task.outputImages.length === 0 && (
+                      <button type="button" data-canvas-handle disabled={redownloadPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 transition hover:bg-red-200/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="重新下载图片" title={redownloadPending ? '正在重新下载' : '重新下载图片'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRedownloadImage() }}><DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /></button>
+                    )}
                   </span>
                   {(node.task.requestId || taskIds.length > 0) && (
                     <span className="flex max-w-[92%] flex-col items-center gap-1 text-center font-mono text-base leading-6 text-red-600/90 dark:text-red-300/90">
@@ -2131,6 +2148,15 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
   }
 
+  const handleRedownloadImage = async (task: TaskRecord) => {
+    try {
+      await redownloadTaskImage(task)
+      showToast('图片重新下载成功', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '图片重新下载失败', 'error')
+    }
+  }
+
   const handleSaveMaterial = async () => {
     if (!selectedNode?.imageId) return
     try {
@@ -2299,6 +2325,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             onCopyImageId={handleCopyImageId}
             onCopyFailureId={handleCopyFailureId}
             onCopyFailureError={handleCopyFailureError}
+            onRedownloadImage={handleRedownloadImage}
             cropEditing={cropImageId === node.key}
             onCropCommit={(crop) => handleCropCommit(node.key, crop)}
             onCropCancel={() => setCropImageId(null)}

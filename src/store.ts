@@ -3484,6 +3484,7 @@ async function recoverCompositeTask(taskId: string) {
     updateTaskInStore(taskId, {
       status: 'error',
       error: err instanceof Error ? err.message : String(err),
+      ...getRawErrorPayload(err),
       compositeRecoverable: false,
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
@@ -4188,7 +4189,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
           try {
             const hasLocalImage = availableImageIds.has(remoteImage.image_id)
             if (remoteImage.image_url && hasLocalImage) continue
-            // 本地没有图片时必须下载并转成 Data URL，供 Responses API 使用。
+            // 本地没有图片时补齐引用；有直链就直接复用，避免再绕后端 fetch。
             const image = await downloadOnlineProjectImage(response.id, remoteImage, { forceDataUrl: true })
             if (!hasLocalImage) {
               images.push(image)
@@ -7112,6 +7113,46 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>, sy
   if (previousTask?.status !== 'done' && task?.status === 'done' && task.outputImages.length > 0) playCompletionSound()
   maybeOpenSupportPrompt(tasks, updated, taskId)
   return task ? putTask(task, syncOnline) : undefined
+}
+
+/** 重新下载已经拿到 URL 但首次下载失败的图片，并恢复任务结果。 */
+export async function redownloadTaskImage(task: TaskRecord) {
+  const latest = useStore.getState().tasks.find((item) => item.id === task.id)
+  if (!latest || latest.status !== 'error' || latest.outputImages.length > 0) {
+    throw new Error('当前任务没有可重新下载的图片链接')
+  }
+
+  const compositeRecovery = !latest.rawImageUrls?.length && latest.compositeRequestId && latest.apiModel && latest.apiOverride?.platform?.trim().toLowerCase() === 'composite' && latest.apiOverride.apiKey
+    ? await queryBackendCompositeImageTask({
+        apiKey: latest.apiOverride.apiKey,
+        model: latest.apiModel,
+        requestId: latest.compositeRequestId,
+        clientRequestId: latest.requestId ?? undefined,
+        params: latest.params,
+      }).then((result) => ({ result, rawImageUrls: result?.rawImageUrls ?? [] }), (err) => ({ result: null, rawImageUrls: getRawErrorPayload(err).rawImageUrls ?? [] }))
+    : { result: null, rawImageUrls: [] }
+  const rawImageUrls = latest.rawImageUrls?.length ? latest.rawImageUrls : compositeRecovery.rawImageUrls
+  if (rawImageUrls.length === 0 && !compositeRecovery.result?.images.length) {
+    throw new Error('当前任务没有可重新下载的图片链接')
+  }
+
+  const mime = MIME_MAP[latest.params.output_format] || 'image/png'
+  const dataUrls = compositeRecovery.result?.images.length
+    ? compositeRecovery.result.images
+    : await Promise.all(rawImageUrls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls)
+  const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
+  await updateTaskInStore(latest.id, {
+    outputImages: outputIds,
+    transparentOriginalImages: transparentOriginalImageIds,
+    outputErrors: undefined,
+    actualParams: firstActualParams(actualParamsList),
+    actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
+    status: 'done',
+    error: null,
+    finishedAt: Date.now(),
+    elapsed: Date.now() - latest.createdAt,
+  })
 }
 
 function normalizeFavoriteCollectionIds(ids: unknown) {
