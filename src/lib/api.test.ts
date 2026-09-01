@@ -463,11 +463,19 @@ describe('callImageApi', () => {
   })
 
   it('keeps successful Images API concurrent results when one request fails', async () => {
+    let firstRequestId = ''
+    let failedRequestId = ''
+    const attemptsByRequest = new Map<string, number>()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
-      const callIndex = fetchMock.mock.calls.length
-      if (callIndex === 2) throw new TypeError('Failed to fetch')
+      const init = fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[1] as RequestInit
+      const requestId = String((init.headers as Record<string, string>)['x-client-request-id'])
+      if (!firstRequestId) firstRequestId = requestId
+      else if (!failedRequestId && requestId !== firstRequestId) failedRequestId = requestId
+      const attempts = (attemptsByRequest.get(requestId) ?? 0) + 1
+      attemptsByRequest.set(requestId, attempts)
+      if (requestId === failedRequestId && attempts <= 4) throw new TypeError('Failed to fetch')
       return new Response(JSON.stringify({
-        data: [{ b64_json: `aW1hZ2Ut${callIndex}` }],
+        data: [{ b64_json: `aW1hZ2Ut${requestId}` }],
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -481,12 +489,15 @@ describe('callImageApi', () => {
       inputImageDataUrls: [],
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    expect(result.images).toEqual([
-      'data:image/png;base64,aW1hZ2Ut1',
-      'data:image/png;base64,aW1hZ2Ut3',
-    ])
-    expect(result.failedRequests).toEqual([{ requestIndex: 1, error: 'Failed to fetch' }])
+    expect(fetchMock).toHaveBeenCalledTimes(6)
+    expect(result.images).toHaveLength(2)
+    expect(result.failedRequests).toMatchObject([{
+      requestIndex: 1,
+      error: 'Failed to fetch',
+      endpoint: 'generation',
+      retryCount: 3,
+    }])
+    expect(result.failedRequests?.[0].requestId).toBe(failedRequestId)
     expect(result.actualParams).toMatchObject({ n: 2 })
   })
 

@@ -1,6 +1,6 @@
 import type { Project, TaskParams, TaskRecord } from '../types'
 import { authFetch, REQUEST_ID_HEADER } from '../auth/api'
-import { createImageStatusRequestId, type CallApiResult } from './imageApiShared'
+import { createImageStatusRequestId, getApiResponseRetryCount, retryApiFetch, type CallApiResult, withApiFailureMetadata } from './imageApiShared'
 import { getOnlineProjectRecord } from './onlineProjects'
 
 interface BackendGenerationResponse {
@@ -52,6 +52,8 @@ function formatImageApiLogValue(value: unknown, key = ''): unknown {
 export async function callBackendImageApi(options: {
   project: Project
   task: TaskRecord
+  idempotencyKey?: string
+  requestIds?: string[]
   manageTaskRecord?: boolean
   apiKey: string
   provider: 'openai'
@@ -65,7 +67,13 @@ export async function callBackendImageApi(options: {
   onImageStatusRequestCreated?: (request: { requestId: string; requestIndex?: number }) => void
 }): Promise<CallApiResult> {
   const requestCount = options.apiMode === 'responses' ? 1 : Math.max(1, options.params.n)
+  const suppliedRequestIds = options.requestIds?.filter((requestId) => requestId.trim()) ?? []
   const requestIds = Array.from({ length: requestCount }, (_, requestIndex) => {
+    const suppliedRequestId = suppliedRequestIds[requestIndex]
+    if (suppliedRequestId) {
+      options.onImageStatusRequestCreated?.({ requestId: suppliedRequestId, ...(requestCount > 1 ? { requestIndex } : {}) })
+      return suppliedRequestId
+    }
     const requestId = createImageStatusRequestId()
     options.onImageStatusRequestCreated?.({
       requestId,
@@ -107,11 +115,20 @@ export async function callBackendImageApi(options: {
     upstreamPath,
     body: formatImageApiLogValue(requestBody),
   })
-  const resp = await authFetch(`/api/v1/projects/${encodeURIComponent(options.project.remoteId ?? options.project.id)}/${endpointType}`, {
-    method: 'POST',
-    headers: options.task.requestId ? { [REQUEST_ID_HEADER]: options.task.requestId } : undefined,
-    body: JSON.stringify(requestBody),
-  })
+  const resp = await retryApiFetch(
+    () => authFetch(`/api/v1/projects/${encodeURIComponent(options.project.remoteId ?? options.project.id)}/${endpointType}`, {
+      method: 'POST',
+      headers: {
+        ...(options.task.requestId ? { [REQUEST_ID_HEADER]: options.task.requestId } : {}),
+        'Idempotency-Key': options.idempotencyKey ?? options.task.id,
+      },
+      body: JSON.stringify(requestBody),
+    }),
+    {
+      endpoint: endpointType === 'edits' ? 'edit' : 'generation',
+      requestId: options.task.requestId,
+    },
+  )
   const data = await resp.json().catch(() => null) as BackendGenerationResponse & { message?: string } | null
   console.log('[BackendImageApi] 回包内容', {
     ok: resp.ok,
@@ -119,10 +136,13 @@ export async function callBackendImageApi(options: {
     data: formatImageApiLogValue(data),
   })
   if (!resp.ok) {
-    const error = Object.assign(new Error(data?.message || `后端生图失败：HTTP ${resp.status}`), {
+    const error = withApiFailureMetadata(new Error(data?.message || `后端生图失败：HTTP ${resp.status}`), {
+      endpoint: endpointType === 'edits' ? 'edit' : 'generation',
       status: resp.status,
-      rawResponsePayload: data ? JSON.stringify(data) : undefined,
+      requestId: options.task.requestId,
+      retryCount: getApiResponseRetryCount(resp),
     })
+    ;(error as Error & { rawResponsePayload?: string }).rawResponsePayload = data ? JSON.stringify(data) : undefined
     throw error
   }
 

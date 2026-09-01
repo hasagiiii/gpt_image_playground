@@ -315,7 +315,7 @@ import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
 import { buildLegacyProjectArchive, clearLegacyProjectUploadId, deleteOnlineProject, downloadOnlineProject, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
-import { LOCAL_PROJECT_ID, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeOutputImage, removeTask, renameFavoriteCollection, reuseConfig, retryTask, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { LOCAL_PROJECT_ID, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeOutputImage, removeTask, renameFavoriteCollection, reuseConfig, retryTask, retryTaskInPlace, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -1412,6 +1412,41 @@ describe('mask draft lifecycle in store actions', () => {
     }))
   })
 
+  it('retries a Composite network failure in the original task with the same request identifiers', async () => {
+    vi.mocked(callBackendCompositeImageApi).mockClear()
+    vi.mocked(callBackendCompositeImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,aW1hZ2U='],
+      imagesStoredOnline: false,
+    })
+    const failedTask = task({
+      id: 'network-task',
+      requestId: 'frontend-network-request',
+      apiProvider: 'openai',
+      apiModel: 'gpt-image-2',
+      apiOverride: { apiKey: 'composite-key', model: 'gpt-image-2', platform: 'Composite' },
+      status: 'error',
+      error: '网络异常',
+      failureEndpoint: 'generation',
+      failureKind: 'network',
+    })
+    useStore.setState({ tasks: [failedTask] })
+
+    await retryTaskInPlace(failedTask)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+
+    expect(useStore.getState().tasks).toHaveLength(1)
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      id: 'network-task',
+      requestId: 'frontend-network-request',
+      idempotencyKey: 'network-task',
+    })
+    expect(callBackendCompositeImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      clientRequestId: 'frontend-network-request',
+      idempotencyKey: 'network-task',
+      model: 'gpt-image-2',
+    }))
+  })
+
   it('uses current OIDC api override when retrying from a task card', async () => {
     const { callImageApi } = await import('./lib/api')
     const profile = createDefaultOpenAIProfile({
@@ -2173,7 +2208,9 @@ describe('image status recovery', () => {
     const recovered = useStore.getState().tasks.find((item) => item.id === runningTask.id)!
     expect(recovered.rawImageUrls).toEqual(['https://cos.example/blocked.png'])
     expect(recovered.imageStatusRecoverable).toBe(false)
-    expect(recovered.error).toContain('图片链接下载失败')
+    expect(recovered.error).toBe('网络异常')
+    expect(recovered.failureEndpoint).toBe('download')
+    expect(recovered.failureKind).toBe('network')
     fetchMock.mockRestore()
   })
 

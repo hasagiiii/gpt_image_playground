@@ -1,7 +1,15 @@
-import type { TaskParams } from '../types'
+import type { ImageFailureEndpoint, TaskParams } from '../types'
 import { authFetch, REQUEST_ID_HEADER } from '../auth/api'
 import { dataUrlToBlob } from './canvasImage'
-import { fetchImageUrlAsDataUrl, isHttpUrl, MIME_MAP, type CallApiResult } from './imageApiShared'
+import {
+  fetchImageUrlAsDataUrl,
+  getApiResponseRetryCount,
+  isHttpUrl,
+  MIME_MAP,
+  retryApiFetch,
+  type CallApiResult,
+  withApiFailureMetadata,
+} from './imageApiShared'
 
 interface CompositeSubmitResponse {
   request_id?: unknown
@@ -17,8 +25,10 @@ interface CompositeStatusResponse {
 }
 
 const COMPOSITE_API_KEY_HEADER = 'X-Upstream-API-Key'
+const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key'
 const POLL_TIMEOUT_MS = 10 * 60 * 1000
 const MAX_RETRIES = 3
+const RETRYABLE_STATUSES = [429, ...Array.from({ length: 100 }, (_, index) => 500 + index)]
 
 function encodePath(value: string) {
   const parts = value.trim().split('/').filter(Boolean)
@@ -64,40 +74,57 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function requestJson(path: string, apiKey: string, clientRequestId?: string, init: RequestInit = {}) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
+async function requestJson(options: {
+  path: string
+  apiKey: string
+  endpoint: ImageFailureEndpoint
+  clientRequestId?: string
+  idempotencyKey?: string
+  init?: RequestInit
+}) {
+  let attempt = 0
+  const response = await retryApiFetch(
+    () => {
+      attempt += 1
       console.log('[BackendCompositeImageApi] 请求内容', {
-        method: init.method ?? 'GET',
-        endpoint: path,
-        attempt: attempt + 1,
-        body: typeof init.body === 'string' ? formatLogValue(JSON.parse(init.body)) : undefined,
+        method: options.init?.method ?? 'GET',
+        endpoint: options.path,
+        attempt,
+        body: typeof options.init?.body === 'string' ? formatLogValue(JSON.parse(options.init.body)) : undefined,
       })
-      const response = await authFetch(path, {
-        ...init,
+      return authFetch(options.path, {
+        ...options.init,
         headers: {
-          ...Object.fromEntries(new Headers(init.headers).entries()),
-          [COMPOSITE_API_KEY_HEADER]: apiKey,
-          ...(clientRequestId ? { [REQUEST_ID_HEADER]: clientRequestId } : {}),
+          ...Object.fromEntries(new Headers(options.init?.headers).entries()),
+          [COMPOSITE_API_KEY_HEADER]: options.apiKey,
+          ...(options.clientRequestId ? { [REQUEST_ID_HEADER]: options.clientRequestId } : {}),
+          ...(options.idempotencyKey ? { [IDEMPOTENCY_KEY_HEADER]: options.idempotencyKey } : {}),
         },
         cache: 'no-store',
       })
-      const data = await response.json().catch(() => null) as unknown
-      console.log('[BackendCompositeImageApi] 回包内容', {
-        endpoint: path,
-        status: response.status,
-        data: formatLogValue(data),
-      })
-      if (response.ok) return data
-      if (response.status < 500 || attempt >= MAX_RETRIES) {
-        throw Object.assign(new Error(errorMessage(data, `Composite 请求失败：HTTP ${response.status}`)), { retryable: false })
-      }
-    } catch (err) {
-      if (err instanceof Error && (err as Error & { retryable?: boolean }).retryable === false) throw err
-      if (attempt >= MAX_RETRIES) throw err
-    }
-    await sleep(1000 * 2 ** attempt)
+    },
+    {
+      endpoint: options.endpoint,
+      requestId: options.clientRequestId,
+      maxRetries: MAX_RETRIES,
+      retryableStatuses: RETRYABLE_STATUSES,
+    },
+  )
+  const data = await response.json().catch(() => null) as unknown
+  console.log('[BackendCompositeImageApi] 回包内容', {
+    endpoint: options.path,
+    status: response.status,
+    data: formatLogValue(data),
+  })
+  if (!response.ok) {
+    throw withApiFailureMetadata(new Error(errorMessage(data, `Composite 请求失败：HTTP ${response.status}`)), {
+      endpoint: options.endpoint,
+      status: response.status,
+      requestId: options.clientRequestId,
+      retryCount: getApiResponseRetryCount(response),
+    })
   }
+  return data
 }
 
 function getFailureMessage(status: CompositeStatusResponse) {
@@ -138,7 +165,12 @@ async function readCompositeTaskResult(options: {
 }): Promise<CallApiResult | null> {
   const modelPath = normalizeCompositeModelPath(options.model)
   const resultPath = `/api/v1/model/${modelPath}/requests/${encodeURIComponent(options.requestId)}`
-  const status = normalizeCompositeStatus(await requestJson(resultPath, options.apiKey, options.clientRequestId))
+  const status = normalizeCompositeStatus(await requestJson({
+    path: resultPath,
+    apiKey: options.apiKey,
+    endpoint: 'status',
+    clientRequestId: options.clientRequestId,
+  }))
   const statusText = typeof status.status === 'string' ? status.status.trim().toUpperCase() : ''
   if (!statusText) throw new Error('Composite 上游返回了无效的任务状态')
   switch (statusText) {
@@ -206,17 +238,32 @@ async function uploadReferenceFile(dataUrl: string, name: string, clientRequestI
     contentType: blob.type,
     size: blob.size,
   })
-  const response = await authFetch('/api/v1/files', {
-    method: 'POST',
-    headers: clientRequestId ? { [REQUEST_ID_HEADER]: clientRequestId } : undefined,
-    body: formData,
-  })
+  const response = await retryApiFetch(
+    () => authFetch('/api/v1/files', {
+      method: 'POST',
+      headers: clientRequestId ? { [REQUEST_ID_HEADER]: clientRequestId } : undefined,
+      body: formData,
+    }),
+    {
+      endpoint: 'edit',
+      requestId: clientRequestId,
+      maxRetries: MAX_RETRIES,
+      retryableStatuses: [429],
+    },
+  )
   const data = await response.json().catch(() => null) as { data?: { url?: unknown }; code?: unknown; message?: unknown } | null
   console.log('[BackendCompositeImageApi] 参考文件上传回包', {
     status: response.status,
     data: formatLogValue(data),
   })
-  if (!response.ok) throw new Error(errorMessage(data, `参考图上传失败：HTTP ${response.status}`))
+  if (!response.ok) {
+    throw withApiFailureMetadata(new Error(errorMessage(data, `参考图上传失败：HTTP ${response.status}`)), {
+      endpoint: 'edit',
+      status: response.status,
+      requestId: clientRequestId,
+      retryCount: getApiResponseRetryCount(response),
+    })
+  }
   const url = typeof data?.data?.url === 'string' ? data.data.url.trim() : ''
   if (!url) throw new Error('File API 未返回 data.url')
   return { url, uploaded: true }
@@ -225,6 +272,7 @@ async function uploadReferenceFile(dataUrl: string, name: string, clientRequestI
 export async function callBackendCompositeImageApi(options: {
   apiKey: string
   clientRequestId?: string
+  idempotencyKey?: string
   model: string
   prompt: string
   params: TaskParams
@@ -280,9 +328,16 @@ export async function callBackendCompositeImageApi(options: {
   }
 
   const startedAt = Date.now()
-  const submitted = await requestJson(requestPath, options.apiKey, options.clientRequestId, {
-    method: 'POST',
-    body: JSON.stringify(payload),
+  const submitted = await requestJson({
+    path: requestPath,
+    apiKey: options.apiKey,
+    endpoint: isEdit ? 'edit' : 'generation',
+    clientRequestId: options.clientRequestId,
+    idempotencyKey: options.idempotencyKey,
+    init: {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
   }) as CompositeSubmitResponse
   const requestId = typeof submitted.request_id === 'string' ? submitted.request_id.trim() : ''
   if (!requestId) throw new Error('Composite 上游未返回 request_id')

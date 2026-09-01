@@ -70,7 +70,7 @@ describe('callBackendImageApi', () => {
 
     expect(authFetch).toHaveBeenCalledWith('/api/v1/projects/project%2Fa/generations', expect.objectContaining({
       method: 'POST',
-      headers: { 'X-Request-ID': 'frontend-request-a' },
+      headers: expect.objectContaining({ 'X-Request-ID': 'frontend-request-a', 'Idempotency-Key': 'task-a' }),
     }))
     const request = JSON.parse(vi.mocked(authFetch).mock.calls[0][1]?.body as string)
     expect(request).toMatchObject({
@@ -152,6 +152,34 @@ describe('callBackendImageApi', () => {
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
     })).rejects.toThrow('provider failed')
+  })
+
+  it('retries backend HTTP 429 with the same idempotency key', async () => {
+    vi.mocked(authFetch)
+      .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ images: ['data:image/png;base64,AAECAw=='] }), { status: 200 }))
+
+    const result = await callBackendImageApi({
+      project: { ...project(), id: 'project-a', remoteId: 'project-a' },
+      task: { ...task(), projectId: 'project-a' },
+      manageTaskRecord: true,
+      apiKey: 'oidc-key',
+      provider: 'openai',
+      model: 'gpt-image-2',
+      apiMode: 'images',
+      allowPromptRewrite: true,
+      prompt: '画一张图',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toHaveLength(1)
+    expect(authFetch).toHaveBeenCalledTimes(4)
+    for (const [, init] of vi.mocked(authFetch).mock.calls) {
+      expect((init?.headers as Record<string, string>)['Idempotency-Key']).toBe('task-a')
+    }
   })
 
   it('preserves the upstream status code for recoverable timeout handling', async () => {

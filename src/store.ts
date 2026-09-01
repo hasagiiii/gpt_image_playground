@@ -9,6 +9,8 @@ import type {
   ApiProfile,
   AppSettings,
   AppMode,
+  ImageFailureEndpoint,
+  ImageFailureKind,
   TaskParams,
   InputImage,
   MaskDraft,
@@ -3102,17 +3104,43 @@ function isFalConnectionRecoverableError(err: unknown) {
 }
 
 function isApiRequestNetworkError(err: unknown): boolean {
-  if (err instanceof TypeError) {
-    const message = err.message.toLowerCase()
-    return /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(message)
-  }
-  return false
+  if (!(err instanceof Error)) return false
+  return /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(err.message)
 }
 
 function getApiErrorStatus(err: unknown) {
   if (!err || typeof err !== 'object' || !('status' in err)) return 0
   const status = (err as { status?: unknown }).status
   return typeof status === 'number' && Number.isFinite(status) ? status : 0
+}
+
+function getApiFailureEndpoint(err: unknown): ImageFailureEndpoint | undefined {
+  if (!err || typeof err !== 'object' || !('endpoint' in err)) return undefined
+  const endpoint = (err as { endpoint?: unknown }).endpoint
+  return endpoint === 'generation' || endpoint === 'edit' || endpoint === 'responses' || endpoint === 'status' || endpoint === 'result' || endpoint === 'download' || endpoint === 'agent'
+    ? endpoint
+    : undefined
+}
+
+function getApiFailureRetryCount(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object' || !('retryCount' in err)) return undefined
+  const retryCount = (err as { retryCount?: unknown }).retryCount
+  return typeof retryCount === 'number' && Number.isFinite(retryCount) ? retryCount : undefined
+}
+
+function getApiFailureKind(err: unknown): ImageFailureKind | undefined {
+  if (!err || typeof err !== 'object' || !('kind' in err)) return undefined
+  return (err as { kind?: unknown }).kind === 'network' ? 'network' : undefined
+}
+
+function getNetworkFailurePatch(err: unknown, fallbackEndpoint: ImageFailureEndpoint): Partial<TaskRecord> | null {
+  if (getApiFailureKind(err) !== 'network' && !isApiRequestNetworkError(err)) return null
+  return {
+    error: '网络异常',
+    failureEndpoint: getApiFailureEndpoint(err) ?? fallbackEndpoint,
+    failureKind: 'network',
+    failureRetryCount: getApiFailureRetryCount(err),
+  }
 }
 
 function getApiModeApiName(apiMode: ApiMode) {
@@ -3342,6 +3370,9 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     revisedPromptByImage: undefined,
+    failureEndpoint: undefined,
+    failureKind: undefined,
+    failureRetryCount: undefined,
     status: 'done',
     error: null,
     falRecoverable: false,
@@ -3371,7 +3402,8 @@ async function recoverFalTask(taskId: string) {
     await completeRecoveredFalTask(task, result)
     return
   } catch (err) {
-    if (isFalConnectionRecoverableError(err)) {
+    const retriesExhausted = (getApiFailureRetryCount(err) ?? 0) >= 3
+    if (!retriesExhausted && isFalConnectionRecoverableError(err)) {
       scheduleFalRecovery(taskId)
       return
     }
@@ -3379,7 +3411,12 @@ async function recoverFalTask(taskId: string) {
     clearFalRecoveryTimer(taskId)
     updateTaskInStore(taskId, {
       status: 'error',
-      error: getFalErrorMessage(err) ?? (err instanceof Error ? err.message : String(err)),
+      ...(getNetworkFailurePatch(err, 'status') ?? {
+        error: getFalErrorMessage(err) ?? (err instanceof Error ? err.message : String(err)),
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'status',
+        failureKind: undefined,
+        failureRetryCount: getApiFailureRetryCount(err),
+      }),
       ...getRawErrorPayload(err),
       falRecoverable: false,
       finishedAt: Date.now(),
@@ -3407,6 +3444,9 @@ async function completeRecoveredCompositeTask(task: TaskRecord, result: Awaited<
     },
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     ...(result.actualCost !== undefined ? { actualCost: result.actualCost } : {}),
+    failureEndpoint: undefined,
+    failureKind: undefined,
+    failureRetryCount: undefined,
     status: 'done',
     error: null,
     compositeRecoverable: false,
@@ -3428,6 +3468,9 @@ async function recoverCompositeTask(taskId: string) {
     updateTaskInStore(taskId, {
       status: 'error',
       error: 'Composite 任务缺少恢复所需的 API Key 或模型信息',
+      failureEndpoint: 'status',
+      failureKind: undefined,
+      failureRetryCount: undefined,
       compositeRecoverable: false,
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
@@ -3454,6 +3497,9 @@ async function recoverCompositeTask(taskId: string) {
         updateTaskInStore(taskId, {
           status: 'error',
           error: 'Composite 异步任务轮询超时',
+          failureEndpoint: 'status',
+          failureKind: undefined,
+          failureRetryCount: undefined,
           compositeRecoverable: false,
           finishedAt: Date.now(),
           elapsed: Date.now() - task.createdAt,
@@ -3474,7 +3520,8 @@ async function recoverCompositeTask(taskId: string) {
     clearCompositeRecoveryTimer(taskId)
     await completeRecoveredCompositeTask(task, result)
   } catch (err) {
-    if (isFalConnectionRecoverableError(err)) {
+    const retriesExhausted = (getApiFailureRetryCount(err) ?? 0) >= 3
+    if (!retriesExhausted && isFalConnectionRecoverableError(err)) {
       updateTaskInStore(taskId, { compositeRecoverable: true })
       scheduleCompositeRecovery(taskId)
       return
@@ -3483,7 +3530,12 @@ async function recoverCompositeTask(taskId: string) {
     clearCompositeRecoveryTimer(taskId)
     updateTaskInStore(taskId, {
       status: 'error',
-      error: err instanceof Error ? err.message : String(err),
+      ...(getNetworkFailurePatch(err, 'status') ?? {
+        error: err instanceof Error ? err.message : String(err),
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'status',
+        failureKind: undefined,
+        failureRetryCount: getApiFailureRetryCount(err),
+      }),
       ...getRawErrorPayload(err),
       compositeRecoverable: false,
       finishedAt: Date.now(),
@@ -3814,7 +3866,7 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
     }
     const recordsById = new Map(result.records.map((record) => [record.requestId, record]))
     const succeededRecords: ImageStatusRecord[] = []
-    const failedRequests: Array<{ requestIndex: number; error: string }> = []
+    const failedRequests: NonNullable<TaskRecord['outputErrors']> = []
     const pendingRequests: Array<{ requestId: string; requestIndex: number }> = []
 
     for (let i = 0; i < requestIds.length; i += 1) {
@@ -3829,7 +3881,7 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
         continue
       }
       if (record.status === 'failed') {
-        failedRequests.push({ requestIndex: i, error: getImageStatusFailureMessage(record) })
+        failedRequests.push({ requestIndex: i, error: getImageStatusFailureMessage(record), endpoint: 'status', requestId })
         continue
       }
       pendingRequests.push({ requestId, requestIndex: i })
@@ -3850,6 +3902,8 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
     const timedOutRequests = pendingRequests.map((request) => ({
       requestIndex: request.requestIndex,
       error: timedOut ? '图片状态查询超时' : '图片状态记录不存在或已过期',
+      endpoint: 'status' as const,
+      requestId: request.requestId,
     }))
     const allFailedRequests = [...failedRequests, ...timedOutRequests]
     clearAgentImageStatusRecoveryTimer(conversationId, roundId)
@@ -3864,6 +3918,9 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
     updateTaskInStore(task.id, {
       status: 'error',
       error,
+      failureEndpoint: 'status',
+      failureKind: undefined,
+      failureRetryCount: undefined,
       outputErrors: allFailedRequests.length ? allFailedRequests : undefined,
       imageStatusRecoverable: false,
       finishedAt: Date.now(),
@@ -3871,7 +3928,8 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
     })
     updateAgentRoundFromImageStatus(task, result.records, error)
   } catch (err) {
-    if (!timedOut && isFalConnectionRecoverableError(err)) {
+    const retriesExhausted = (getApiFailureRetryCount(err) ?? 0) >= 3
+    if (!timedOut && !retriesExhausted && isFalConnectionRecoverableError(err)) {
       updateAgentConversation(conversationId, (current) => ({
         ...current,
         updatedAt: Date.now(),
@@ -3885,19 +3943,25 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
 
     clearAgentImageStatusRecoveryTimer(conversationId, roundId)
     const error = err instanceof Error ? err.message : String(err)
+    const networkFailure = getNetworkFailurePatch(err, 'status')
     const task = await ensureAgentRoundImageStatusTask(conversation, requestRound, profile, requestIds)
     updateTaskInStore(task.id, {
       status: 'error',
-      error,
+      ...(networkFailure ?? {
+        error,
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'status',
+        failureKind: undefined,
+        failureRetryCount: getApiFailureRetryCount(err),
+      }),
       imageStatusRecoverable: false,
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
     })
-    updateAgentRoundFromImageStatus(task, [], error)
+    updateAgentRoundFromImageStatus(task, [], networkFailure?.error ?? error)
   }
 }
 
-async function completeRecoveredImageStatusTask(task: TaskRecord, records: ImageStatusRecord[], failedRequests: Array<{ requestIndex: number; error: string }>) {
+async function completeRecoveredImageStatusTask(task: TaskRecord, records: ImageStatusRecord[], failedRequests: NonNullable<TaskRecord['outputErrors']>) {
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
   if (!canRecoverTaskImageStatus(latest)) return
@@ -3912,15 +3976,21 @@ async function completeRecoveredImageStatusTask(task: TaskRecord, records: Image
     }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
+    const networkFailure = getNetworkFailurePatch(err, 'download')
     updateTaskInStore(task.id, {
       status: 'error',
-      error,
+      ...(networkFailure ?? {
+        error,
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'download',
+        failureKind: undefined,
+        failureRetryCount: getApiFailureRetryCount(err),
+      }),
       rawImageUrls: urls.length ? urls : undefined,
       imageStatusRecoverable: false,
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
     })
-    updateAgentRoundFromImageStatus(task, records, error)
+    updateAgentRoundFromImageStatus(task, records, networkFailure?.error ?? error)
     return
   }
   if (images.length === 0) {
@@ -3928,6 +3998,9 @@ async function completeRecoveredImageStatusTask(task: TaskRecord, records: Image
     updateTaskInStore(task.id, {
       status: 'error',
       error,
+      failureEndpoint: 'status',
+      failureKind: undefined,
+      failureRetryCount: undefined,
       rawImageUrls: urls.length ? urls : undefined,
       imageStatusRecoverable: false,
       finishedAt: Date.now(),
@@ -3950,6 +4023,9 @@ async function completeRecoveredImageStatusTask(task: TaskRecord, records: Image
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     revisedPromptByImage: undefined,
+    failureEndpoint: undefined,
+    failureKind: undefined,
+    failureRetryCount: undefined,
     status: 'done',
     error: null,
     imageStatusRecoverable: false,
@@ -4001,7 +4077,7 @@ async function recoverImageStatusTask(taskId: string) {
     }
     const recordsById = new Map(result.records.map((record) => [record.requestId, record]))
     const succeededRecords: ImageStatusRecord[] = []
-    const failedRequests: Array<{ requestIndex: number; error: string }> = []
+    const failedRequests: NonNullable<TaskRecord['outputErrors']> = []
     const pendingRequests: Array<{ requestId: string; requestIndex: number }> = []
 
     for (let i = 0; i < requestIds.length; i += 1) {
@@ -4016,7 +4092,7 @@ async function recoverImageStatusTask(taskId: string) {
         continue
       }
       if (record.status === 'failed') {
-        failedRequests.push({ requestIndex: i, error: getImageStatusFailureMessage(record) })
+        failedRequests.push({ requestIndex: i, error: getImageStatusFailureMessage(record), endpoint: 'status', requestId })
         continue
       }
       pendingRequests.push({ requestId, requestIndex: i })
@@ -4031,6 +4107,8 @@ async function recoverImageStatusTask(taskId: string) {
     const timedOutRequests = pendingRequests.map((request) => ({
       requestIndex: request.requestIndex,
       error: timedOut ? '图片状态查询超时' : '图片状态记录不存在或已过期',
+      endpoint: 'status' as const,
+      requestId: request.requestId,
     }))
     const allFailedRequests = [...failedRequests, ...timedOutRequests]
     clearImageStatusRecoveryTimer(taskId)
@@ -4044,6 +4122,9 @@ async function recoverImageStatusTask(taskId: string) {
     updateTaskInStore(taskId, {
       status: 'error',
       error,
+      failureEndpoint: 'status',
+      failureKind: undefined,
+      failureRetryCount: undefined,
       outputErrors: allFailedRequests.length ? allFailedRequests : undefined,
       imageStatusRecoverable: false,
       finishedAt: Date.now(),
@@ -4051,7 +4132,8 @@ async function recoverImageStatusTask(taskId: string) {
     })
     updateAgentRoundFromImageStatus(task, result.records, error)
   } catch (err) {
-    if (!timedOut && isFalConnectionRecoverableError(err)) {
+    const retriesExhausted = (getApiFailureRetryCount(err) ?? 0) >= 3
+    if (!timedOut && !retriesExhausted && isFalConnectionRecoverableError(err)) {
       updateTaskInStore(taskId, { imageStatusRecoverable: true })
       scheduleImageStatusRecovery(taskId)
       return
@@ -4059,14 +4141,20 @@ async function recoverImageStatusTask(taskId: string) {
 
     clearImageStatusRecoveryTimer(taskId)
     const error = err instanceof Error ? err.message : String(err)
+    const networkFailure = getNetworkFailurePatch(err, 'status')
     updateTaskInStore(taskId, {
       status: 'error',
-      error,
+      ...(networkFailure ?? {
+        error,
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'status',
+        failureKind: undefined,
+        failureRetryCount: getApiFailureRetryCount(err),
+      }),
       imageStatusRecoverable: false,
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
     })
-    updateAgentRoundFromImageStatus(task, [], error)
+    updateAgentRoundFromImageStatus(task, [], networkFailure?.error ?? error)
   }
 }
 
@@ -4824,9 +4912,14 @@ function markAgentRoundTasksFailed(
 
   for (const task of runningTasks) {
     useStore.getState().setTaskStreamPreview(task.id)
+    const isNetworkFailure = isApiRequestNetworkError(error)
     updateTaskInStore(task.id, {
       status: 'error',
-      error,
+      error: isNetworkFailure ? '网络异常' : error,
+      ...(isNetworkFailure ? {
+        failureKind: 'network' as const,
+        failureEndpoint: task.apiMode === 'responses' ? 'responses' as const : task.inputImageIds.length > 0 ? 'edit' as const : 'generation' as const,
+      } : {}),
       ...(rawResponsePayload ? { rawResponsePayload } : {}),
       falRecoverable: false,
       customRecoverable: false,
@@ -6784,6 +6877,7 @@ async function executeTask(taskId: string) {
       ? await callBackendCompositeImageApi({
           apiKey: task.apiOverride?.apiKey ?? '',
           clientRequestId: requestId,
+          idempotencyKey: task.idempotencyKey ?? task.id,
           model: activeProfile.model,
           prompt,
           params: task.params,
@@ -6823,9 +6917,15 @@ async function executeTask(taskId: string) {
             const latestTask = useStore.getState().tasks.find((item) => item.id === taskId)
             if (!latestTask || latestTask.status !== 'running') return
             useStore.getState().setTaskStreamPreview(taskId)
+            const networkFailure = getNetworkFailurePatch(error, 'edit')
             updateExecutingTask({
               status: 'error',
-              error: error.message,
+              ...(networkFailure ?? {
+                error: error.message,
+                failureEndpoint: getApiFailureEndpoint(error) ?? 'edit',
+                failureKind: undefined,
+                failureRetryCount: getApiFailureRetryCount(error),
+              }),
               falRecoverable: false,
               customRecoverable: false,
               imageStatusRecoverable: false,
@@ -6833,13 +6933,15 @@ async function executeTask(taskId: string) {
               elapsed: Date.now() - task.createdAt,
             })
             useStore.getState().setDetailTaskId(taskId)
-            useStore.getState().showToast(error.message, 'error')
+            useStore.getState().showToast(networkFailure?.error ?? error.message, 'error')
           },
         })
       : backendRequest
       ? await callBackendImageApi({
           project: backendRequest.project,
           task: task.requestId ? task : { ...task, requestId },
+          idempotencyKey: task.idempotencyKey ?? task.id,
+          requestIds: task.imageStatusRequestIds,
           manageTaskRecord: backendManagesTaskRecord,
           apiKey: backendRequest.apiKey,
           provider: 'openai',
@@ -6948,6 +7050,9 @@ async function executeTask(taskId: string) {
       actualParams,
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
+      failureEndpoint: undefined,
+      failureKind: undefined,
+      failureRetryCount: undefined,
       ...(result.actualCost !== undefined ? { actualCost: result.actualCost } : {}),
       status: 'done',
       finishedAt: Date.now(),
@@ -6997,19 +7102,50 @@ async function executeTask(taskId: string) {
     const latestCompositeRequestInfo = compositeRequestInfo ?? (latestTask.compositeRequestId
       ? { requestId: latestTask.compositeRequestId, statusUrl: latestTask.compositeStatusUrl }
       : null)
+    const hasPersistedStatusRequest = Boolean(latestCompositeRequestInfo || latestFalRequestInfo || latestCustomTaskInfo || latestTask.imageStatusRequestIds?.length)
+    const networkFailure = getNetworkFailurePatch(
+      err,
+      hasPersistedStatusRequest
+        ? 'status'
+        : activeProfile.apiMode === 'responses'
+          ? 'responses'
+          : task.inputImageIds.length > 0 || task.maskImageId
+            ? 'edit'
+            : 'generation',
+    )
     if (getApiErrorStatus(err) === 524 && latestTask.imageStatusRequestIds?.length && (latestTask.apiProvider ?? 'openai') !== 'fal') {
       updateExecutingTask({
         status: 'running',
         error: null,
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureRetryCount: getApiFailureRetryCount(err),
         imageStatusRecoverable: true,
         finishedAt: null,
         elapsed: null,
       })
       scheduleImageStatusRecovery(taskId, 0)
+    } else if (networkFailure) {
+      updateExecutingTask({
+        status: 'error',
+        ...networkFailure,
+        ...getRawErrorPayload(err),
+        falRecoverable: false,
+        customRecoverable: false,
+        compositeRecoverable: false,
+        imageStatusRecoverable: false,
+        ...(latestFalRequestInfo ? { falRequestId: latestFalRequestInfo.requestId, falEndpoint: latestFalRequestInfo.endpoint } : {}),
+        ...(latestCustomTaskInfo ? { customTaskId: latestCustomTaskInfo.taskId } : {}),
+        ...(latestCompositeRequestInfo ? { compositeRequestId: latestCompositeRequestInfo.requestId, compositeStatusUrl: latestCompositeRequestInfo.statusUrl } : {}),
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      useStore.getState().showToast('网络异常，请稍后重试。', 'error')
     } else if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isFalConnectionRecoverableError(err)) {
       updateExecutingTask({
         status: 'error',
         error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureRetryCount: getApiFailureRetryCount(err),
         falRequestId: latestFalRequestInfo.requestId,
         falEndpoint: latestFalRequestInfo.endpoint,
         falRecoverable: true,
@@ -7021,6 +7157,8 @@ async function executeTask(taskId: string) {
       updateExecutingTask({
         status: 'error',
         error: '请求连接已断开，之后会继续查询图片状态。',
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureRetryCount: getApiFailureRetryCount(err),
         imageStatusRecoverable: true,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
@@ -7030,6 +7168,8 @@ async function executeTask(taskId: string) {
       updateExecutingTask({
         status: 'error',
         error: 'Composite 请求连接已断开，之后会继续查询任务结果。',
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureRetryCount: getApiFailureRetryCount(err),
         compositeRequestId: latestCompositeRequestInfo.requestId,
         compositeStatusUrl: latestCompositeRequestInfo.statusUrl,
         compositeRecoverable: true,
@@ -7041,6 +7181,8 @@ async function executeTask(taskId: string) {
       updateExecutingTask({
         status: 'error',
         error: '与自定义异步任务的连接已断开，之后会继续查询任务结果。',
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureRetryCount: getApiFailureRetryCount(err),
         customTaskId: latestCustomTaskInfo.taskId,
         customRecoverable: true,
         finishedAt: Date.now(),
@@ -7066,6 +7208,9 @@ async function executeTask(taskId: string) {
       updateExecutingTask({
         status: 'error',
         error: errorMessage,
+        failureEndpoint: getApiFailureEndpoint(err),
+        failureKind: undefined,
+        failureRetryCount: getApiFailureRetryCount(err),
         ...getRawErrorPayload(err),
         falRecoverable: false,
         customRecoverable: false,
@@ -7150,6 +7295,9 @@ export async function redownloadTaskImage(task: TaskRecord) {
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     status: 'done',
     error: null,
+    failureEndpoint: undefined,
+    failureKind: undefined,
+    failureRetryCount: undefined,
     finishedAt: Date.now(),
     elapsed: Date.now() - latest.createdAt,
   })
@@ -7377,7 +7525,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteImage
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 重试失败的任务：创建新任务并执行 */
+/** 重试失败的任务：创建新任务并执行。网络/限流等任务级失败由界面优先调用原位重试。 */
 export async function retryTask(task: TaskRecord) {
   const { settings, oidcApiOverride } = useStore.getState()
   const baseProfile = getActiveApiProfile(settings)
@@ -7405,9 +7553,11 @@ export async function retryTask(task: TaskRecord) {
     ? createTransparentOutputMeta(task.prompt.trim())
     : null
   const taskId = genId()
+  const shouldReuseIdempotencyKey = task.status === 'error' || Boolean(task.outputErrors?.length)
   const newTask: TaskRecord = {
     id: taskId,
     requestId: createRequestId(),
+    ...(shouldReuseIdempotencyKey ? { idempotencyKey: task.idempotencyKey ?? task.id } : {}),
     ...(task.projectId ? { projectId: task.projectId } : {}),
     prompt: task.prompt,
     params: taskParams,
@@ -7423,6 +7573,7 @@ export async function retryTask(task: TaskRecord) {
     transparentOutput: transparentMeta?.transparentOutput,
     transparentPrompt: transparentMeta?.effectivePrompt,
     outputImages: [],
+    ...(task.imageStatusRequestIds?.length ? { imageStatusRequestIds: [...task.imageStatusRequestIds] } : {}),
     status: 'running',
     error: null,
     createdAt: Date.now(),
@@ -7436,6 +7587,47 @@ export async function retryTask(task: TaskRecord) {
   touchProject(task.projectId, false)
 
   executeTask(taskId)
+}
+
+/** 网络异常重试：复用原任务、请求链路和画布占位符。 */
+export async function retryTaskInPlace(task: TaskRecord) {
+  const latest = useStore.getState().tasks.find((item) => item.id === task.id)
+  if (!latest || latest.status !== 'error') throw new Error('当前任务不可重试')
+  if (activeTaskExecutions.has(latest.id)) return
+
+  clearFalRecoveryTimer(latest.id)
+  clearCustomRecoveryTimer(latest.id)
+  clearCompositeRecoveryTimer(latest.id)
+  clearImageStatusRecoveryTimer(latest.id)
+  await updateTaskInStore(latest.id, {
+    idempotencyKey: latest.idempotencyKey ?? latest.id,
+    status: 'running',
+    error: null,
+    falRecoverable: false,
+    customRecoverable: false,
+    compositeRecoverable: false,
+    imageStatusRecoverable: false,
+    finishedAt: null,
+    elapsed: null,
+  })
+
+  if (latest.failureEndpoint === 'status' && latest.compositeRequestId) {
+    void recoverCompositeTask(latest.id)
+    return
+  }
+  if (latest.failureEndpoint === 'status' && latest.falRequestId && latest.falEndpoint) {
+    void recoverFalTask(latest.id)
+    return
+  }
+  if (latest.failureEndpoint === 'status' && latest.customTaskId) {
+    void recoverCustomTask(latest.id)
+    return
+  }
+  if (latest.failureEndpoint === 'status' && latest.imageStatusRequestIds?.length) {
+    void recoverImageStatusTask(latest.id)
+    return
+  }
+  void executeTask(latest.id)
 }
 
 /** 复用配置 */
@@ -7872,6 +8064,9 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     revisedPromptByImage: undefined,
+    failureEndpoint: undefined,
+    failureKind: undefined,
+    failureRetryCount: undefined,
     status: 'done',
     error: null,
     customRecoverable: false,
@@ -7903,9 +8098,15 @@ async function recoverCustomTask(taskId: string) {
     await completeRecoveredCustomTask(task, result)
   } catch (err) {
     clearCustomRecoveryTimer(taskId)
+    const networkFailure = getNetworkFailurePatch(err, 'status')
     updateTaskInStore(taskId, {
       status: 'error',
-      error: err instanceof Error ? err.message : String(err),
+      ...(networkFailure ?? {
+        error: err instanceof Error ? err.message : String(err),
+        failureEndpoint: getApiFailureEndpoint(err) ?? 'status',
+        failureKind: undefined,
+        failureRetryCount: getApiFailureRetryCount(err),
+      }),
       ...getRawErrorPayload(err),
       customRecoverable: false,
       finishedAt: Date.now(),

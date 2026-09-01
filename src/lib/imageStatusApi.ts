@@ -1,7 +1,7 @@
 import type { ApiProfile } from '../types'
 import { authFetch, REQUEST_ID_HEADER } from '../auth/api'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
-import { getApiErrorMessage } from './imageApiShared'
+import { getApiErrorMessage, getApiResponseRetryCount, retryApiFetch, withApiFailureMetadata } from './imageApiShared'
 
 export const IMAGE_STATUS_QUERY_BATCH_SIZE = 100
 
@@ -87,24 +87,37 @@ async function queryImageStatusChunk(profile: ApiProfile, requestIds: string[], 
   const params = new URLSearchParams()
   params.set('request_ids', requestIds.join(','))
   const directUrl = `${buildApiUrl(profile.baseUrl, 'images/status/', proxyConfig, useApiProxy)}?${params.toString()}`
-  const response = options.viaBackend
-    ? await authFetch('/api/v1/images/status', {
-        method: 'POST',
-        headers: options.requestId ? { [REQUEST_ID_HEADER]: options.requestId } : undefined,
-        body: JSON.stringify({ api_key: profile.apiKey, request_ids: requestIds }),
-        cache: 'no-store',
-      })
-    : await fetch(directUrl, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${profile.apiKey}`,
-          ...(options.requestId ? { [REQUEST_ID_HEADER]: options.requestId } : {}),
-        },
-        cache: 'no-store',
-      })
+  const response = await retryApiFetch(
+    () => options.viaBackend
+      ? authFetch('/api/v1/images/status', {
+          method: 'POST',
+          headers: options.requestId ? { [REQUEST_ID_HEADER]: options.requestId } : undefined,
+          body: JSON.stringify({ api_key: profile.apiKey, request_ids: requestIds }),
+          cache: 'no-store',
+        })
+      : fetch(directUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${profile.apiKey}`,
+            ...(options.requestId ? { [REQUEST_ID_HEADER]: options.requestId } : {}),
+          },
+          cache: 'no-store',
+        }),
+    {
+      endpoint: 'status',
+      requestId: options.requestId,
+    },
+  )
 
   if (response.status === 404) return { records: [], notFound: requestIds }
-  if (!response.ok) throw new Error(await getApiErrorMessage(response))
+  if (!response.ok) {
+    throw withApiFailureMetadata(new Error(await getApiErrorMessage(response)), {
+      endpoint: 'status',
+      status: response.status,
+      requestId: options.requestId,
+      retryCount: getApiResponseRetryCount(response),
+    })
+  }
 
   const payload = await response.json()
   if (!isRecord(payload)) return { records: [], notFound: [] }

@@ -29,6 +29,7 @@ describe('callBackendCompositeImageApi', () => {
     const result = await callBackendCompositeImageApi({
       apiKey: 'composite-key',
       clientRequestId: 'frontend-request-1',
+      idempotencyKey: 'task-1',
       model: 'openai/gpt-image-2',
       prompt: '画一张图',
       params: { ...DEFAULT_PARAMS },
@@ -45,6 +46,7 @@ describe('callBackendCompositeImageApi', () => {
       headers: expect.objectContaining({
         'X-Request-ID': 'frontend-request-1',
         'X-Upstream-API-Key': 'composite-key',
+        'Idempotency-Key': 'task-1',
       }),
     }))
     expect(authFetch).toHaveBeenNthCalledWith(2, '/api/v1/model/openai/gpt-image-2/requests/request-1', expect.objectContaining({
@@ -86,6 +88,76 @@ describe('callBackendCompositeImageApi', () => {
     }))
     expect(result?.images).toEqual(['data:image/png;base64,AAECAw=='])
     expect(result?.actualCost).toBe(0.125)
+  })
+
+  it('retries a failed submission three times and reports the generation endpoint', async () => {
+    vi.mocked(authFetch).mockRejectedValue(new TypeError('Failed to fetch'))
+
+    const error = await callBackendCompositeImageApi({
+      apiKey: 'composite-key',
+      clientRequestId: 'frontend-network-request',
+      idempotencyKey: 'task-network',
+      model: 'gpt-image-2',
+      prompt: '网络测试',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    }).then(() => null, (err) => err)
+
+    expect(error).toMatchObject({
+      message: 'Failed to fetch',
+      endpoint: 'generation',
+      kind: 'network',
+      requestId: 'frontend-network-request',
+      retryCount: 3,
+    })
+    expect(authFetch).toHaveBeenCalledTimes(4)
+    for (const [, init] of vi.mocked(authFetch).mock.calls) {
+      expect(init?.headers).toMatchObject({
+        'Idempotency-Key': 'task-network',
+        'X-Request-ID': 'frontend-network-request',
+      })
+    }
+  })
+
+  it('reports the status endpoint when polling fails after three retries', async () => {
+    vi.mocked(authFetch).mockRejectedValue(new TypeError('Failed to fetch'))
+
+    const error = await queryBackendCompositeImageTask({
+      apiKey: 'composite-key',
+      model: 'gpt-image-2',
+      requestId: 'persisted-request',
+      clientRequestId: 'frontend-status-request',
+      params: { ...DEFAULT_PARAMS },
+    }).then(() => null, (err) => err)
+
+    expect(error).toMatchObject({ endpoint: 'status', kind: 'network', retryCount: 3 })
+    expect(authFetch).toHaveBeenCalledTimes(4)
+  })
+
+  it('retries HTTP 429 three times with the same request', async () => {
+    vi.mocked(authFetch)
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '0' } }))
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '0' } }))
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '0' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request_id: 'request-after-429' }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'COMPLETED',
+        images: [{ url: 'data:image/png;base64,AAECAw==' }],
+      }), { status: 200 }))
+
+    await callBackendCompositeImageApi({
+      apiKey: 'composite-key',
+      clientRequestId: 'frontend-429-request',
+      idempotencyKey: 'task-429',
+      model: 'gpt-image-2',
+      prompt: '限流测试',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    const submissionCalls = vi.mocked(authFetch).mock.calls.filter(([path]) => path === '/api/v1/model/gpt-image-2')
+    expect(submissionCalls).toHaveLength(4)
+    expect(submissionCalls.every(([, init]) => (init?.headers as Record<string, string>)['Idempotency-Key'] === 'task-429')).toBe(true)
   })
 
   it('unwraps nested data responses from Composite', async () => {

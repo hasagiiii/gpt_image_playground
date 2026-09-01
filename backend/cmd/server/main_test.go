@@ -63,3 +63,23 @@ func TestSetupLoggerWritesColorlessConsoleFormatToFile(t *testing.T) {
 		t.Fatalf("unexpected log content: %s", text)
 	}
 }
+
+func TestBuildCORSAllowsIdempotencyKey(t *testing.T) {
+	r := gin.New()
+	r.Use(buildCORS([]string{"http://localhost:5173"}))
+	r.POST("/test", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodOptions, "/test", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "idempotency-key")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("unexpected preflight status: %d", resp.Code)
+	}
+	if !strings.Contains(strings.ToLower(resp.Header().Get("Access-Control-Allow-Headers")), "idempotency-key") {
+		t.Fatalf("preflight does not allow Idempotency-Key: %q", resp.Header().Get("Access-Control-Allow-Headers"))
+	}
+}

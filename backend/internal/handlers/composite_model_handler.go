@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,11 +20,21 @@ import (
 
 const compositeAPIKeyHeader = "X-Upstream-API-Key"
 const maxCompositeResponseBytes = 64 << 20
+const compositeIdempotencyTTL = 10 * time.Minute
 
 type CompositeModelHandler struct {
-	providers imageProviderRegistry
-	upstream  config.CompositeAPIUpstreamConfig
-	client    *http.Client
+	providers            imageProviderRegistry
+	upstream             config.CompositeAPIUpstreamConfig
+	client               *http.Client
+	idempotencyMu        sync.Mutex
+	idempotencyResponses map[string]*compositeIdempotencyEntry
+}
+
+type compositeIdempotencyEntry struct {
+	done        chan struct{}
+	status      int
+	contentType string
+	body        []byte
 }
 
 func NewCompositeModelHandler(providers imageProviderRegistry, upstreams ...config.CompositeAPIUpstreamConfig) *CompositeModelHandler {
@@ -30,10 +43,56 @@ func NewCompositeModelHandler(providers imageProviderRegistry, upstreams ...conf
 		upstream = config.NormalizeUpstreamConfig(config.UpstreamConfig{CompositeAPI: upstreams[0]}).CompositeAPI
 	}
 	return &CompositeModelHandler{
-		providers: providers,
-		upstream:  upstream,
-		client:    &http.Client{Timeout: 2 * time.Minute},
+		providers:            providers,
+		upstream:             upstream,
+		client:               &http.Client{Timeout: 2 * time.Minute},
+		idempotencyResponses: make(map[string]*compositeIdempotencyEntry),
 	}
+}
+
+func (h *CompositeModelHandler) beginCompositeIdempotency(key string) (*compositeIdempotencyEntry, bool) {
+	h.idempotencyMu.Lock()
+	defer h.idempotencyMu.Unlock()
+	if entry, ok := h.idempotencyResponses[key]; ok {
+		return entry, false
+	}
+	entry := &compositeIdempotencyEntry{done: make(chan struct{})}
+	h.idempotencyResponses[key] = entry
+	return entry, true
+}
+
+func (h *CompositeModelHandler) completeCompositeIdempotency(key string, entry *compositeIdempotencyEntry, status int, contentType string, body []byte) {
+	h.idempotencyMu.Lock()
+	entry.status = status
+	entry.contentType = contentType
+	entry.body = append([]byte(nil), body...)
+	close(entry.done)
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		delete(h.idempotencyResponses, key)
+	}
+	h.idempotencyMu.Unlock()
+	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		time.AfterFunc(compositeIdempotencyTTL, func() {
+			h.idempotencyMu.Lock()
+			if h.idempotencyResponses[key] == entry {
+				delete(h.idempotencyResponses, key)
+			}
+			h.idempotencyMu.Unlock()
+		})
+	}
+}
+
+func replayCompositeIdempotency(c *gin.Context, entry *compositeIdempotencyEntry) {
+	select {
+	case <-entry.done:
+	case <-c.Request.Context().Done():
+		return
+	}
+	contentType := entry.contentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	c.Data(entry.status, contentType, entry.body)
 }
 
 func (h *CompositeModelHandler) Register(api *gin.RouterGroup) {
@@ -114,20 +173,59 @@ func (h *CompositeModelHandler) Proxy(c *gin.Context) {
 		request.Header.Set("Content-Type", contentType)
 	}
 
+	var idempotencyKey string
+	var idempotencyEntry *compositeIdempotencyEntry
+	if c.Request.Method == http.MethodPost {
+		idempotencyValue := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		if idempotencyValue == "" {
+			idempotencyValue = middleware.RequestIDFromContext(c.Request.Context())
+		}
+		idempotencyKey = userID + "\x00" + providerName + "\x00" + path + "\x00" + idempotencyValue
+		var idempotencyOwner bool
+		idempotencyEntry, idempotencyOwner = h.beginCompositeIdempotency(idempotencyKey)
+		if !idempotencyOwner {
+			replayCompositeIdempotency(c, idempotencyEntry)
+			return
+		}
+		request.Header.Set("Idempotency-Key", idempotencyValue)
+		requestCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 2*time.Minute)
+		defer cancel()
+		request = request.WithContext(requestCtx)
+	}
+	completeIdempotency := func(status int, contentType string, responseBody []byte) {
+		if idempotencyEntry != nil {
+			h.completeCompositeIdempotency(idempotencyKey, idempotencyEntry, status, contentType, responseBody)
+			idempotencyEntry = nil
+		}
+	}
+	defer func() {
+		if idempotencyEntry == nil {
+			return
+		}
+		body, _ := json.Marshal(gin.H{"code": http.StatusInternalServerError, "message": "Composite 代理请求未完成"})
+		completeIdempotency(http.StatusInternalServerError, "application/json", body)
+	}()
+
 	response, err := h.client.Do(request)
 	if err != nil {
 		log.Ctx(c.Request.Context()).Error().Err(err).Str("method", c.Request.Method).Str("upstream_url", endpoint).Msg("composite model proxy response")
-		c.JSON(http.StatusBadGateway, gin.H{"code": http.StatusBadGateway, "message": "Composite 上游连接失败: " + err.Error()})
+		responseData, _ := json.Marshal(gin.H{"code": http.StatusBadGateway, "message": "Composite 上游连接失败: " + err.Error()})
+		completeIdempotency(http.StatusBadGateway, "application/json", responseData)
+		c.Data(http.StatusBadGateway, "application/json", responseData)
 		return
 	}
 	defer response.Body.Close()
 	responseData, err := io.ReadAll(io.LimitReader(response.Body, maxCompositeResponseBytes+1))
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"code": http.StatusBadGateway, "message": "读取 Composite 上游回包失败"})
+		responseData, _ := json.Marshal(gin.H{"code": http.StatusBadGateway, "message": "读取 Composite 上游回包失败"})
+		completeIdempotency(http.StatusBadGateway, "application/json", responseData)
+		c.Data(http.StatusBadGateway, "application/json", responseData)
 		return
 	}
 	if len(responseData) > maxCompositeResponseBytes {
-		c.JSON(http.StatusBadGateway, gin.H{"code": http.StatusBadGateway, "message": "Composite 上游回包过大"})
+		responseData, _ := json.Marshal(gin.H{"code": http.StatusBadGateway, "message": "Composite 上游回包过大"})
+		completeIdempotency(http.StatusBadGateway, "application/json", responseData)
+		c.Data(http.StatusBadGateway, "application/json", responseData)
 		return
 	}
 	log.Ctx(c.Request.Context()).Info().
@@ -143,5 +241,6 @@ func (h *CompositeModelHandler) Proxy(c *gin.Context) {
 			c.Header(name, value)
 		}
 	}
+	completeIdempotency(response.StatusCode, response.Header.Get("Content-Type"), responseData)
 	c.Data(response.StatusCode, response.Header.Get("Content-Type"), responseData)
 }

@@ -1,4 +1,4 @@
-import type { AppSettings, TaskParams } from '../types'
+import type { AppSettings, ImageFailureEndpoint, ImageFailureKind, TaskOutputError, TaskParams } from '../types'
 import { blobToDataUrl } from './dataUrl'
 
 export const MIME_MAP: Record<string, string> = {
@@ -37,7 +37,7 @@ export interface CallApiResult {
   /** API 返回的原始图片 HTTP URL（非 base64 时记录） */
   rawImageUrls?: string[]
   /** 并发多图请求中失败的单张请求 */
-  failedRequests?: Array<{ requestIndex: number; error: string }>
+  failedRequests?: TaskOutputError[]
   /** 图片是否已由后端写入在线项目 */
   imagesStoredOnline?: boolean
   /** 后端写入在线项目后的图片 ID */
@@ -46,6 +46,106 @@ export interface CallApiResult {
   taskRecordQueued?: boolean
   /** 上游返回的实际费用（美元） */
   actualCost?: number
+}
+
+export type ApiFailure = Error & {
+  endpoint?: ImageFailureEndpoint
+  kind?: ImageFailureKind
+  status?: number
+  requestId?: string
+  retryCount?: number
+}
+
+export interface RetryApiFetchOptions {
+  endpoint: ImageFailureEndpoint
+  signal?: AbortSignal
+  requestId?: string
+  maxRetries?: number
+  retryableStatuses?: number[]
+}
+
+const NETWORK_ERROR_PATTERN = /failed to fetch|fetch failed|load failed|networkerror|network request failed/i
+
+export function isRetryableApiNetworkError(error: unknown): boolean {
+  if (error instanceof TypeError) return NETWORK_ERROR_PATTERN.test(error.message)
+  return error instanceof Error && NETWORK_ERROR_PATTERN.test(error.message)
+}
+
+function getRetryAfterDelay(response: Response, retryIndex: number): number {
+  const retryAfter = response.headers.get('Retry-After')
+  if (retryAfter) {
+    const seconds = Number(retryAfter)
+    if (Number.isFinite(seconds)) return Math.min(5000, Math.max(0, seconds * 1000))
+    const timestamp = Date.parse(retryAfter)
+    if (Number.isFinite(timestamp)) return Math.min(5000, Math.max(0, timestamp - Date.now()))
+  }
+  return Math.min(1000, 50 * (2 ** retryIndex))
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (delayMs <= 0) return
+  await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'))
+      return
+    }
+    const timer = setTimeout(resolve, delayMs)
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }, { once: true })
+  })
+}
+
+/** 网络断开或 429 时复用同一个请求标识，最多自动重试 3 次。 */
+export async function retryApiFetch(
+  request: () => Promise<Response>,
+  options: RetryApiFetchOptions,
+): Promise<Response> {
+  const maxRetries = options.maxRetries ?? 3
+  const retryableStatuses = options.retryableStatuses ?? [429]
+  let retryCount = 0
+
+  while (true) {
+    if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    try {
+      const response = await request()
+      if (!retryableStatuses.includes(response.status) || retryCount >= maxRetries) {
+        if (retryCount > 0) Object.defineProperty(response, 'retryCount', { configurable: true, value: retryCount })
+        return response
+      }
+      void response.body?.cancel()
+      await waitForRetry(getRetryAfterDelay(response, retryCount), options.signal)
+      retryCount += 1
+    } catch (error) {
+      if (options.signal?.aborted || !isRetryableApiNetworkError(error) || retryCount >= maxRetries) {
+        if (isRetryableApiNetworkError(error)) {
+          const failure = Object.assign(error instanceof Error ? error : new Error(String(error)), {
+            endpoint: options.endpoint,
+            kind: 'network',
+            requestId: options.requestId,
+            retryCount,
+          }) as ApiFailure
+          throw failure
+        }
+        throw error
+      }
+      await waitForRetry(Math.min(1000, 50 * (2 ** retryCount)), options.signal)
+      retryCount += 1
+    }
+  }
+}
+
+export function getApiResponseRetryCount(response: Response): number | undefined {
+  const retryCount = (response as Response & { retryCount?: unknown }).retryCount
+  return typeof retryCount === 'number' && Number.isFinite(retryCount) ? retryCount : undefined
+}
+
+export function withApiFailureMetadata(
+  error: Error,
+  metadata: Pick<ApiFailure, 'endpoint' | 'kind' | 'status' | 'requestId' | 'retryCount'>,
+): ApiFailure {
+  return Object.assign(error, metadata)
 }
 
 export function isHttpUrl(value: unknown): value is string {
@@ -153,26 +253,30 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
 
   let response: Response
   try {
-    response = await fetch(url, {
-      cache: 'no-store',
-      signal,
-    })
+    response = await retryApiFetch(
+      () => fetch(url, {
+        cache: 'no-store',
+        signal,
+      }),
+      { endpoint: 'download', signal },
+    )
   } catch (err) {
     if (err instanceof TypeError) {
+      const retryCount = typeof (err as ApiFailure).retryCount === 'number' ? (err as ApiFailure).retryCount : undefined
       const probe = await probeNoCorsReachability(url)
       if (probe === 'opaque') {
-        throw new Error(`图片已生成，但因服务商未允许跨域，图片链接下载失败。${IMAGE_FETCH_CORS_HINT}`)
+        throw withApiFailureMetadata(new Error(`图片已生成，但因服务商未允许跨域，图片链接下载失败。${IMAGE_FETCH_CORS_HINT}`), { endpoint: 'download', kind: 'network', retryCount })
       }
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        throw new Error(`图片链接下载失败（网络不可用）。${IMAGE_FETCH_CORS_HINT}`)
+        throw withApiFailureMetadata(new Error(`图片链接下载失败（网络不可用）。${IMAGE_FETCH_CORS_HINT}`), { endpoint: 'download', kind: 'network', retryCount })
       }
-      throw new Error(`图片链接下载失败（可能因跨域限制、链接过期或网络异常）。${IMAGE_FETCH_CORS_HINT}`)
+      throw withApiFailureMetadata(new Error(`图片链接下载失败（可能因跨域限制、链接过期或网络异常）。${IMAGE_FETCH_CORS_HINT}`), { endpoint: 'download', kind: 'network', retryCount })
     }
     throw err
   }
 
   if (!response.ok) {
-    throw new Error(`图片 URL 下载失败：HTTP ${response.status}`)
+    throw withApiFailureMetadata(new Error(`图片 URL 下载失败：HTTP ${response.status}`), { endpoint: 'download', status: response.status })
   }
 
   const blob = await response.blob()

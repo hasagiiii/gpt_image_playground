@@ -81,6 +81,39 @@ func TestCompositeModelHandlerForwardsAsyncRequests(t *testing.T) {
 	}
 }
 
+func TestCompositeModelHandlerReplaysIdempotentSubmission(t *testing.T) {
+	upstreamCalls := 0
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		if req.Header.Get("Idempotency-Key") != "task-network" {
+			t.Fatalf("unexpected idempotency key: %q", req.Header.Get("Idempotency-Key"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"request_id":"request-idempotent"}`)),
+			Request:    req,
+		}, nil
+	})
+	r := newCompositeModelRouter(transport, true)
+
+	for index := 0; index < 2; index++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/model/gpt-image-2", strings.NewReader(`{"prompt":"画图"}`))
+		req.Header.Set(compositeAPIKeyHeader, "composite-key")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "task-network")
+		req.Header.Set(middleware.RequestIDHeader, "frontend-request-"+string(rune('a'+index)))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusAccepted || w.Body.String() != `{"request_id":"request-idempotent"}` {
+			t.Fatalf("unexpected replay response: status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("expected one upstream submission, got %d", upstreamCalls)
+	}
+}
+
 func TestCompositeModelHandlerRequiresAuthentication(t *testing.T) {
 	r := newCompositeModelRouter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		t.Fatalf("upstream must not be called: %s", req.URL)

@@ -259,7 +259,7 @@ func buildCORS(origins []string) gin.HandlerFunc {
 	return cors.New(cors.Config{
 		AllowOrigins:     origins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-OIDC-Access-Token", "X-Upstream-API-Key", middleware.RequestIDHeader, "X-Client-Request-ID"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-OIDC-Access-Token", "X-Upstream-API-Key", middleware.RequestIDHeader, "X-Client-Request-ID", "Idempotency-Key"},
 		ExposeHeaders:    []string{"Content-Length", middleware.RequestIDHeader, "X-Project-Image-URL"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,

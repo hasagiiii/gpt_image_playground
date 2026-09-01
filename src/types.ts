@@ -173,10 +173,25 @@ export interface MaskDraft {
 
 export type TaskStatus = 'running' | 'done' | 'error'
 
+export type ImageFailureEndpoint = 'generation' | 'edit' | 'responses' | 'status' | 'result' | 'download' | 'agent'
+export type ImageFailureKind = 'network'
+
+export interface TaskOutputError {
+  requestIndex: number
+  error: string
+  endpoint?: ImageFailureEndpoint
+  kind?: ImageFailureKind
+  status?: number
+  requestId?: string
+  retryCount?: number
+}
+
 export interface TaskRecord {
   id: string
   /** 前端生成的请求链路 ID，通过 X-Request-ID 传递 */
   requestId?: string
+  /** 在线后端生图重试时复用的幂等键 */
+  idempotencyKey?: string
   /** 所属项目 ID；旧版任务可能没有该字段 */
   projectId?: string
   prompt: string
@@ -239,7 +254,13 @@ export interface TaskRecord {
   /** Agent 引用使用的稳定输出槽位；删除单图时保留 null，避免后续引用编号漂移 */
   outputImageSlots?: Array<string | null>
   /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */
-  outputErrors?: Array<{ requestIndex: number; error: string }>
+  outputErrors?: TaskOutputError[]
+  /** 任务级失败所对应的接口阶段 */
+  failureEndpoint?: ImageFailureEndpoint
+  /** 任务级失败类型，用于区分网络异常等特殊展示 */
+  failureKind?: ImageFailureKind
+  /** 任务级请求已自动重试的次数 */
+  failureRetryCount?: number
   /** 流式生成的中间步骤图片 id 列表，仅失败时保留供排查/下载 */
   streamPartialImageIds?: string[]
   /** API 返回的原始图片 HTTP URL（非 base64 时记录） */

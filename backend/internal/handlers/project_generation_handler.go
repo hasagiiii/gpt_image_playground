@@ -37,11 +37,13 @@ const cloudflareOriginTimeoutStatus = 524
 
 type generationLogResponseWriter struct {
 	gin.ResponseWriter
-	body      bytes.Buffer
-	truncated bool
+	body         bytes.Buffer
+	responseBody bytes.Buffer
+	truncated    bool
 }
 
 func (w *generationLogResponseWriter) Write(data []byte) (int, error) {
+	_, _ = w.responseBody.Write(data)
 	remaining := maxGenerationLogResponseBytes - w.body.Len()
 	if remaining > 0 {
 		captured := len(data)
@@ -170,10 +172,20 @@ type imageProviderRegistry interface {
 }
 
 type ProjectGenerationHandler struct {
-	projects  projectGenerationStore
-	providers imageProviderRegistry
-	client    *http.Client
-	upstreams config.UpstreamConfig
+	projects             projectGenerationStore
+	providers            imageProviderRegistry
+	client               *http.Client
+	upstreams            config.UpstreamConfig
+	idempotencyMu        sync.Mutex
+	idempotencyResponses map[string]*generationIdempotencyEntry
+}
+
+type generationIdempotencyEntry struct {
+	done        chan struct{}
+	status      int
+	contentType string
+	body        []byte
+	result      *projectGenerationResponse
 }
 
 func NewProjectGenerationHandler(projects projectGenerationStore, providers imageProviderRegistry, upstreams ...config.UpstreamConfig) *ProjectGenerationHandler {
@@ -182,11 +194,66 @@ func NewProjectGenerationHandler(projects projectGenerationStore, providers imag
 		upstreamConfig = config.NormalizeUpstreamConfig(upstreams[0])
 	}
 	return &ProjectGenerationHandler{
-		projects:  projects,
-		providers: providers,
-		client:    &http.Client{Timeout: generationExecutionTimeout},
-		upstreams: upstreamConfig,
+		projects:             projects,
+		providers:            providers,
+		client:               &http.Client{Timeout: generationExecutionTimeout},
+		upstreams:            upstreamConfig,
+		idempotencyResponses: make(map[string]*generationIdempotencyEntry),
 	}
+}
+
+func generationIdempotencyKey(userID, projectID string, req projectGenerationRequest) string {
+	key := strings.TrimSpace(req.IdempotencyKey)
+	if key == "" {
+		key = req.TaskID
+	}
+	return userID + "\x00" + projectID + "\x00" + key
+}
+
+func (h *ProjectGenerationHandler) beginGenerationIdempotency(key string) (*generationIdempotencyEntry, bool) {
+	h.idempotencyMu.Lock()
+	defer h.idempotencyMu.Unlock()
+	if entry, ok := h.idempotencyResponses[key]; ok {
+		return entry, false
+	}
+	entry := &generationIdempotencyEntry{done: make(chan struct{})}
+	h.idempotencyResponses[key] = entry
+	return entry, true
+}
+
+func (h *ProjectGenerationHandler) completeGenerationIdempotency(key string, entry *generationIdempotencyEntry, status int, contentType string, body []byte, result *projectGenerationResponse) {
+	h.idempotencyMu.Lock()
+	entry.status = status
+	entry.contentType = contentType
+	entry.body = append([]byte(nil), body...)
+	entry.result = result
+	close(entry.done)
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		delete(h.idempotencyResponses, key)
+	}
+	h.idempotencyMu.Unlock()
+	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		time.AfterFunc(30*time.Second, func() {
+			h.idempotencyMu.Lock()
+			if h.idempotencyResponses[key] == entry {
+				delete(h.idempotencyResponses, key)
+			}
+			h.idempotencyMu.Unlock()
+		})
+	}
+}
+
+func replayGenerationIdempotency(c *gin.Context, entry *generationIdempotencyEntry) {
+	select {
+	case <-entry.done:
+	case <-c.Request.Context().Done():
+		return
+	}
+	contentType := entry.contentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	c.Data(entry.status, contentType, entry.body)
 }
 
 func (h *ProjectGenerationHandler) Register(api *gin.RouterGroup) {
@@ -320,20 +387,21 @@ type projectGenerationParams struct {
 }
 
 type projectGenerationRequest struct {
-	TaskID       string                  `json:"task_id"`
-	ProjectTitle string                  `json:"project_title"`
-	Project      json.RawMessage         `json:"project"`
-	Task         json.RawMessage         `json:"task"`
-	APIKey       string                  `json:"api_key"`
-	Provider     string                  `json:"provider"`
-	Model        string                  `json:"model"`
-	APIMode      string                  `json:"api_mode"`
-	AllowRewrite bool                    `json:"allow_prompt_rewrite"`
-	RequestIDs   []string                `json:"request_ids"`
-	Prompt       string                  `json:"prompt"`
-	Params       projectGenerationParams `json:"params"`
-	InputImages  []string                `json:"input_images"`
-	Mask         string                  `json:"mask"`
+	TaskID         string                  `json:"task_id"`
+	ProjectTitle   string                  `json:"project_title"`
+	Project        json.RawMessage         `json:"project"`
+	Task           json.RawMessage         `json:"task"`
+	APIKey         string                  `json:"api_key"`
+	Provider       string                  `json:"provider"`
+	Model          string                  `json:"model"`
+	APIMode        string                  `json:"api_mode"`
+	AllowRewrite   bool                    `json:"allow_prompt_rewrite"`
+	RequestIDs     []string                `json:"request_ids"`
+	Prompt         string                  `json:"prompt"`
+	Params         projectGenerationParams `json:"params"`
+	InputImages    []string                `json:"input_images"`
+	Mask           string                  `json:"mask"`
+	IdempotencyKey string                  `json:"-"`
 }
 
 type upstreamImageItem struct {
@@ -409,6 +477,9 @@ func buildGenerationTaskRecord(req projectGenerationRequest, result *projectGene
 	task["falRecoverable"] = false
 	task["customRecoverable"] = false
 	task["compositeRecoverable"] = false
+	delete(task, "failureEndpoint")
+	delete(task, "failureKind")
+	delete(task, "failureRetryCount")
 
 	if status == http.StatusAccepted && result == nil {
 		task["status"] = "running"
@@ -437,6 +508,13 @@ func buildGenerationTaskRecord(req projectGenerationRequest, result *projectGene
 	if status < http.StatusOK || status >= http.StatusMultipleChoices || result == nil {
 		task["status"] = "error"
 		task["error"] = message
+		failureEndpoint := "generation"
+		if req.APIMode == "responses" {
+			failureEndpoint = "responses"
+		} else if len(req.InputImages) > 0 || req.Mask != "" {
+			failureEndpoint = "edit"
+		}
+		task["failureEndpoint"] = failureEndpoint
 		return json.Marshal(task)
 	}
 
@@ -622,6 +700,7 @@ func createUpstreamGenerationRequest(ctx context.Context, baseURL, userAgent str
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", userAgent)
 	request.Header.Set("x-client-request-id", req.RequestIDs[0])
+	request.Header.Set("Idempotency-Key", req.RequestIDs[0])
 	middleware.SetRequestIDHeader(request)
 	return request, nil
 }
@@ -847,6 +926,7 @@ func createUpstreamResponsesRequest(ctx context.Context, baseURL, userAgent stri
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", userAgent)
 	request.Header.Set("x-client-request-id", requestID)
+	request.Header.Set("Idempotency-Key", requestID)
 	middleware.SetRequestIDHeader(request)
 	return request, nil
 }
@@ -1084,6 +1164,7 @@ func (h *ProjectGenerationHandler) Generate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "valid generation request required"})
 		return
 	}
+	req.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if req.APIMode == "" {
 		req.APIMode = "images"
 	}
@@ -1115,6 +1196,25 @@ func (h *ProjectGenerationHandler) Generate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "image provider unavailable"})
 		return
 	}
+	idempotencyKey := generationIdempotencyKey(userID, projectID, req)
+	idempotencyEntry, idempotencyOwner := h.beginGenerationIdempotency(idempotencyKey)
+	if !idempotencyOwner {
+		replayGenerationIdempotency(c, idempotencyEntry)
+		if idempotencyEntry.result != nil && len(req.Task) > 0 {
+			h.saveGenerationTaskRecordAsync(c.Request.Context(), userID, projectID, req, idempotencyEntry.result, idempotencyEntry.status, "")
+		}
+		return
+	}
+	defer func() {
+		h.completeGenerationIdempotency(
+			idempotencyKey,
+			idempotencyEntry,
+			c.Writer.Status(),
+			c.Writer.Header().Get("Content-Type"),
+			responseWriter.responseBody.Bytes(),
+			recordResult,
+		)
+	}()
 	generationCtx := c.Request.Context()
 	if len(req.Task) > 0 {
 		// 在线项目请求需在浏览器断开后继续执行，结果由状态接口和任务归档恢复。

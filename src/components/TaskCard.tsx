@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { TaskRecord } from '../types'
-import { useStore, ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail, retryTask, redownloadTaskImage } from '../store'
+import { useStore, ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail, retryImage, retryTaskInPlace, redownloadTaskImage } from '../store'
 import { formatImageRatio } from '../lib/size'
 import { formatActualCost } from '../lib/cost'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
@@ -9,7 +9,7 @@ import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { uploadMaterialImage } from '../lib/materialApi'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getTaskIds } from '../lib/taskIds'
-import { CloudUploadIcon, CodeIcon, CopyIcon, DownloadIcon, TransparentBgIcon } from './icons'
+import { CloudUploadIcon, CodeIcon, CopyIcon, DownloadIcon, RefreshIcon, TransparentBgIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
 interface Props {
@@ -81,6 +81,7 @@ export default function TaskCard({
   const [streamPreviewLoaded, setStreamPreviewLoaded] = useState(false)
   const [savingToMaterials, setSavingToMaterials] = useState(false)
   const [redownloadPending, setRedownloadPending] = useState(false)
+  const [retryPending, setRetryPending] = useState(false)
   const [actualCostHovered, setActualCostHovered] = useState(false)
   const [actualCostOpen, setActualCostOpen] = useState(false)
   const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
@@ -380,6 +381,7 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
+  const isNetworkFailure = task.failureKind === 'network' || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(task.error ?? '')
   const taskIds = getTaskIds(task)
 
   const handleCopyFailureId = async (label: 'request_id' | 'task_id', value: string) => {
@@ -413,6 +415,20 @@ export default function TaskCard({
     }
   }
 
+  const handleRetry = async () => {
+    if (retryPending) return
+    setRetryPending(true)
+    try {
+      if (hasPartialOutputFailure) await retryImage(task)
+      else await retryTaskInPlace(task)
+      showToast('已开始重试生成', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '重试生成失败', 'error')
+    } finally {
+      setRetryPending(false)
+    }
+  }
+
   return (
     <div className="relative rounded-xl">
       {/* 侧滑底图 */}
@@ -441,6 +457,8 @@ export default function TaskCard({
         } ${
           task.status === 'running'
             ? 'border-blue-400 generating'
+            : isNetworkFailure
+            ? '!border-yellow-300 !bg-yellow-50 dark:!border-yellow-700/70 dark:!bg-yellow-950/30'
             : isSelected
             ? 'border-blue-500 shadow-md ring-2 ring-blue-500/50'
             : 'border-gray-200 dark:border-white/[0.08] hover:border-gray-300 dark:hover:border-white/[0.18]'
@@ -487,7 +505,7 @@ export default function TaskCard({
       )}
       <div className="flex h-40">
         {/* 左侧图片区域 */}
-        <div className="w-40 min-w-[10rem] h-full bg-gray-100 dark:bg-black/20 relative flex items-center justify-center overflow-hidden flex-shrink-0">
+        <div className={`w-40 min-w-[10rem] h-full relative flex items-center justify-center overflow-hidden flex-shrink-0 ${isNetworkFailure ? 'bg-yellow-100 dark:bg-yellow-950/50' : 'bg-gray-100 dark:bg-black/20'}`}>
           {task.status === 'running' && streamPreviewSrc && (
             <>
               <img
@@ -551,7 +569,7 @@ export default function TaskCard({
           {task.status === 'error' && !isFalReconnecting && (
             <div className="flex flex-col items-center gap-1 px-2">
               <svg
-                className={`w-7 h-7 ${isInterrupted ? 'text-yellow-400' : 'text-red-400'}`}
+                className={`w-7 h-7 ${isInterrupted || isNetworkFailure ? 'text-yellow-500' : 'text-red-400'}`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -563,6 +581,21 @@ export default function TaskCard({
                   d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
+              {isNetworkFailure ? (
+                <>
+                  <span className="flex items-center gap-1 text-center text-sm font-medium leading-tight text-yellow-700 dark:text-yellow-300">
+                    <span>网络异常，请稍后重试。</span>
+                    <button type="button" disabled={retryPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryPending ? '正在重试' : '重试请求'} onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetry() }}><RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} /></button>
+                  </span>
+                  {task.failureEndpoint && <span className="text-xs text-yellow-700 dark:text-yellow-300">失败接口：{task.failureEndpoint}</span>}
+                  {(task.requestId || taskIds.length > 0) && (
+                    <span className="flex max-w-full flex-col items-center gap-1 text-center font-mono text-xs leading-5 text-yellow-700/90 dark:text-yellow-300/90">
+                      {task.requestId && <span className="flex max-w-full items-center gap-1 break-all"><span>request_id: {task.requestId}</span><button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-yellow-700 hover:bg-yellow-100 dark:text-yellow-300 dark:hover:bg-yellow-900/50" aria-label="复制 request_id" title="复制 request_id" onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('request_id', task.requestId!) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>}
+                      {taskIds.map((id) => <span key={id} className="flex max-w-full items-center gap-1 break-all"><span>task_id: {id}</span><button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-yellow-700 hover:bg-yellow-100 dark:text-yellow-300 dark:hover:bg-yellow-900/50" aria-label="复制 task_id" title="复制 task_id" onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('task_id', id) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>)}
+                    </span>
+                  )}
+                </>
+              ) : <>
               <span className={`text-xs text-center leading-tight ${isInterrupted ? 'text-yellow-500' : 'text-red-400'}`}>
                 {isInterrupted ? '已停止' : '失败'}
               </span>
@@ -598,6 +631,8 @@ export default function TaskCard({
                       </button>
                     )}
                   </span>}
+                  {task.failureEndpoint && <span className="text-xs text-red-400">失败接口：{task.failureEndpoint}</span>}
+                  {task.failureRetryCount !== undefined && <span className="text-xs text-red-400">自动重试：{task.failureRetryCount} 次</span>}
                   {(task.requestId || taskIds.length > 0) && (
                     <span className="flex max-w-full flex-col items-center gap-1 text-center font-mono text-base leading-6 text-red-500/90 dark:text-red-300/90">
                       {task.requestId && <span className="flex max-w-full items-center gap-1 break-all"><span>request_id: {task.requestId}</span><button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-red-500 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制 request_id" title="复制 request_id" onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('request_id', task.requestId!) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>}
@@ -606,6 +641,7 @@ export default function TaskCard({
                   )}
                 </>
               )}
+              </>}
             </div>
           )}
           {task.status === 'done' && thumbSrc && (
@@ -798,15 +834,14 @@ export default function TaskCard({
               onTouchEnd={(e) => e.stopPropagation()}
               onTouchCancel={(e) => e.stopPropagation()}
             >
-              {((task.status === 'error' && !isFalReconnecting) || settings.alwaysShowRetryButton) && (
+              {((task.status === 'error' && !isFalReconnecting) || hasPartialOutputFailure || settings.alwaysShowRetryButton) && (
                 <TaskActionButton
-                  tooltip="重试任务"
-                  onClick={() => retryTask(task)}
-                  className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
+                  tooltip={hasPartialOutputFailure ? '重试失败图片' : '重试任务'}
+                  onClick={() => void handleRetry()}
+                  disabled={retryPending}
+                  className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
+                  <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />
                 </TaskActionButton>
               )}
               <TaskActionButton

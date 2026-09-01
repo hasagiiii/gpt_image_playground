@@ -1,4 +1,4 @@
-import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefinition, type CustomProviderPollMapping, type CustomProviderResultMapping, type CustomProviderSubmitMapping, type ImageApiResponse, type ImageResponseItem, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
+import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefinition, type CustomProviderPollMapping, type CustomProviderResultMapping, type CustomProviderSubmitMapping, type ImageApiResponse, type ImageFailureEndpoint, type ImageResponseItem, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { REQUEST_ID_HEADER } from '../auth/api'
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
@@ -12,6 +12,7 @@ import {
   type CallApiResult,
   fetchImageUrlAsDataUrl,
   getApiErrorMessage,
+  getApiResponseRetryCount,
   getDataUrlDecodedByteSize,
   getDataUrlEncodedByteSize,
   isDataUrl,
@@ -20,6 +21,8 @@ import {
   MIME_MAP,
   normalizeBase64Image,
   pickActualParams,
+  retryApiFetch,
+  withApiFailureMetadata,
 } from './imageApiShared'
 
 const PROMPT_REWRITE_GUARD_PREFIX = 'Use the following text as the complete prompt. Do not rewrite it:'
@@ -523,9 +526,19 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   const successfulResults = results
     .filter((r): r is PromiseFulfilledResult<CallApiResult> => r.status === 'fulfilled')
     .map((r) => r.value)
-  const failedRequests = results.flatMap((r, requestIndex) =>
-    r.status === 'rejected' ? [{ requestIndex, error: getErrorMessage(r.reason) }] : [],
-  )
+  const failedRequests = results.flatMap((r, requestIndex) => {
+    if (r.status !== 'rejected') return []
+    const reason = r.reason as { message?: unknown; endpoint?: ImageFailureEndpoint; kind?: 'network'; status?: number; requestId?: string; retryCount?: number }
+    return [{
+      requestIndex,
+      error: getErrorMessage(r.reason),
+      ...(reason.endpoint ? { endpoint: reason.endpoint } : {}),
+      ...(reason.kind ? { kind: reason.kind } : {}),
+      ...(typeof reason.status === 'number' ? { status: reason.status } : {}),
+      ...(reason.requestId ? { requestId: reason.requestId } : {}),
+      ...(typeof reason.retryCount === 'number' ? { retryCount: reason.retryCount } : {}),
+    }]
+  })
 
   if (successfulResults.length === 0) {
     const firstError = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
@@ -630,16 +643,19 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         formData.append('mask', maskBlob, 'mask.png')
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy), {
-        method: 'POST',
-        headers: {
-          ...requestHeaders,
-          'x-client-request-id': imageStatusRequestId,
-        },
-        cache: 'no-store',
-        body: formData,
-        signal: controller.signal,
-      })
+      response = await retryApiFetch(
+        () => fetch(buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy), {
+          method: 'POST',
+          headers: {
+            ...requestHeaders,
+            'x-client-request-id': imageStatusRequestId,
+          },
+          cache: 'no-store',
+          body: formData,
+          signal: controller.signal,
+        }),
+        { endpoint: 'edit', signal: controller.signal, requestId: imageStatusRequestId },
+      )
     } else {
       const body: Record<string, unknown> = {
         model: profile.model,
@@ -667,24 +683,28 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         body.partial_images = getStreamPartialImages(profile)
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
-        method: 'POST',
-        headers: {
-          ...requestHeaders,
-          'x-client-request-id': imageStatusRequestId,
-          'Content-Type': 'application/json',
-        },
-        cache: 'no-store',
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
+      response = await retryApiFetch(
+        () => fetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
+          method: 'POST',
+          headers: {
+            ...requestHeaders,
+            'x-client-request-id': imageStatusRequestId,
+            'Content-Type': 'application/json',
+          },
+          cache: 'no-store',
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }),
+        { endpoint: 'generation', signal: controller.signal, requestId: imageStatusRequestId },
+      )
     }
 
     if (!response.ok) {
       const errorMessage = await getApiErrorMessage(response)
-      throw Object.assign(new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages)), {
-        status: response.status,
-      })
+      throw withApiFailureMetadata(
+        new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages)),
+        { endpoint: isEdit ? 'edit' : 'generation', status: response.status, requestId: imageStatusRequestId, retryCount: getApiResponseRetryCount(response) },
+      )
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
@@ -692,6 +712,15 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
     }
 
     return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+  } catch (err) {
+    if (err instanceof Error) {
+      const failure = err as { endpoint?: ImageFailureEndpoint; requestId?: string }
+      withApiFailureMetadata(err, {
+        endpoint: failure.endpoint ?? (isEdit ? 'edit' : 'generation'),
+        requestId: failure.requestId ?? imageStatusRequestId,
+      })
+    }
+    throw err
   } finally {
     clearTimeout(timeoutId)
   }
@@ -720,45 +749,35 @@ function getTaskState(payload: unknown, poll: CustomProviderPollMapping): 'succe
   return 'pending'
 }
 
-function isRecoverablePollingError(err: unknown): boolean {
-  if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
-  const message = err instanceof Error ? err.message : String(err)
-  return /abort|network|failed to fetch|fetch failed|load failed|timeout|连接|断开|中断/i.test(message)
-}
-
-function isRetryablePollingStatus(status: number): boolean {
-  return status >= 500
-}
-
 async function fetchCustomJson(
   url: string,
   init: RequestInit,
   signal?: AbortSignal,
   maxRetries = 3,
+  endpoint: ImageFailureEndpoint = 'generation',
+  requestId?: string,
 ): Promise<unknown> {
-  let retries = 0
-  while (true) {
-    try {
-      const response = await fetch(url, { ...init, signal })
-      if (!response.ok) {
-        if (isRetryablePollingStatus(response.status) && retries < maxRetries) {
-          retries += 1
-          await sleep(Math.min(1000 * 2 ** (retries - 1), 15000), signal)
-          continue
-        }
-        const error = new Error(await getApiErrorMessage(response))
-        ;(error as Error & { retryable?: boolean }).retryable = false
-        throw error
-      }
-      return response.json()
-    } catch (err) {
-      if (signal?.aborted) throw err
-      if (err instanceof Error && (err as Error & { retryable?: boolean }).retryable === false) throw err
-      if (retries >= maxRetries) throw err
-      retries += 1
-      await sleep(Math.min(1000 * 2 ** (retries - 1), 15000), signal)
-    }
+  const response = await retryApiFetch(
+    () => fetch(url, { ...init, signal }),
+    {
+      endpoint,
+      signal,
+      requestId,
+      maxRetries,
+      retryableStatuses: [429, 500, 502, 503, 504],
+    },
+  )
+  if (!response.ok) {
+    const error = withApiFailureMetadata(new Error(await getApiErrorMessage(response)), {
+      endpoint,
+      status: response.status,
+      requestId,
+      retryCount: getApiResponseRetryCount(response),
+    })
+    ;(error as Error & { retryable?: boolean }).retryable = false
+    throw error
   }
+  return response.json()
 }
 
 function encodePathValue(value: string): string {
@@ -931,6 +950,9 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
     buildApiUrl(profile.baseUrl, path, proxyConfig, useApiProxy),
     { method, headers, cache: 'no-store', body },
     controller.signal,
+    3,
+    opts.inputImageDataUrls.length > 0 ? 'edit' : 'generation',
+    opts.requestId,
   )
 }
 
@@ -962,50 +984,33 @@ async function pollCustomTaskResult(
     }
 
     const taskPath = appendQuery(buildProviderPath(poll.path, taskId, profile.model), poll.query)
-    let taskPayload: unknown
-    let retries = 0
-    while (true) {
-      try {
-        const taskResponse = await fetch(buildApiUrl(profile.baseUrl, taskPath, proxyConfig, false), {
-          method: poll.method ?? 'GET',
-          headers: requestHeaders,
-          cache: 'no-store',
-          signal,
-        })
-
-        if (!taskResponse.ok) {
-          if (isRetryablePollingStatus(taskResponse.status) && retries < maxRetries) {
-            retries += 1
-            await sleep(Math.min(intervalMs, maxIntervalMs), signal)
-            continue
-          }
-          const error = new Error(await getApiErrorMessage(taskResponse))
-          ;(error as Error & { retryable?: boolean }).retryable = false
-          throw error
-        }
-
-        taskPayload = await taskResponse.json()
-        break
-      } catch (err) {
-        if (signal?.aborted) throw err
-        if (err instanceof Error && (err as Error & { retryable?: boolean }).retryable === false) throw err
-        if (isRecoverablePollingError(err) && retries < maxRetries) {
-          retries += 1
-          await sleep(Math.min(intervalMs, maxIntervalMs), signal)
-          continue
-        }
-        throw err
-      }
-    }
+    const taskPayload = await fetchCustomJson(
+      buildApiUrl(profile.baseUrl, taskPath, proxyConfig, false),
+      {
+        method: poll.method ?? 'GET',
+        headers: requestHeaders,
+        cache: 'no-store',
+      },
+      signal,
+      maxRetries,
+      'status',
+      requestId,
+    )
 
     const state = getTaskState(taskPayload, poll)
     if (state === 'failure') {
       const message = getByPath(taskPayload, poll.errorPath) || getByPath(taskPayload, 'message') || getByPath(taskPayload, 'data.fail_reason') || getByPath(taskPayload, 'error.message')
-      throw new Error(typeof message === 'string' && message.trim() ? message : '异步任务失败')
+      throw withApiFailureMetadata(new Error(typeof message === 'string' && message.trim() ? message : '异步任务失败'), {
+        endpoint: 'status',
+        requestId,
+      })
     }
     if (state === 'invalid') {
       const status = getByPath(taskPayload, poll.statusPath)
-      throw new Error(`异步任务返回未知状态：${String(status ?? '') || '(empty)'}`)
+      throw withApiFailureMetadata(new Error(`异步任务返回未知状态：${String(status ?? '') || '(empty)'}`), {
+        endpoint: 'status',
+        requestId,
+      })
     }
     if (state === 'success') {
       try {
@@ -1015,12 +1020,13 @@ async function pollCustomTaskResult(
               { method: poll.resultMethod ?? 'GET', headers: requestHeaders, cache: 'no-store' },
               signal,
               maxRetries,
+              'result',
+              requestId,
             )
           : taskPayload
         return await extractCustomImages(resultPayload, poll.result, mime, signal)
       } catch (err) {
         if (err instanceof Error && (err as Error & { retryable?: boolean }).retryable === false) throw err
-        if (!signal?.aborted && isRecoverablePollingError(err)) continue
         throw err
       }
     }
@@ -1040,7 +1046,15 @@ export async function getCustomQueuedImageResult(
   const poll = isEdit && customProvider.editPoll ? customProvider.editPoll : customProvider.poll
   if (!poll) throw new Error('自定义异步任务缺少 poll 配置')
   const mime = MIME_MAP[params.output_format] || 'image/png'
-  return pollCustomTaskResult(profile, poll, taskId, mime, undefined, requestId)
+  try {
+    return await pollCustomTaskResult(profile, poll, taskId, mime, undefined, requestId)
+  } catch (err) {
+    if (err instanceof Error) {
+      const failure = err as { endpoint?: ImageFailureEndpoint; requestId?: string }
+      withApiFailureMetadata(err, { endpoint: failure.endpoint ?? 'status', requestId: failure.requestId ?? requestId })
+    }
+    throw err
+  }
 }
 
 async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider: CustomProviderDefinition): Promise<CallApiResult> {
@@ -1078,6 +1092,15 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
       timeoutId = null
     }
     return pollCustomTaskResult(profile, pollMapping, taskId, mime, controller.signal, opts.requestId)
+  } catch (err) {
+    if (err instanceof Error) {
+      const failure = err as { endpoint?: ImageFailureEndpoint; requestId?: string }
+      withApiFailureMetadata(err, {
+        endpoint: failure.endpoint ?? (isEdit ? 'edit' : 'generation'),
+        requestId: failure.requestId ?? opts.requestId,
+      })
+    }
+    throw err
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
   }
@@ -1118,23 +1141,27 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       body.stream = true
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
-      method: 'POST',
-      headers: {
-        ...requestHeaders,
-        'x-client-request-id': imageStatusRequestId,
-        'Content-Type': 'application/json',
-      },
-      cache: 'no-store',
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+    const response = await retryApiFetch(
+      () => fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+        method: 'POST',
+        headers: {
+          ...requestHeaders,
+          'x-client-request-id': imageStatusRequestId,
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }),
+      { endpoint: 'responses', signal: controller.signal, requestId: imageStatusRequestId },
+    )
 
     if (!response.ok) {
       const errorMessage = await getApiErrorMessage(response)
-      throw Object.assign(new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages)), {
-        status: response.status,
-      })
+      throw withApiFailureMetadata(
+        new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages)),
+        { endpoint: 'responses', status: response.status, requestId: imageStatusRequestId, retryCount: getApiResponseRetryCount(response) },
+      )
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
@@ -1154,6 +1181,15 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       ),
       revisedPrompts: imageResults.map((result) => result.revisedPrompt),
     }
+  } catch (err) {
+    if (err instanceof Error) {
+      const failure = err as { endpoint?: ImageFailureEndpoint; requestId?: string }
+      withApiFailureMetadata(err, {
+        endpoint: failure.endpoint ?? (inputImageDataUrls.length > 0 ? 'edit' : 'responses'),
+        requestId: failure.requestId ?? imageStatusRequestId,
+      })
+    }
+    throw err
   } finally {
     clearTimeout(timeoutId)
   }

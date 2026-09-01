@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
-import type { TaskRecord } from '../types'
-import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, redownloadTaskImage, retryTask } from '../store'
+import type { ImageFailureEndpoint, TaskRecord } from '../types'
+import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, redownloadTaskImage, retryImage, retryTaskInPlace } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
@@ -27,7 +27,9 @@ type DetailModalProps = {
   onClose?: () => void
 }
 
-export default function DetailModal({ taskOverride, imageIdOverride, outputRequestIndexOverride, imageOverrides = {}, readOnly = false, onClose }: DetailModalProps = {}) {
+const EMPTY_IMAGE_OVERRIDES: Record<string, string> = {}
+
+export default function DetailModal({ taskOverride, imageIdOverride, outputRequestIndexOverride, imageOverrides = EMPTY_IMAGE_OVERRIDES, readOnly = false, onClose }: DetailModalProps = {}) {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
   const detailImageId = useStore((s) => s.detailImageId)
@@ -49,6 +51,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
   const [maskPreviewSrc, setMaskPreviewSrc] = useState('')
   const [now, setNow] = useState(Date.now())
   const [redownloadPending, setRedownloadPending] = useState(false)
+  const [retryOutputPending, setRetryOutputPending] = useState(false)
   const [showDebugInfoModal, setShowDebugInfoModal] = useState(false)
   const [showRawUrlsModal, setShowRawUrlsModal] = useState(false)
   const [showRawResponseModal, setShowRawResponseModal] = useState(false)
@@ -140,10 +143,10 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
   // 加载所有相关图片
   useEffect(() => {
     if (!task) {
-      setImageSrcs({})
-      setOutputPreviewSrcs({})
-      setImageRatios({})
-      setImageSizes({})
+      setImageSrcs((prev) => Object.keys(prev).length ? {} : prev)
+      setOutputPreviewSrcs((prev) => Object.keys(prev).length ? {} : prev)
+      setImageRatios((prev) => Object.keys(prev).length ? {} : prev)
+      setImageSizes((prev) => Object.keys(prev).length ? {} : prev)
       return
     }
 
@@ -183,17 +186,42 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
         outputImageIndex,
         imageId,
         error: '',
+        endpoint: undefined as ImageFailureEndpoint | undefined,
+        kind: undefined as TaskRecord['failureKind'],
+        status: undefined as number | undefined,
+        requestId: undefined as string | undefined,
+        retryCount: undefined as number | undefined,
       }))
     }
 
-    const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item.error]))
+    const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item]))
     const requestedCount = Math.max(task.params.n, task.outputImages.length + outputErrors.length)
     let outputImageIndex = 0
     return Array.from({ length: requestedCount }, (_, requestIndex) => {
-      const error = errorsByIndex.get(requestIndex)
-      if (error) return { requestIndex, outputImageIndex: -1, imageId: '', error }
+      const failure = errorsByIndex.get(requestIndex)
+      if (failure) return {
+        requestIndex,
+        outputImageIndex: -1,
+        imageId: '',
+        error: failure.error,
+        endpoint: failure.endpoint,
+        kind: failure.kind,
+        status: failure.status,
+        requestId: failure.requestId,
+        retryCount: failure.retryCount,
+      }
       const imageId = task.outputImages[outputImageIndex] ?? ''
-      const slot = { requestIndex, outputImageIndex, imageId, error: '' }
+      const slot = {
+        requestIndex,
+        outputImageIndex,
+        imageId,
+        error: '',
+        endpoint: undefined as ImageFailureEndpoint | undefined,
+        kind: undefined as TaskRecord['failureKind'],
+        status: undefined as number | undefined,
+        requestId: undefined as string | undefined,
+        retryCount: undefined as number | undefined,
+      }
       outputImageIndex += 1
       return slot
     })
@@ -220,6 +248,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
   const currentOutputImageId = currentOutputSlot?.imageId || ''
   const currentOutputImageIndex = currentOutputSlot?.outputImageIndex ?? -1
   const currentOutputError = currentOutputSlot?.error || ''
+  const currentOutputNetworkFailure = Boolean(currentOutputError && (currentOutputSlot?.kind === 'network' || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(currentOutputError)))
   const currentOriginalOutputImageId = currentOutputImageIndex >= 0 ? task?.transparentOriginalImages?.[currentOutputImageIndex] || '' : ''
   const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || imageOverrides[currentOutputImageId] || '' : ''
 
@@ -305,6 +334,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
   const taskModel = task.apiModel || '未知'
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
+  const isNetworkFailure = task.failureKind === 'network' || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(task.error ?? '')
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
   const rawImageUrls = task.rawImageUrls ?? []
   const streamPreviewLen = streamPreviewItems.length
@@ -533,10 +563,32 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
     }
   }
 
-  const handleRetry = () => {
-    if (readOnly) return
-    retryTask(task)
-    close()
+  const handleRetry = async () => {
+    if (readOnly || retryOutputPending) return
+    setRetryOutputPending(true)
+    try {
+      await retryTaskInPlace(task)
+      showToast('已开始重试生成', 'success')
+      close()
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '重试生成失败', 'error')
+    } finally {
+      setRetryOutputPending(false)
+    }
+  }
+
+  const handleRetryOutput = async () => {
+    if (readOnly || retryOutputPending || !task) return
+    setRetryOutputPending(true)
+    try {
+      await retryImage(task)
+      showToast('已开始重试生成', 'success')
+      close()
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '重试生成失败', 'error')
+    } finally {
+      setRetryOutputPending(false)
+    }
   }
 
   const handleRedownload = async () => {
@@ -578,7 +630,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
         <div className="md:w-1/2 w-full h-64 md:h-auto bg-gray-100 dark:bg-black/20 relative flex items-center justify-center flex-shrink-0 min-h-[16rem]">
           {(task.requestId || taskIds.length > 0 || (task.status === 'done' && outputLen > 0 && (currentOutputImageId || task.outputImages.length > 0))) && (
             <div className="absolute right-3 top-[15px] z-20 flex items-center gap-1.5">
-              {(task.requestId || taskIds.length > 0) && (
+              {(currentOutputSlot?.requestId || task.requestId || taskIds.length > 0) && (
                 <div className="relative group flex">
                   <button
                     type="button"
@@ -739,12 +791,18 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
             </>
           )}
           {task.status === 'done' && outputLen > 0 && currentOutputError && (
-            <div className="w-full max-w-md px-4 text-center">
-              <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className={`w-full max-w-md rounded px-4 py-3 text-center ${currentOutputNetworkFailure ? 'border border-yellow-300 bg-yellow-50 dark:border-yellow-700/70 dark:bg-yellow-950/40' : ''}`}>
+              <svg className={`mx-auto mb-2 h-10 w-10 ${currentOutputNetworkFailure ? 'text-yellow-500' : 'text-red-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <p className="text-sm font-medium text-red-500">第 {currentOutputSlot.requestIndex + 1} 张生成失败</p>
-              <p
+              <div className={`flex items-center justify-center gap-2 text-sm font-medium ${currentOutputNetworkFailure ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-500'}`}>
+                <span>{currentOutputNetworkFailure ? '网络异常，请稍后重试。' : `第 ${(currentOutputSlot?.requestIndex ?? imageIndex) + 1} 张生成失败`}</span>
+                {currentOutputNetworkFailure && <button type="button" disabled={readOnly || retryOutputPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryOutputPending ? '正在重试' : '重试请求'} onClick={(event) => { event.stopPropagation(); void handleRetryOutput() }}><RefreshIcon className={`h-4 w-4 ${retryOutputPending ? 'animate-spin' : ''}`} /></button>}
+              </div>
+              {currentOutputSlot?.endpoint && <p className={`mt-1 text-xs ${currentOutputNetworkFailure ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-400'}`}>失败接口：{currentOutputSlot.endpoint}</p>}
+              {!currentOutputNetworkFailure && currentOutputSlot?.status && <p className="mt-1 text-xs text-red-400">HTTP status: {currentOutputSlot.status}</p>}
+              {!currentOutputNetworkFailure && typeof currentOutputSlot?.retryCount === 'number' && <p className="mt-1 text-xs text-red-400">自动重试：{currentOutputSlot.retryCount} 次</p>}
+              {!currentOutputNetworkFailure && <p
                 className="mt-2 overflow-hidden whitespace-pre-line text-base leading-7 text-red-500 break-words"
                 style={{
                   display: '-webkit-box',
@@ -753,12 +811,16 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
                 }}
               >
                 {currentOutputError}
-              </p>
-              <button type="button" className="mt-2 inline-flex items-center justify-center rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10" aria-label="复制错误原因" title="复制错误原因" onClick={(event) => { event.stopPropagation(); void handleCopyErrorText(currentOutputError) }}><CopyIcon className="h-4 w-4" /></button>
-              {(task.requestId || taskIds.length > 0) && (
+              </p>}
+              <div className="mt-2 flex items-center justify-center gap-2">
+                {!currentOutputNetworkFailure && <button type="button" className="inline-flex items-center justify-center rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10" aria-label="复制错误原因" title="复制错误原因" onClick={(event) => { event.stopPropagation(); void handleCopyErrorText(currentOutputError) }}><CopyIcon className="h-4 w-4" /></button>}
+                {!currentOutputNetworkFailure && <button type="button" disabled={readOnly || retryOutputPending} className="inline-flex items-center justify-center rounded-full border border-blue-200/80 bg-white/80 px-3 py-1.5 text-blue-500 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-400/20 dark:bg-white/[0.04] dark:hover:bg-blue-500/10" aria-label="重试生成" title={retryOutputPending ? '正在重试' : '重试生成'} onClick={(event) => { event.stopPropagation(); void handleRetryOutput() }}><RefreshIcon className={`h-4 w-4 ${retryOutputPending ? 'animate-spin' : ''}`} /></button>}
+              </div>
+              {(currentOutputSlot?.requestId || task.requestId || taskIds.length > 0) && (
                 <div className="mt-3 flex max-w-full flex-col items-center gap-1">
-                  {task.requestId && <div className="flex max-w-full flex-col items-center"><p className="w-full overflow-hidden whitespace-pre-line break-words text-base leading-7 text-red-500">request_id: {task.requestId}</p><button type="button" className="mt-2 inline-flex items-center justify-center rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10" aria-label="复制 request_id" title="复制 request_id" onClick={(event) => { event.stopPropagation(); void handleCopyRequestId() }}><CopyIcon className="h-4 w-4" /></button></div>}
-                  {taskIds.map((id) => <div key={id} className="flex max-w-full flex-col items-center"><p className="w-full overflow-hidden whitespace-pre-line break-words text-base leading-7 text-red-500">task_id: {id}</p><button type="button" className="mt-2 inline-flex items-center justify-center rounded-full border border-red-200/80 bg-white/80 px-3 py-1.5 text-red-500 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-white/[0.04] dark:hover:bg-red-500/10" aria-label="复制 task_id" title="复制 task_id" onClick={(event) => { event.stopPropagation(); void handleCopyTaskId(id) }}><CopyIcon className="h-4 w-4" /></button></div>)}
+                  {currentOutputSlot?.requestId && <p className={`w-full overflow-hidden whitespace-pre-line break-words text-xs leading-5 ${currentOutputNetworkFailure ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-400'}`}>image_request_id: {currentOutputSlot.requestId}</p>}
+                  {task.requestId && <div className="flex max-w-full flex-col items-center"><p className={`w-full overflow-hidden whitespace-pre-line break-words text-base leading-7 ${currentOutputNetworkFailure ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-500'}`}>request_id: {task.requestId}</p><button type="button" className={`mt-2 inline-flex items-center justify-center rounded-full border bg-white/80 px-3 py-1.5 transition dark:bg-white/[0.04] ${currentOutputNetworkFailure ? 'border-yellow-200/80 text-yellow-700 hover:bg-yellow-50 dark:border-yellow-400/20 dark:text-yellow-300 dark:hover:bg-yellow-500/10' : 'border-red-200/80 text-red-500 hover:bg-red-50 dark:border-red-400/20 dark:text-red-500 dark:hover:bg-red-500/10'}`} aria-label="复制 request_id" title="复制 request_id" onClick={(event) => { event.stopPropagation(); void handleCopyRequestId() }}><CopyIcon className="h-4 w-4" /></button></div>}
+                  {taskIds.map((id) => <div key={id} className="flex max-w-full flex-col items-center"><p className={`w-full overflow-hidden whitespace-pre-line break-words text-base leading-7 ${currentOutputNetworkFailure ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-500'}`}>task_id: {id}</p><button type="button" className={`mt-2 inline-flex items-center justify-center rounded-full border bg-white/80 px-3 py-1.5 transition dark:bg-white/[0.04] ${currentOutputNetworkFailure ? 'border-yellow-200/80 text-yellow-700 hover:bg-yellow-50 dark:border-yellow-400/20 dark:text-yellow-300 dark:hover:bg-yellow-500/10' : 'border-red-200/80 text-red-500 hover:bg-red-50 dark:border-red-400/20 dark:text-red-500 dark:hover:bg-red-500/10'}`} aria-label="复制 task_id" title="复制 task_id" onClick={(event) => { event.stopPropagation(); void handleCopyTaskId(id) }}><CopyIcon className="h-4 w-4" /></button></div>)}
                 </div>
               )}
               {outputLen > 1 && (
@@ -857,7 +919,18 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
               <p className="text-sm font-medium text-yellow-500">重连中</p>
             </div>
           )}
-          {task.status === 'error' && !isFalReconnecting && (
+          {task.status === 'error' && !isFalReconnecting && (isNetworkFailure ? (
+            <div className="w-full max-w-md rounded border border-yellow-300 bg-yellow-50 px-4 py-5 text-center dark:border-yellow-700/70 dark:bg-yellow-950/40">
+              <svg className="mx-auto mb-2 h-10 w-10 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="flex items-center justify-center gap-2 text-base font-medium text-yellow-700 dark:text-yellow-300">
+                <span>网络异常，请稍后重试。</span>
+                <button type="button" disabled={readOnly || retryOutputPending} className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryOutputPending ? '正在重试' : '重试请求'} onClick={(event) => { event.stopPropagation(); void handleRetry() }}><RefreshIcon className={`h-4 w-4 ${retryOutputPending ? 'animate-spin' : ''}`} /></button>
+              </div>
+              {task.failureEndpoint && <p className="mt-1 text-xs text-yellow-700 dark:text-yellow-300">失败接口：{task.failureEndpoint}</p>}
+            </div>
+          ) : (
             <div className="w-full max-w-md px-4 text-center">
               <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -889,6 +962,8 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
                   </button>
                 )}
               </div>
+              {task.failureEndpoint && <p className="mt-1 text-xs text-red-400">失败接口：{task.failureEndpoint}</p>}
+              {task.failureRetryCount !== undefined && <p className="mt-1 text-xs text-red-400">自动重试：{task.failureRetryCount} 次</p>}
               {(task.requestId || taskIds.length > 0) && (
                 <div className="mt-3 flex max-w-full flex-col items-center gap-1">
                   {task.requestId && <span className="flex max-w-full items-center gap-1 break-all text-base leading-7 text-red-500"><span>request_id: {task.requestId}</span><button type="button" className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-500 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制 request_id" title="复制 request_id" onClick={(event) => { event.stopPropagation(); void handleCopyRequestId() }}><CopyIcon className="h-4 w-4" /></button></span>}
@@ -994,7 +1069,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
                 )}
               </div>
             </div>
-          )}
+          ))}
         </div>
 
         {/* 右侧：信息 */}

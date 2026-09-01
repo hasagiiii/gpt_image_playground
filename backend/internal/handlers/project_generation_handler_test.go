@@ -328,6 +328,70 @@ func TestProjectGenerationHandlerGeneratesAndSavesBeforeReturning(t *testing.T) 
 	}
 }
 
+func TestProjectGenerationHandlerReplaysIdempotentGeneration(t *testing.T) {
+	store := &projectGenerationStoreStub{}
+	upstreamCalls := 0
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		if req.Header.Get("Idempotency-Key") != "img-request-a" {
+			t.Fatalf("missing upstream idempotency key: %q", req.Header.Get("Idempotency-Key"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"AAECAw=="}]}`)),
+			Request:    req,
+		}, nil
+	})
+	r := newProjectGenerationRouter(store, transport)
+	for index := 0; index < 2; index++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8/generations", generationRequestBody(nil, ""))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"images":["data:image/png;base64,AAECAw=="]`) {
+			t.Fatalf("unexpected replay response %d: %s", w.Code, w.Body.String())
+		}
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("expected one upstream generation, got %d", upstreamCalls)
+	}
+}
+
+func TestProjectGenerationHandlerReplaysCompleteLargeResponse(t *testing.T) {
+	largeBase64 := strings.Repeat("A", maxGenerationLogResponseBytes*2)
+	upstreamCalls := 0
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		body := `{"data":[{"b64_json":"` + largeBase64 + `"}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	r := newProjectGenerationRouter(&projectGenerationStoreStub{}, transport)
+	responses := make([]string, 0, 2)
+	for index := 0; index < 2; index++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8/generations", generationRequestBody(nil, ""))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "large-response-task")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("unexpected response %d: %s", w.Code, w.Body.String())
+		}
+		responses = append(responses, w.Body.String())
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("expected one upstream generation, got %d", upstreamCalls)
+	}
+	if len(responses[0]) <= maxGenerationLogResponseBytes || responses[0] != responses[1] {
+		t.Fatalf("idempotent response was truncated or changed: lengths=%d,%d", len(responses[0]), len(responses[1]))
+	}
+}
+
 func TestProjectGenerationHandlerContinuesAfterClientCancellation(t *testing.T) {
 	store := &projectGenerationStoreStub{taskRecords: make(chan savedGenerationTaskRecord, 2)}
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
