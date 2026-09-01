@@ -1269,6 +1269,65 @@ describe('mask draft lifecycle in store actions', () => {
     }
   })
 
+  it('refreshes an online archive when cached canvas items have no local task match', async () => {
+    const projectId = '86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8'
+    const cachedProject: Project = {
+      id: projectId,
+      title: '本地缓存项目',
+      initialPrompt: '',
+      storage: 'online',
+      remoteId: projectId,
+      remoteArchiveSha256: 'same-sha',
+      createdAt: 1,
+      updatedAt: 1,
+      canvas: {
+        version: 1,
+        viewport: { x: 0, y: 0, scale: 1 },
+        items: {
+          'local-image': { x: 20, y: 30, width: 240, z: 0, favoriteCollectionIds: [] },
+          'missing-task:error': { x: 300, y: 30, width: 240, z: 1, favoriteCollectionIds: [] },
+        },
+      },
+    }
+    const localTask = task({ id: 'local-task', projectId, outputImages: ['local-image'] })
+    const remoteTask = task({ id: 'missing-task', projectId, status: 'error', error: '网络异常' })
+    authState.accessToken = 'token'
+    await putProject(cachedProject)
+    await putDbTask(localTask)
+    vi.mocked(listOnlineProjects).mockResolvedValueOnce([{
+      id: projectId,
+      title: '在线项目',
+      archive_size: 10,
+      archive_sha256: 'same-sha',
+      created_at: '2026-08-16T00:00:00Z',
+      updated_at: '2026-08-16T01:00:00Z',
+    }])
+    vi.mocked(downloadOnlineProject).mockClear()
+    vi.mocked(readOnlineProjectArchive).mockReturnValueOnce({
+      project: cachedProject,
+      tasks: [remoteTask],
+      agentConversations: [],
+      favoriteCollections: [],
+      defaultFavoriteCollectionId: null,
+      images: [],
+      thumbnails: [],
+    })
+    vi.mocked(listOnlineProjectImages).mockResolvedValueOnce([])
+    try {
+      await initStore()
+
+      expect(downloadOnlineProject).toHaveBeenCalledTimes(1)
+      expect(downloadOnlineProject).toHaveBeenCalledWith(projectId)
+      expect(useStore.getState().tasks.find((item) => item.id === remoteTask.id)).toMatchObject({
+        projectId,
+        status: 'error',
+      })
+      expect(useStore.getState().projects.find((item) => item.id === projectId)?.canvas?.items['missing-task:error']).toBeDefined()
+    } finally {
+      authState.accessToken = null
+    }
+  })
+
   it('loads only the active online project contents and hydrates another project after switching', async () => {
     const projectA = '86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8'
     const projectB = '4d7493e9-2d64-4ef2-b106-9ce56fd9873d'

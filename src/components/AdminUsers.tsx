@@ -91,11 +91,24 @@ export default function AdminUsers() {
     let cancelled = false
     setViewer(null)
     setViewerLoading(true)
+    console.info('[只读画布] 在线数据请求', {
+      userId: selectedUserId,
+      projectId: project.id,
+      title: project.title,
+      archiveSha256: project.archive_sha256,
+    })
     void Promise.all([
       downloadAdminUserProject(selectedUserId, project.id),
       listAdminUserProjectImages(selectedUserId, project.id),
     ])
       .then(async ([archiveBytes, remoteImages]) => {
+        console.info('[只读画布] 在线数据响应', {
+          userId: selectedUserId,
+          projectId: project.id,
+          archiveBytes: archiveBytes.byteLength,
+          remoteImageCount: remoteImages.length,
+          remoteImageIds: remoteImages.map((image) => image.image_id),
+        })
         const parsed = readOnlineProjectArchive(archiveBytes)
         const loadedProject = parsed.project ? { ...parsed.project, id: project.id, title: project.title, storage: 'online' as const, remoteId: project.id } : createAdminProject(project)
         const images = Object.fromEntries(parsed.images.map((image) => [image.id, image]))
@@ -107,6 +120,17 @@ export default function AdminUsers() {
             console.warn(`管理员读取项目图片 ${remoteImage.image_id} 失败`, error)
           }
         }))
+        console.info('[只读画布] 加载数据', {
+          userId: selectedUserId,
+          projectId: project.id,
+          project: loadedProject,
+          taskCount: parsed.tasks.length,
+          taskIds: parsed.tasks.map((task) => task.id),
+          canvasItemCount: Object.keys(loadedProject.canvas?.items ?? {}).length,
+          canvasItemIds: Object.keys(loadedProject.canvas?.items ?? {}),
+          imageCount: Object.keys(images).length,
+          imageIds: Object.keys(images),
+        })
         if (!cancelled) setViewer({ project: loadedProject, tasks: parsed.tasks, images })
       })
       .catch((error) => {

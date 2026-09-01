@@ -81,7 +81,6 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
     }).length
   })
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
-  const inCollectionOverview = filterFavorite && !activeFavoriteCollectionId
   const isFailedFilter = filterStatus === 'error'
   const favoriteTooltip = filterFavorite ? '退出收藏夹' : '收藏夹'
 
@@ -104,11 +103,12 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
 
   const handleFavoriteClick = () => {
     if (filterFavorite) {
+      setFavoriteMenuOpen(false)
       setFilterFavorite(false)
       return
     }
-    if (favoriteCollections.length === 1) {
-      setActiveFavoriteCollectionId(favoriteCollections[0].id)
+    if (favoriteCollections.length <= 1) {
+      if (favoriteCollections[0]) setActiveFavoriteCollectionId(favoriteCollections[0].id)
       setFilterFavorite(true)
       return
     }
@@ -122,6 +122,14 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
   }
 
   useEffect(() => {
+    if (favoriteCollections.length <= 1) setFavoriteMenuOpen(false)
+  }, [favoriteCollections.length])
+
+  useEffect(() => {
+    setFavoriteMenuOpen(false)
+  }, [activeProjectId])
+
+  useEffect(() => {
     if (!favoriteMenuOpen) return
     const handleDocumentMouseDown = (event: MouseEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setFavoriteMenuOpen(false)
@@ -129,10 +137,6 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
     document.addEventListener('mousedown', handleDocumentMouseDown)
     return () => document.removeEventListener('mousedown', handleDocumentMouseDown)
   }, [favoriteMenuOpen])
-
-  useEffect(() => {
-    if (favoriteCollections.length <= 1) setFavoriteMenuOpen(false)
-  }, [favoriteCollections.length])
 
   const handleClearFailed = () => {
     const state = useStore.getState()
@@ -204,43 +208,42 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
             </div>
           )}
         </div>
-        {inCollectionOverview && (
+        {(filterFavorite || favoriteMenuOpen) && (
           <SearchActionButton
             tooltip="管理收藏夹"
-            onClick={openManageCollectionsModal}
+            onClick={() => {
+              setFavoriteMenuOpen(false)
+              openManageCollectionsModal()
+            }}
             className="p-2.5 rounded-xl border border-gray-200 dark:border-white/[0.08] bg-white dark:bg-gray-900 text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.06] transition-all"
           >
             <CollectionManageIcon className="w-5 h-5" />
           </SearchActionButton>
         )}
-        {!inCollectionOverview && (
-          <>
-            <div className="relative w-[72px]">
-              <Select
-                value={filterStatus}
-                onChange={handleStatusChange}
-                options={[
-                  { label: '全部', value: 'all' },
-                  { label: '已完成', value: 'done' },
-                  { label: '生成中', value: 'running' },
-                  { label: '失败', value: 'error' },
-                ]}
-                className="h-[42px] rounded-xl border border-gray-200 bg-white px-3 text-sm transition hover:bg-gray-50 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-white/[0.08] dark:bg-gray-900 dark:hover:bg-white/[0.06]"
-              />
-            </div>
-            {isFailedFilter && (
-              <button
-                type="button"
-                onClick={handleClearFailed}
-                disabled={failedCount === 0}
-                title={failedCount > 0 ? `清除 ${failedCount} 条失败记录` : '没有失败记录'}
-                aria-label={failedCount > 0 ? `清除 ${failedCount} 条失败记录` : '没有失败记录'}
-                className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-400 transition-all hover:bg-gray-50 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-white disabled:hover:text-gray-400 dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-500 dark:hover:bg-white/[0.06] dark:hover:text-gray-300 dark:disabled:hover:bg-gray-900 dark:disabled:hover:text-gray-500"
-              >
-                <TrashIcon className="h-[18px] w-[18px]" />
-              </button>
-            )}
-          </>
+        <div className="relative w-[72px]">
+          <Select
+            value={filterStatus}
+            onChange={handleStatusChange}
+            options={[
+              { label: '全部', value: 'all' },
+              { label: '已完成', value: 'done' },
+              { label: '生成中', value: 'running' },
+              { label: '失败', value: 'error' },
+            ]}
+            className="h-[42px] rounded-xl border border-gray-200 bg-white px-3 text-sm transition hover:bg-gray-50 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-white/[0.08] dark:bg-gray-900 dark:hover:bg-white/[0.06]"
+          />
+        </div>
+        {isFailedFilter && (
+          <button
+            type="button"
+            onClick={handleClearFailed}
+            disabled={failedCount === 0}
+            title={failedCount > 0 ? `清除 ${failedCount} 条失败记录` : '没有失败记录'}
+            aria-label={failedCount > 0 ? `清除 ${failedCount} 条失败记录` : '没有失败记录'}
+            className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-400 transition-all hover:bg-gray-50 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-white disabled:hover:text-gray-400 dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-500 dark:hover:bg-white/[0.06] dark:hover:text-gray-300 dark:disabled:hover:bg-gray-900 dark:disabled:hover:text-gray-500"
+          >
+            <TrashIcon className="h-[18px] w-[18px]" />
+          </button>
         )}
       </div>
       <div className="relative z-10 flex-1">
@@ -262,7 +265,7 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           type="text"
-          placeholder={inCollectionOverview ? '搜索收藏夹名称...' : '搜索图片名、提示词、参数...'}
+          placeholder="搜索图片名、提示词、参数..."
           className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-white/[0.08] bg-white dark:bg-gray-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition"
         />
       </div>

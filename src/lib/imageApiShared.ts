@@ -152,6 +152,10 @@ export function isHttpUrl(value: unknown): value is string {
   return typeof value === 'string' && /^https?:\/\//i.test(value)
 }
 
+export function isImageDownloadFailure(endpoint: ImageFailureEndpoint | undefined, error?: string | null) {
+  return endpoint === 'download' || /图片(?:链接| URL)\s*下载失败/i.test(error ?? '')
+}
+
 export function isDataUrl(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('data:')
 }

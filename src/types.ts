@@ -184,6 +184,8 @@ export interface TaskOutputError {
   status?: number
   requestId?: string
   retryCount?: number
+  /** 该失败输出对应的原始图片 URL，供下载失败时原位重试 */
+  rawImageUrls?: string[]
 }
 
 export interface TaskRecord {

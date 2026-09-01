@@ -4185,7 +4185,18 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
     const cached = localProjects.find((project) => project.id === response.id || project.remoteId === response.id)
     const remote = createOnlineProject(response)
     const shouldLoadContents = activeProjectId === null || activeProjectId === ALL_PROJECTS_ID || activeProjectId === response.id || cached?.id === activeProjectId
+    // 归档 SHA 相同时也可能只同步了画布，先检查本地任务是否能支撑画布中的 item。
+    const cachedCanvasItemIds = Object.keys(cached?.canvas?.items ?? {})
+    const localProjectTasks = localTasks.filter((task) => task.projectId === response.id)
+    const localProjectTaskIds = new Set(localProjectTasks.map((task) => task.id))
+    const localProjectImageIds = new Set(localProjectTasks.flatMap((task) => task.outputImages))
+    const hasUnmatchedCanvasItems = cachedCanvasItemIds.some((itemId) => {
+      if (localProjectImageIds.has(itemId)) return false
+      const separator = itemId.indexOf(':')
+      return separator < 1 || !localProjectTaskIds.has(itemId.slice(0, separator))
+    })
     const shouldRefreshArchive = shouldLoadContents && cached?.remoteArchiveSha256 !== response.archive_sha256
+    const shouldRefreshArchiveForCanvas = shouldLoadContents && hasUnmatchedCanvasItems
     const shouldRefreshCanvas = shouldRefreshArchive && activeProjectId !== null && activeProjectId !== ALL_PROJECTS_ID
     console.info('[项目画布] 本地缓存信息', {
       projectId: response.id,
@@ -4193,6 +4204,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
       remoteArchiveSha256: response.archive_sha256,
       canvas: cached?.canvas ?? null,
       shouldRefreshArchive,
+      shouldRefreshArchiveForCanvas,
     })
     let project: Project = {
       ...remote,
@@ -4203,7 +4215,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
     }
     let remoteCanvas: ProjectCanvasState | null = null
     let canvasMigrationNeeded = false
-    let shouldLoadArchiveContents = shouldRefreshArchive
+    let shouldLoadArchiveContents = shouldRefreshArchive || shouldRefreshArchiveForCanvas
     if (cached?.syncPending) {
       project = {
         ...cached,
@@ -4216,7 +4228,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
         try {
           remoteCanvas = await getOnlineProjectCanvas(response.id)
           canvasMigrationNeeded = !remoteCanvas
-          shouldLoadArchiveContents = shouldRefreshArchive && (!cached || !remoteCanvas)
+          shouldLoadArchiveContents = (shouldRefreshArchive && (!cached || !remoteCanvas)) || shouldRefreshArchiveForCanvas
           if (remoteCanvas) project = { ...project, canvas: remoteCanvas }
         } catch (err) {
           canvasMigrationNeeded = true
@@ -7261,10 +7273,47 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>, sy
 }
 
 /** 重新下载已经拿到 URL 但首次下载失败的图片，并恢复任务结果。 */
-export async function redownloadTaskImage(task: TaskRecord) {
+export async function redownloadTaskImage(task: TaskRecord, requestIndex?: number) {
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
-  if (!latest || latest.status !== 'error' || latest.outputImages.length > 0) {
+  const outputError = requestIndex === undefined
+    ? undefined
+    : latest?.outputErrors?.find((item) => item.requestIndex === requestIndex)
+  if (!latest || (requestIndex === undefined
+    ? latest.status !== 'error' || latest.outputImages.length > 0
+    : !outputError)) {
     throw new Error('当前任务没有可重新下载的图片链接')
+  }
+
+  if (outputError) {
+    const rawImageUrls = outputError.rawImageUrls ?? []
+    if (rawImageUrls.length === 0) throw new Error('当前失败图片没有可重新下载的链接')
+    const mime = MIME_MAP[latest.params.output_format] || 'image/png'
+    const dataUrls = await Promise.all(rawImageUrls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
+    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls)
+    const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
+    const remainingOutputErrors = (latest.outputErrors ?? []).filter((item) => item.requestIndex !== outputError.requestIndex)
+    const outputInsertIndex = outputError.requestIndex - (latest.outputErrors ?? []).filter((item) => item.requestIndex < outputError.requestIndex).length
+    const nextOutputImages = [...latest.outputImages]
+    nextOutputImages.splice(Math.max(0, Math.min(outputInsertIndex, nextOutputImages.length)), 0, ...outputIds)
+    const existingTransparentOriginalImages = latest.transparentOriginalImages ?? []
+    const nextTransparentOriginalImages = [...existingTransparentOriginalImages]
+    if (transparentOriginalImageIds?.length) {
+      nextTransparentOriginalImages.splice(Math.max(0, Math.min(outputInsertIndex, nextTransparentOriginalImages.length)), 0, ...transparentOriginalImageIds)
+    }
+    await updateTaskInStore(latest.id, {
+      outputImages: nextOutputImages,
+      transparentOriginalImages: nextTransparentOriginalImages.length
+        ? nextTransparentOriginalImages
+        : undefined,
+      outputErrors: remainingOutputErrors.length ? remainingOutputErrors : undefined,
+      actualParams: latest.actualParams ?? firstActualParams(actualParamsList),
+      actualParamsByImage: {
+        ...(latest.actualParamsByImage ?? {}),
+        ...(mapActualParamsByImage(outputIds, actualParamsList) ?? {}),
+      },
+      error: remainingOutputErrors.length ? latest.error : null,
+    })
+    return
   }
 
   const compositeRecovery = !latest.rawImageUrls?.length && latest.compositeRequestId && latest.apiModel && latest.apiOverride?.platform?.trim().toLowerCase() === 'composite' && latest.apiOverride.apiKey

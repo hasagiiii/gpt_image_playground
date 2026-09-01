@@ -121,6 +121,14 @@ input[type="number"] {
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.35); }
 }
 
+@keyframes canvas-reference-flow {
+  to { stroke-dashoffset: -36; }
+}
+
+.canvas-reference-flow {
+  animation: canvas-reference-flow 1.4s linear infinite;
+}
+
 .canvas-generation-glow {
   position: absolute;
   left: 50%;
@@ -140,8 +148,12 @@ input[type="number"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .canvas-generation-glow {
+  .canvas-generation-glow,
+  .canvas-reference-flow {
     animation: none;
+  }
+
+  .canvas-generation-glow {
     opacity: 0.28;
     transform: translate(-50%, -50%) scale(1);
   }

@@ -9,7 +9,6 @@ import type { AppSettings } from './types'
 import Header from './components/Header'
 import ProjectHome from './components/ProjectHome'
 import LegacyProjectToolbar from './components/LegacyProjectToolbar'
-import SearchBar from './components/SearchBar'
 import { ProjectApiKeySelect } from './components/ProjectApiControls'
 import ProjectCanvas from './components/ProjectCanvas'
 import AgentWorkspace from './components/AgentWorkspace'
@@ -27,7 +26,7 @@ import AdminAnnouncements from './components/AdminAnnouncements'
 import AdminUsers from './components/AdminUsers'
 import AnnouncementNotice from './components/AnnouncementNotice'
 import SupportPromptModal from './components/SupportPromptModal'
-import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
+import { FavoriteCollectionPickerModal, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 import { ChevronLeftIcon } from './components/icons'
 
@@ -38,8 +37,6 @@ export default function App() {
   const setSettings = useStore((s) => s.setSettings)
   const appMode = useStore((s) => s.appMode)
   const activeProjectId = useStore((s) => s.activeProjectId)
-  const filterFavorite = useStore((s) => s.filterFavorite)
-  const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(APP_SIDEBAR_COLLAPSED_KEY) === 'true')
   const [view, setView] = useState<AppView>(() => getAppViewFromUrl())
@@ -188,19 +185,7 @@ export default function App() {
                   </div>
                 )}
                 <div className="h-full w-full">
-                  {filterFavorite && !activeFavoriteCollectionId ? (
-                    <>
-                      <div className="pointer-events-none absolute inset-x-0 top-4 z-50 flex justify-center px-3 sm:top-5 sm:px-6">
-                        <div className="pointer-events-auto flex w-full max-w-3xl items-center gap-2.5">
-                          <div className="min-w-0 flex-1">
-                            <SearchBar className="m-0" />
-                          </div>
-                          <ProjectApiKeySelect />
-                        </div>
-                      </div>
-                      <FavoriteCollectionsView />
-                    </>
-                  ) : <ProjectCanvas agentPanelCollapsed={agentPanelCollapsed} canvasHeaderControls={<ProjectApiKeySelect />} />}
+                  <ProjectCanvas agentPanelCollapsed={agentPanelCollapsed} canvasHeaderControls={<ProjectApiKeySelect />} />
                 </div>
               </div>
             </main>

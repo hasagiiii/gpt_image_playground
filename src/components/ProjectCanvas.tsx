@@ -32,9 +32,12 @@ import {
 } from '../lib/projectCanvas'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getTaskIds } from '../lib/taskIds'
+import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { downloadImageIds, exportImage, type ImageExportFormat } from '../lib/downloadImages'
 import { uploadMaterialImage } from '../lib/materialApi'
+import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
 import { TooltipButton } from './TooltipButton'
+import CanvasReferenceConnections from './CanvasReferenceConnections'
 import SearchBar from './SearchBar'
 import {
   AlignCenterHorizontalIcon,
@@ -157,29 +160,6 @@ function centroid(a: { x: number; y: number }, b: { x: number; y: number }) {
 function normalizeCanvasRotation(value: number) {
   const normalized = ((value % 360) + 360) % 360
   return normalized < 0.5 || normalized > 359.5 ? 0 : normalized
-}
-
-function getCanvasConnectionPoint(center: { x: number; y: number }, other: { x: number; y: number }, width: number, height: number) {
-  const dx = other.x - center.x
-  const dy = other.y - center.y
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    const side = dx >= 0 ? 1 : -1
-    return { x: center.x + side * width / 2, y: center.y }
-  }
-  const side = dy >= 0 ? 1 : -1
-  return { x: center.x, y: center.y + side * height / 2 }
-}
-
-function getCanvasConnectionPath(start: { x: number; y: number }, end: { x: number; y: number }) {
-  const dx = end.x - start.x
-  const dy = end.y - start.y
-  if (Math.abs(dy) < 0.5 || Math.abs(dx) < 0.5) return `M ${start.x} ${start.y} L ${end.x} ${end.y}`
-  const horizontal = Math.abs(dx) >= Math.abs(dy)
-  const offset = Math.max(28, Math.min(120, (horizontal ? Math.abs(dx) : Math.abs(dy)) * 0.45))
-  const control = horizontal
-    ? { x: Math.sign(dx || 1) * offset, y: (Math.sign(dy) || 1) * Math.max(18, offset * Math.tan(Math.PI / 6)) }
-    : { x: (Math.sign(dx) || 1) * Math.max(18, offset * Math.tan(Math.PI / 6)), y: Math.sign(dy || 1) * offset }
-  return `M ${start.x} ${start.y} C ${start.x + control.x} ${start.y + control.y}, ${end.x - control.x} ${end.y - control.y}, ${end.x} ${end.y}`
 }
 
 function getPlaceholderDimensions(task: TaskRecord) {
@@ -338,7 +318,7 @@ function CanvasImageNode({
   onCopyImageId: (imageId: string) => void
   onCopyFailureId: (label: 'request_id' | 'task_id', value: string) => void
   onCopyFailureError: (value: string) => void
-  onRedownloadImage: (task: TaskRecord) => Promise<void>
+  onRedownloadImage: (task: TaskRecord, requestIndex?: number) => Promise<void>
   onRetryImage: (task: TaskRecord) => Promise<void>
   cropEditing: boolean
   onCropCommit: (crop: ProjectCanvasCrop) => void
@@ -380,7 +360,7 @@ function CanvasImageNode({
     if (redownloadPending) return
     setRedownloadPending(true)
     try {
-      await onRedownloadImage(node.task)
+      await onRedownloadImage(node.task, node.failure?.requestIndex)
     } finally {
       setRedownloadPending(false)
     }
@@ -441,10 +421,16 @@ function CanvasImageNode({
     }
   }, [node.imageId, node.previewSrc])
 
+  const failureEndpoint = node.failure?.endpoint ?? node.failureEndpoint ?? node.task.failureEndpoint
+  const imageDownloadFailure = isImageDownloadFailureError(failureEndpoint, node.error)
   const isNetworkFailure = node.task.failureKind === 'network'
     || node.failure?.kind === 'network'
     || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(node.error ?? '')
-  const statusText = node.status === 'running' ? '生成中' : node.status === 'error' ? isNetworkFailure ? '网络异常，请稍后重试。' : '生成失败' : ''
+  const statusText = node.status === 'running'
+    ? '生成中'
+    : node.status === 'error'
+      ? imageDownloadFailure ? '图片下载失败' : isNetworkFailure ? '网络异常，请稍后重试。' : '生成失败'
+      : ''
   const taskIds = getTaskIds(node.task)
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
   const imageLabel = item.name ?? node.placeholderName ?? node.imageId ?? '图片'
@@ -632,23 +618,23 @@ function CanvasImageNode({
               ? { width: `${100 / crop.width}%`, height: `${100 / crop.height}%`, left: `${-crop.x / crop.width * 100}%`, top: `${-crop.y / crop.height * 100}%`, ...(flipX || flipY ? { transform: `scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})` } : {}) }
               : flipX || flipY ? { transform: `scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})` } : undefined}
         /> : (
-          <div className={`relative flex w-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? isNetworkFailure ? 'border border-yellow-300 bg-yellow-100 text-yellow-800 dark:border-yellow-700/70 dark:bg-yellow-950/60 dark:text-yellow-300' : 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`} style={{ height: frameHeight ?? item.width }}>
+          <div className={`relative flex w-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? isNetworkFailure || imageDownloadFailure ? 'border border-yellow-300 bg-yellow-100 text-yellow-800 dark:border-yellow-700/70 dark:bg-yellow-950/60 dark:text-yellow-300' : 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`} style={{ height: frameHeight ?? item.width }}>
             {node.status === 'running' && <div className="pointer-events-none absolute inset-0 overflow-hidden">
               <span className="canvas-generation-glow-base" />
               <span className="canvas-generation-glow" />
             </div>}
             <div className="relative z-10 flex h-full w-full flex-col items-center justify-center gap-2">
               {node.status === 'error'
-                ? <WarningIcon className={`h-32 w-32 ${isNetworkFailure ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`} />
+                ? <WarningIcon className={`h-32 w-32 ${isNetworkFailure || imageDownloadFailure ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`} />
                 : <ImageIcon className={`h-[7.5rem] w-[7.5rem] text-[#3f78c5]/70 ${node.status === 'running' ? 'animate-pulse' : ''}`} />}
               {node.status === 'running'
                 ? <span>{statusText}</span>
-                : isNetworkFailure
-                  ? <span className="flex items-center gap-2 text-4xl font-medium"><span>{statusText}</span><button type="button" data-canvas-handle disabled={retryPending} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryPending ? '正在重试' : '重试请求'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryImage() }}><RefreshIcon className={`h-6 w-6 ${retryPending ? 'animate-spin' : ''}`} /></button></span>
+                : (isNetworkFailure || imageDownloadFailure)
+                  ? <span className="flex items-center gap-2 text-4xl font-medium"><span>{statusText}</span>{imageDownloadFailure ? <button type="button" data-canvas-handle disabled={redownloadPending} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重新下载图片" title={redownloadPending ? '正在下载' : '重新下载图片'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRedownloadImage() }}><DownloadIcon className={`h-6 w-6 ${redownloadPending ? 'animate-spin' : ''}`} /></button> : <button type="button" data-canvas-handle disabled={retryPending} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryPending ? '正在重试' : '重试请求'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryImage() }}><RefreshIcon className={`h-6 w-6 ${retryPending ? 'animate-spin' : ''}`} /></button>}</span>
                   : <span className={node.status === 'error' ? 'text-4xl font-medium' : undefined}>{statusText}</span>}
-              {node.status === 'error' && node.error && (isNetworkFailure ? (
+              {node.status === 'error' && node.error && (isNetworkFailure || imageDownloadFailure ? (
                 <>
-                  {(node.failure?.endpoint ?? node.failureEndpoint) && <span className="text-sm font-medium text-yellow-700 dark:text-yellow-300">失败接口：{getFailureEndpointLabel(node.failure?.endpoint ?? node.failureEndpoint)}</span>}
+                  {failureEndpoint && <span className="text-sm font-medium text-yellow-700 dark:text-yellow-300">失败接口：{getFailureEndpointLabel(failureEndpoint)}</span>}
                   {(node.failure?.requestId || node.task.requestId || taskIds.length > 0) && (
                     <span className="flex max-w-[92%] flex-col items-center gap-1 text-center font-mono text-sm leading-5 text-yellow-700/90 dark:text-yellow-300/90">
                       {node.failure?.requestId && <span className="flex max-w-full items-center gap-1 break-all"><span>image_request_id: {node.failure.requestId}</span><button type="button" data-canvas-handle className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-yellow-700 hover:bg-yellow-200/70 dark:text-yellow-300 dark:hover:bg-yellow-900/50" aria-label="复制图片 request_id" title="复制图片 request_id" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCopyFailureId('request_id', node.failure!.requestId!) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>}
@@ -659,7 +645,7 @@ function CanvasImageNode({
                 </>
               ) : (
                 <>
-                  {(node.failure?.endpoint ?? node.failureEndpoint) && <span className="text-sm font-medium text-red-700 dark:text-red-300">失败接口：{getFailureEndpointLabel(node.failure?.endpoint ?? node.failureEndpoint)}</span>}
+                  {failureEndpoint && <span className="text-sm font-medium text-red-700 dark:text-red-300">失败接口：{getFailureEndpointLabel(failureEndpoint)}</span>}
                   {node.task.failureRetryCount !== undefined && <span className="text-xs text-red-600/80 dark:text-red-300/80">自动重试：{node.task.failureRetryCount} 次</span>}
                   <span className="flex max-w-[92%] items-center gap-1">
                     <span
@@ -1502,7 +1488,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     return items
   }, [canvas.items, canvas.viewport, containerSize, nodes, projectImageIds, ratios, transientNodeItems])
 
-  const canvasConnections = useMemo(() => {
+  const canvasConnections = useMemo<CanvasConnection[]>(() => {
     const nodesByImageId = new Map(nodes.flatMap((node) => node.imageId ? [[node.imageId, node] as const] : []))
     return nodes.flatMap((targetNode) => {
       const targetItem = nodeItems[targetNode.key]
@@ -2339,14 +2325,18 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
   }
 
-  const handleRedownloadImage = async (task: TaskRecord) => {
+  const handleRedownloadImage = async (task: TaskRecord, requestIndex?: number) => {
     try {
-      await redownloadTaskImage(task)
+      await redownloadTaskImage(task, requestIndex)
       showToast('图片重新下载成功', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '图片重新下载失败', 'error')
     }
   }
+
+  const selectedNodeFailureEndpoint = selectedNode?.failure?.endpoint ?? selectedNode?.failureEndpoint ?? selectedNode?.task.failureEndpoint
+  const selectedNodeImageDownloadFailure = selectedNode?.status === 'error'
+    && isImageDownloadFailureError(selectedNodeFailureEndpoint, selectedNode.error)
 
   const handleRetryImage = async (task: TaskRecord) => {
     try {
@@ -2515,49 +2505,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       onPointerUp={handleCanvasPointerEnd}
       onPointerCancel={handleCanvasPointerEnd}
     >
-      {canvasConnections.length > 0 && (
-        <svg
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-0 h-full w-full overflow-visible"
-          data-canvas-reference-connections
-        >
-          <defs>
-            <marker
-              id="canvas-reference-arrow"
-              markerHeight="8"
-              markerUnits="userSpaceOnUse"
-              markerWidth="8"
-              orient="auto"
-              refX="7"
-              refY="4"
-              viewBox="0 0 8 8"
-            >
-              <path d="M0 0 L8 4 L0 8 Z" fill="#3f78c5" />
-            </marker>
-          </defs>
-          {canvasConnections.map((connection) => (
-            <g key={connection.id} data-canvas-reference-connection>
-              <path
-                d={getCanvasConnectionPath(connection.start, connection.end)}
-                fill="none"
-                stroke="#3f78c5"
-                strokeLinecap="round"
-                strokeOpacity="0.14"
-                strokeWidth="6"
-              />
-              <path
-                d={getCanvasConnectionPath(connection.start, connection.end)}
-                fill="none"
-                stroke="#3f78c5"
-                strokeLinecap="round"
-                strokeOpacity="0.72"
-                strokeWidth="1.75"
-                markerEnd="url(#canvas-reference-arrow)"
-              />
-            </g>
-          ))}
-        </svg>
-      )}
+      <CanvasReferenceConnections connections={canvasConnections} />
       <div
         className="absolute left-0 top-0 z-10 origin-top-left"
         style={{
@@ -2830,7 +2778,15 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
           </>}
           {selectedNode.status === 'error' && <>
             <TooltipButton tooltip="复用配置" onClick={() => void reuseImageConfig(selectedNode.task)} className={toolbarButtonClass}><ReuseConfigIcon className="h-4 w-4" /></TooltipButton>
-            <TooltipButton tooltip="重试单图" onClick={() => void handleRetryImage(selectedNode.task)} className={toolbarButtonClass}><RefreshIcon className="h-4 w-4" /></TooltipButton>
+            <TooltipButton
+              tooltip={selectedNodeImageDownloadFailure ? '重新下载图片' : '重试单图'}
+              onClick={() => void (selectedNodeImageDownloadFailure
+                ? handleRedownloadImage(selectedNode.task, selectedNode.failure?.requestIndex)
+                : handleRetryImage(selectedNode.task))}
+              className={toolbarButtonClass}
+            >
+              {selectedNodeImageDownloadFailure ? <DownloadIcon className="h-4 w-4" /> : <RefreshIcon className="h-4 w-4" />}
+            </TooltipButton>
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
             <TooltipButton tooltip="图片信息" onClick={() => setDetailTaskId(selectedNode.task.id)} className={toolbarButtonClass}><InfoIcon className="h-4 w-4" /></TooltipButton>
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />

@@ -528,7 +528,10 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
     .map((r) => r.value)
   const failedRequests = results.flatMap((r, requestIndex) => {
     if (r.status !== 'rejected') return []
-    const reason = r.reason as { message?: unknown; endpoint?: ImageFailureEndpoint; kind?: 'network'; status?: number; requestId?: string; retryCount?: number }
+    const reason = r.reason as { message?: unknown; endpoint?: ImageFailureEndpoint; kind?: 'network'; status?: number; requestId?: string; retryCount?: number; rawImageUrls?: unknown }
+    const rawImageUrls = Array.isArray(reason.rawImageUrls)
+      ? reason.rawImageUrls.filter((url): url is string => typeof url === 'string' && isHttpUrl(url))
+      : []
     return [{
       requestIndex,
       error: getErrorMessage(r.reason),
@@ -537,6 +540,7 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
       ...(typeof reason.status === 'number' ? { status: reason.status } : {}),
       ...(reason.requestId ? { requestId: reason.requestId } : {}),
       ...(typeof reason.retryCount === 'number' ? { retryCount: reason.retryCount } : {}),
+      ...(rawImageUrls.length ? { rawImageUrls } : {}),
     }]
   })
 

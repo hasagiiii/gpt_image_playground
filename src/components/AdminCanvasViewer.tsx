@@ -1,36 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { Project, ProjectCanvasItem, ProjectCanvasState, TaskRecord } from '../types'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
+import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
 import { useStore } from '../store'
 import { TooltipButton } from './TooltipButton'
 import { AngleIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, HomeIcon, ImageIcon, InfoIcon, LayersIcon, MapIcon, ScaleIcon, WarningIcon, ZoomInIcon, ZoomOutIcon } from './icons'
+import CanvasReferenceConnections from './CanvasReferenceConnections'
 import DetailModal from './DetailModal'
+import AgentWorkspace from './AgentWorkspace'
 
 const CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-zoom-controls-collapsed'
-
-function getCanvasConnectionPoint(center: { x: number; y: number }, other: { x: number; y: number }, width: number, height: number) {
-  const dx = other.x - center.x
-  const dy = other.y - center.y
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    const side = dx >= 0 ? 1 : -1
-    return { x: center.x + side * width / 2, y: center.y }
-  }
-  const side = dy >= 0 ? 1 : -1
-  return { x: center.x, y: center.y + side * height / 2 }
-}
-
-function getCanvasConnectionPath(start: { x: number; y: number }, end: { x: number; y: number }) {
-  const dx = end.x - start.x
-  const dy = end.y - start.y
-  if (Math.abs(dy) < 0.5 || Math.abs(dx) < 0.5) return `M ${start.x} ${start.y} L ${end.x} ${end.y}`
-  const horizontal = Math.abs(dx) >= Math.abs(dy)
-  const offset = Math.max(28, Math.min(120, (horizontal ? Math.abs(dx) : Math.abs(dy)) * 0.45))
-  const control = horizontal
-    ? { x: Math.sign(dx || 1) * offset, y: (Math.sign(dy) || 1) * Math.max(18, offset * Math.tan(Math.PI / 6)) }
-    : { x: (Math.sign(dx) || 1) * Math.max(18, offset * Math.tan(Math.PI / 6)), y: Math.sign(dy || 1) * offset }
-  return `M ${start.x} ${start.y} C ${start.x + control.x} ${start.y + control.y}, ${end.x - control.x} ${end.y - control.y}, ${end.x} ${end.y}`
-}
 
 function getCanvasItemHeight(item: ProjectCanvasItem, ratio: number) {
   const crop = item.operator?.crop
@@ -174,6 +154,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
   })
   const [zoomEditing, setZoomEditing] = useState(false)
   const [zoomInput, setZoomInput] = useState(String(Math.round((project.canvas?.viewport.scale ?? 1) * 100)))
+  const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(false)
 
   useEffect(() => {
     try {
@@ -288,7 +269,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     return isCanvasRectVisible(node.item, getCanvasItemHeight(node.item, node.ratio), viewport, containerSize, 0)
   }), [containerSize, nodes, selectedImageId, viewport])
 
-  const canvasConnections = useMemo(() => nodes.flatMap((targetNode) => {
+  const canvasConnections = useMemo<CanvasConnection[]>(() => nodes.flatMap((targetNode) => {
     if (!targetNode.task) return []
     const targetHeight = getCanvasItemHeight(targetNode.item, targetNode.ratio)
     const targetCenter = { x: targetNode.item.x + targetNode.item.width / 2, y: targetNode.item.y + targetHeight / 2 }
@@ -388,28 +369,36 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
-  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    const target = event.target as Element | null
-    const toolbar = target?.closest('[data-canvas-toolbar]')
-    if (toolbar) {
-      const scrollable = target?.closest<HTMLElement>('[data-canvas-scrollable]')
-      if (scrollable && scrollable.scrollHeight > scrollable.clientHeight) return
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const handleWheel = (event: WheelEvent) => {
+      const target = event.target
+      if (target instanceof Element) {
+        const toolbar = target.closest('[data-canvas-toolbar]')
+        if (toolbar) {
+          const scrollable = target.closest<HTMLElement>('[data-canvas-scrollable]')
+          if (scrollable && scrollable.scrollHeight > scrollable.clientHeight) return
+          event.preventDefault()
+          return
+        }
+      }
       event.preventDefault()
-      return
+      const rect = container.getBoundingClientRect()
+      if (canvasWheelMode === 'pan' && !event.ctrlKey) {
+        setViewport((current) => ({
+          ...current,
+          x: current.x - (event.deltaX || 0),
+          y: current.y - (event.deltaY || 0),
+        }))
+        return
+      }
+      const factor = Math.exp(-event.deltaY * 0.0015)
+      setViewport((current) => zoomCanvasViewport(current, { x: event.clientX - rect.left, y: event.clientY - rect.top }, current.scale * factor))
     }
-    event.preventDefault()
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (canvasWheelMode === 'pan' && !event.ctrlKey) {
-      setViewport((current) => ({
-        ...current,
-        x: current.x - (event.deltaX || 0),
-        y: current.y - (event.deltaY || 0),
-      }))
-      return
-    }
-    const factor = Math.exp(-event.deltaY * 0.0015)
-    setViewport((current) => zoomCanvasViewport(current, { x: event.clientX - rect.left, y: event.clientY - rect.top }, current.scale * factor))
-  }
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => container.removeEventListener('wheel', handleWheel)
+  }, [canvasWheelMode])
 
   const handleMinimapDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!minimapData) return
@@ -530,33 +519,20 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
         </div>
         <span className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">只读</span>
       </div>
+      <div className={`relative grid min-h-0 flex-1 w-full transition-[grid-template-columns,gap] duration-300 ease-in-out ${agentPanelCollapsed ? 'xl:grid-cols-1' : 'xl:grid-cols-[minmax(0,1fr)_420px]'}`}>
+        <main className="relative min-h-0 min-w-0">
       <div
         ref={containerRef}
         data-project-canvas
         data-no-drag-select
-        className="relative min-h-0 flex-1 w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 dark:border-white/[0.08] dark:bg-gray-950"
+        className="relative h-full min-h-0 w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 dark:border-white/[0.08] dark:bg-gray-950"
         style={{ touchAction: 'none' }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
         onPointerCancel={handlePointerEnd}
-        onWheel={handleWheel}
       >
-        {canvasConnections.length > 0 && (
-          <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-0 h-full w-full overflow-visible">
-            <defs>
-              <marker id="admin-canvas-reference-arrow" markerHeight="8" markerUnits="userSpaceOnUse" markerWidth="8" orient="auto" refX="7" refY="4" viewBox="0 0 8 8">
-                <path d="M0 0 L8 4 L0 8 Z" fill="#3f78c5" />
-              </marker>
-            </defs>
-            {canvasConnections.map((connection) => (
-              <g key={connection.id} data-canvas-reference-connection>
-                <path d={getCanvasConnectionPath(connection.start, connection.end)} fill="none" stroke="#3f78c5" strokeLinecap="round" strokeOpacity="0.14" strokeWidth="6" />
-                <path d={getCanvasConnectionPath(connection.start, connection.end)} fill="none" stroke="#3f78c5" strokeLinecap="round" strokeOpacity="0.72" strokeWidth="1.75" markerEnd="url(#admin-canvas-reference-arrow)" />
-              </g>
-            ))}
-          </svg>
-        )}
+        <CanvasReferenceConnections connections={canvasConnections} markerId="admin-canvas-reference-arrow" />
         <div className="absolute left-0 top-0 z-10 origin-top-left" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
           {visibleNodes.map((node) => {
             const ratio = Math.max(0.01, node.ratio)
@@ -688,7 +664,6 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
             className="absolute z-40 flex max-w-[calc(100%-1rem)] items-center gap-0.5 overflow-x-auto rounded-md border border-gray-200 bg-white/95 p-1 shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
             style={{ left: selectedToolbarPosition.left, top: selectedToolbarPosition.top }}
             onPointerDown={(event) => event.stopPropagation()}
-            onWheel={(event) => event.stopPropagation()}
           >
             <TooltipButton tooltip="图片信息" onClick={() => setInfoImageId((current) => current === selectedNode.id ? null : selectedNode.id)} className={toolbarButtonClass}>
               <InfoIcon className="h-4 w-4" />
@@ -724,23 +699,14 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
           ref={zoomControlsRef}
           data-canvas-toolbar
           data-canvas-zoom-controls
-          className="pointer-events-auto fixed bottom-2 z-[150] flex items-center rounded-md border border-gray-200 bg-white/95 p-1 text-xs shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95 sm:bottom-3 right-2 sm:right-3"
+          className={`pointer-events-auto fixed bottom-2 z-[150] flex items-center rounded-md border border-gray-200 bg-white/95 p-1 text-xs shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95 sm:bottom-3 ${agentPanelCollapsed ? 'right-2 sm:right-3' : 'right-2 sm:right-3 xl:right-[428px]'}`}
           style={{ zIndex: 150 }}
-          onWheel={(event) => {
-            event.stopPropagation()
-            event.preventDefault()
-          }}
         >
           {!zoomControlsCollapsed && layersOpen && (
             <div
               data-canvas-layers-panel
               className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-md border border-gray-200 bg-white/95 p-2 text-xs shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
               onPointerDown={(event) => event.stopPropagation()}
-              onWheel={(event) => {
-                event.stopPropagation()
-                const scrollable = (event.target as Element).closest<HTMLElement>('[data-canvas-scrollable]')
-                if (!scrollable || scrollable.scrollHeight <= scrollable.clientHeight) event.preventDefault()
-              }}
             >
               <div className="mb-1.5 font-medium text-gray-800 dark:text-gray-100">图层</div>
               <div data-canvas-scrollable className="max-h-64 overflow-y-auto overscroll-contain">
@@ -770,10 +736,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
             </div>
           )}
           {!zoomControlsCollapsed && minimapOpen && minimapData && (
-            <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => {
-              event.stopPropagation()
-              event.preventDefault()
-            }}>
+            <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()}>
               <div className="relative h-36 overflow-hidden rounded border border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800">
                 <div
                   className="absolute z-20 cursor-move border border-[#3f78c5] bg-[#3f78c5]/10"
@@ -961,10 +924,6 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
             <div
               className="absolute bottom-full right-0 mb-2 w-80 rounded-md border border-gray-200 bg-white p-4 text-xs leading-6 text-gray-600 shadow-lg dark:border-white/[0.1] dark:bg-gray-900 dark:text-gray-300"
               onPointerDown={(event) => event.stopPropagation()}
-              onWheel={(event) => {
-                event.stopPropagation()
-                event.preventDefault()
-              }}
             >
               <div className="mb-1 text-sm font-medium text-gray-800 dark:text-gray-100">画布操作说明</div>
               <div>滚轮：{canvasWheelMode === 'zoom' ? '缩放画布' : '移动位置'}</div>
@@ -977,6 +936,22 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
             </div>
           )}
         </div>
+      </div>
+        </main>
+        <div data-no-drag-select className={`relative min-w-0 border-gray-200 transition-[transform,opacity] duration-300 ease-in-out xl:block xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
+          <AgentWorkspace embedded onCollapse={() => setAgentPanelCollapsed(true)} />
+        </div>
+        <button
+          type="button"
+          onClick={() => setAgentPanelCollapsed(false)}
+          className={`fixed right-0 top-16 z-30 rounded-l-lg border border-r-0 border-gray-200 bg-white/90 p-2 text-gray-500 shadow-sm backdrop-blur transition-[transform,opacity,background-color,color] duration-300 ease-in-out hover:bg-gray-100 hover:text-gray-800 dark:border-white/[0.08] dark:bg-gray-900/90 dark:hover:bg-white/[0.08] dark:hover:text-gray-200 ${agentPanelCollapsed ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-full opacity-0'}`}
+          title="展开 Agent"
+          aria-label="展开 Agent"
+          aria-hidden={!agentPanelCollapsed}
+          tabIndex={agentPanelCollapsed ? 0 : -1}
+        >
+          <ChevronLeftIcon className="h-4 w-4" />
+        </button>
       </div>
     </div>
   )

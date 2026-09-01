@@ -14,6 +14,7 @@ import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
+import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, RefreshIcon, TrashIcon } from './icons'
 
 import ViewportTooltip from './ViewportTooltip'
@@ -209,6 +210,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
         status: failure.status,
         requestId: failure.requestId,
         retryCount: failure.retryCount,
+        rawImageUrls: failure.rawImageUrls,
       }
       const imageId = task.outputImages[outputImageIndex] ?? ''
       const slot = {
@@ -248,7 +250,8 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
   const currentOutputImageId = currentOutputSlot?.imageId || ''
   const currentOutputImageIndex = currentOutputSlot?.outputImageIndex ?? -1
   const currentOutputError = currentOutputSlot?.error || ''
-  const currentOutputNetworkFailure = Boolean(currentOutputError && (currentOutputSlot?.kind === 'network' || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(currentOutputError)))
+  const currentOutputImageDownloadFailure = Boolean(currentOutputError && isImageDownloadFailureError(currentOutputSlot?.endpoint, currentOutputError))
+  const currentOutputNetworkFailure = Boolean(currentOutputError && (currentOutputSlot?.kind === 'network' || currentOutputImageDownloadFailure || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(currentOutputError)))
   const currentOriginalOutputImageId = currentOutputImageIndex >= 0 ? task?.transparentOriginalImages?.[currentOutputImageIndex] || '' : ''
   const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || imageOverrides[currentOutputImageId] || '' : ''
 
@@ -334,7 +337,8 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
   const taskModel = task.apiModel || '未知'
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
-  const isNetworkFailure = task.failureKind === 'network' || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(task.error ?? '')
+  const isImageDownloadFailure = isImageDownloadFailureError(task.failureEndpoint, task.error)
+  const isNetworkFailure = task.failureKind === 'network' || isImageDownloadFailure || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(task.error ?? '')
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
   const rawImageUrls = task.rawImageUrls ?? []
   const streamPreviewLen = streamPreviewItems.length
@@ -591,11 +595,11 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
     }
   }
 
-  const handleRedownload = async () => {
+  const handleRedownload = async (requestIndex?: number) => {
     if (readOnly || redownloadPending) return
     setRedownloadPending(true)
     try {
-      await redownloadTaskImage(task)
+      await redownloadTaskImage(task, requestIndex)
       showToast('图片重新下载成功', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '图片重新下载失败', 'error')
@@ -796,8 +800,8 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <div className={`flex items-center justify-center gap-2 text-sm font-medium ${currentOutputNetworkFailure ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-500'}`}>
-                <span>{currentOutputNetworkFailure ? '网络异常，请稍后重试。' : `第 ${(currentOutputSlot?.requestIndex ?? imageIndex) + 1} 张生成失败`}</span>
-                {currentOutputNetworkFailure && <button type="button" disabled={readOnly || retryOutputPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryOutputPending ? '正在重试' : '重试请求'} onClick={(event) => { event.stopPropagation(); void handleRetryOutput() }}><RefreshIcon className={`h-4 w-4 ${retryOutputPending ? 'animate-spin' : ''}`} /></button>}
+                <span>{currentOutputImageDownloadFailure ? '图片下载失败' : currentOutputNetworkFailure ? '网络异常，请稍后重试。' : `第 ${(currentOutputSlot?.requestIndex ?? imageIndex) + 1} 张生成失败`}</span>
+                {currentOutputNetworkFailure && <button type="button" disabled={readOnly || retryOutputPending || redownloadPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-500 dark:hover:bg-green-400" aria-label={currentOutputImageDownloadFailure ? '重新下载图片' : '重试请求'} title={currentOutputImageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryOutputPending ? '正在重试' : '重试请求')} onClick={(event) => { event.stopPropagation(); void (currentOutputImageDownloadFailure ? handleRedownload(currentOutputSlot?.requestIndex) : handleRetryOutput()) }}>{currentOutputImageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryOutputPending ? 'animate-spin' : ''}`} />}</button>}
               </div>
               {currentOutputSlot?.endpoint && <p className={`mt-1 text-xs ${currentOutputNetworkFailure ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-400'}`}>失败接口：{currentOutputSlot.endpoint}</p>}
               {!currentOutputNetworkFailure && currentOutputSlot?.status && <p className="mt-1 text-xs text-red-400">HTTP status: {currentOutputSlot.status}</p>}
@@ -925,8 +929,8 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <div className="flex items-center justify-center gap-2 text-base font-medium text-yellow-700 dark:text-yellow-300">
-                <span>网络异常，请稍后重试。</span>
-                <button type="button" disabled={readOnly || retryOutputPending} className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryOutputPending ? '正在重试' : '重试请求'} onClick={(event) => { event.stopPropagation(); void handleRetry() }}><RefreshIcon className={`h-4 w-4 ${retryOutputPending ? 'animate-spin' : ''}`} /></button>
+                <span>{isImageDownloadFailure ? '图片下载失败' : '网络异常，请稍后重试。'}</span>
+                <button type="button" disabled={readOnly || retryOutputPending || redownloadPending} className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-500 dark:hover:bg-green-400" aria-label={isImageDownloadFailure ? '重新下载图片' : '重试请求'} title={isImageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryOutputPending ? '正在重试' : '重试请求')} onClick={(event) => { event.stopPropagation(); void (isImageDownloadFailure ? handleRedownload() : handleRetry()) }}>{isImageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryOutputPending ? 'animate-spin' : ''}`} />}</button>
               </div>
               {task.failureEndpoint && <p className="mt-1 text-xs text-yellow-700 dark:text-yellow-300">失败接口：{task.failureEndpoint}</p>}
             </div>
