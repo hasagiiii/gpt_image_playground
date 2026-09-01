@@ -273,7 +273,7 @@ function getPageScrollTop() {
   return window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0
 }
 
-export default function AgentWorkspace({ embedded = false, onCollapse }: { embedded?: boolean; onCollapse?: () => void }) {
+export default function AgentWorkspace({ embedded = false, onCollapse, readOnly = false, onTaskClick }: { embedded?: boolean; onCollapse?: () => void; readOnly?: boolean; onTaskClick?: (task: TaskRecord) => void }) {
   const conversations = useStore((s) => s.agentConversations)
   const conversationsLoaded = useStore((s) => s.agentConversationsLoaded)
   const activeProjectId = useStore((s) => s.activeProjectId)
@@ -311,6 +311,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
   )
   const conversation = scopedConversations.find((item) => item.id === activeConversationId) ?? null
   const conversationTitle = conversation ? getAgentConversationTitle(conversation) : '新对话'
+  const readOnlyActionClass = readOnly ? 'cursor-not-allowed opacity-40 grayscale text-gray-400 dark:text-gray-600' : ''
   const [editingConversationTitle, setEditingConversationTitle] = useState('')
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -491,7 +492,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
     if (!embedded && appMode !== 'agent') return
     if (!conversationsLoaded) return
     
-    if (scopedConversations.length === 0) {
+    if (scopedConversations.length === 0 && !readOnly) {
       createConversation()
     } else if (!conversation) {
       const latest = [...scopedConversations].sort((a, b) => b.updatedAt - a.updatedAt)[0]
@@ -499,7 +500,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
         setActiveConversationId(latest.id)
       }
     }
-  }, [appMode, embedded, conversationsLoaded, scopedConversations, conversation, createConversation, setActiveConversationId])
+  }, [appMode, embedded, conversationsLoaded, scopedConversations, conversation, createConversation, readOnly, setActiveConversationId])
 
   const sortedConversations = useMemo(
     () => [...scopedConversations].sort((a, b) => b.updatedAt - a.updatedAt),
@@ -858,11 +859,12 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
           <div className="relative flex shrink-0 items-center gap-1">
             <button
               type="button"
+              disabled={readOnly}
               onClick={() => {
                 setShowHistoryModal(false)
                 createConversation()
               }}
-              className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-white/[0.06] dark:hover:text-gray-200"
+              className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:grayscale dark:hover:bg-white/[0.06] dark:hover:text-gray-200"
               title="新对话"
             >
               <EditIcon className="h-4 w-4" />
@@ -877,7 +879,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
             >
               <ChevronDownIcon className="h-4 w-4" />
             </button>
-            <ProjectApiKeySelect scope="agent" iconOnly />
+            <ProjectApiKeySelect scope="agent" iconOnly disabled={readOnly} />
             {showHistoryModal && (
               <HistoryModal
                 onClose={() => setShowHistoryModal(false)}
@@ -925,7 +927,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
               <button type="button" onClick={() => setSidebarCollapsed(true)} className="lg:hidden p-2 -ml-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 rounded-lg transition-colors" title="折叠左侧边栏">
                 <SidebarLeftIcon className="w-5 h-5" />
               </button>
-              <button type="button" onClick={createConversation} className="p-2 -mr-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 lg:hover:bg-gray-100 lg:dark:hover:bg-white/[0.04] rounded-lg transition-colors" title="新对话">
+              <button type="button" disabled={readOnly} onClick={createConversation} className="p-2 -mr-2 rounded-lg text-gray-500 transition-colors hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:grayscale dark:hover:text-gray-200 lg:hover:bg-gray-100 lg:dark:hover:bg-white/[0.04]" title="新对话">
                 <EditIcon className="w-5 h-5" />
               </button>
             </div>
@@ -1035,11 +1037,12 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
             <div className="relative flex items-center gap-1">
               <button
                 type="button"
+                disabled={readOnly}
                 onClick={() => {
                   setShowHistoryModal(false)
                   createConversation()
                 }}
-                className="p-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.04] rounded-lg transition-colors"
+                className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:grayscale dark:hover:bg-white/[0.04] dark:hover:text-gray-200"
                 title="新对话"
               >
                 <EditIcon className="w-5 h-5" />
@@ -1081,7 +1084,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
           {!conversation ? (
             <div className="py-20 text-center text-gray-400">
               <p className="mb-3">还没有 Agent 对话</p>
-              <button type="button" onClick={createConversation} className="rounded-lg bg-blue-500 px-4 py-2 text-white hover:bg-blue-600 transition-colors">创建对话</button>
+              <button type="button" disabled={readOnly} onClick={createConversation} className="rounded-lg bg-blue-500 px-4 py-2 text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:grayscale">创建对话</button>
             </div>
           ) : (
             (() => {
@@ -1200,7 +1203,8 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
                                   <TaskCard
                                     task={block.task}
                                     disableSwipe={true}
-                                    onClick={() => setDetailTaskId(block.task.id)}
+                                    readOnly={readOnly}
+                                    onClick={() => onTaskClick ? onTaskClick(block.task) : setDetailTaskId(block.task.id)}
                                     onReuse={() => handleReuse(block.task)}
                                     onEditOutputs={() => editOutputs(block.task)}
                                     onDelete={() => setConfirmDialog({ title: '删除任务', message: '确定要删除这个任务吗？', action: () => removeTask(block.task) })}
@@ -1236,7 +1240,8 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
                             <span className="truncate">正在编辑</span>
                             <AgentActionButton
                               tooltip="取消编辑"
-                              className="ml-1 -mr-1 p-0.5 rounded-full hover:bg-blue-200 dark:hover:bg-blue-500/40 transition-colors"
+                              disabled={readOnly}
+                              className={`ml-1 -mr-1 rounded-full p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:bg-blue-200 dark:hover:bg-blue-500/40'} ${readOnlyActionClass}`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setPrompt('');
@@ -1253,34 +1258,34 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
                       <div className="flex items-center gap-2 ml-auto text-gray-400">
                         {!isAssistant && round && hasBranches && siblingIndex >= 0 && (
                           <div className="inline-flex items-center text-sm font-bold text-gray-400 dark:text-gray-500 mr-1">
-                            <AgentActionButton tooltip="上一分支" className="p-1 rounded-md hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200 transition-colors" onClick={() => handleSwitchBranch(round, -1)}>
+                            <AgentActionButton tooltip="上一分支" className="rounded-md p-1 transition-colors hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200" onClick={() => handleSwitchBranch(round, -1)}>
                               <ChevronLeftIcon className="w-4 h-4" />
                             </AgentActionButton>
                             <span className="px-1 tabular-nums tracking-widest">{siblingIndex + 1}/{siblingRounds.length}</span>
-                            <AgentActionButton tooltip="下一分支" className="p-1 rounded-md hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200 transition-colors" onClick={() => handleSwitchBranch(round, 1)}>
+                            <AgentActionButton tooltip="下一分支" className="rounded-md p-1 transition-colors hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200" onClick={() => handleSwitchBranch(round, 1)}>
                               <ChevronRightIcon className="w-4 h-4" />
                             </AgentActionButton>
                           </div>
                         )}
                         {isAssistant ? (
                           <>
-                            <AgentActionButton tooltip="复制输出文本" className={`p-1.5 rounded-md transition-colors ${message.content.trim() ? 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-white/[0.06]' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={!message.content.trim()} onClick={() => {
+                            <AgentActionButton tooltip="复制输出文本" className={`rounded-md p-1.5 transition-colors ${message.content.trim() ? 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-white/[0.06]' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={!message.content.trim()} onClick={() => {
                               void handleCopyMessage(getAgentAssistantCopyContent(message.content, assistantBlocks), '输出文本已复制', '复制输出文本失败');
                             }}>
                               <CopyIcon className="w-4 h-4" />
                             </AgentActionButton>
-                            <AgentActionButton tooltip="重新生成" className="p-1.5 rounded-md text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors" onClick={() => {
+                            <AgentActionButton tooltip="重新生成" disabled={readOnly} className={`rounded-md p-1.5 text-gray-400 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10'} ${readOnlyActionClass}`} onClick={() => {
                               if (conversation && round) void regenerateAgentAssistantMessage(conversation.id, round.id);
                             }}>
                               <RefreshIcon className="w-4 h-4" />
                             </AgentActionButton>
-                            <AgentActionButton tooltip={allRoundTasksFavorited ? '编辑收藏夹' : '收藏所有图片'} className={`p-1.5 rounded-md transition-colors ${hasRoundFavoriteTasks ? (allRoundTasksFavorited ? 'text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10' : 'text-gray-400 hover:text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10') : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={!hasRoundFavoriteTasks} onClick={() => {
+                            <AgentActionButton tooltip={allRoundTasksFavorited ? '编辑收藏夹' : '收藏所有图片'} className={`rounded-md p-1.5 transition-colors ${readOnly ? readOnlyActionClass : hasRoundFavoriteTasks ? (allRoundTasksFavorited ? 'text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10' : 'text-gray-400 hover:text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10') : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={readOnly || !hasRoundFavoriteTasks} onClick={() => {
                               if (!hasRoundFavoriteTasks) return;
                               openFavoritePicker(favoriteTasksForRound.map((task) => task.id));
                             }}>
                               <FavoriteIcon className="w-4 h-4" filled={allRoundTasksFavorited} />
                             </AgentActionButton>
-                            <AgentActionButton tooltip="下载所有图片" className={`p-1.5 rounded-md transition-colors ${getRoundTasks(round ?? null, tasks).filter(Boolean).length > 0 ? 'text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-500/10' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={getRoundTasks(round ?? null, tasks).filter(Boolean).length === 0} onClick={async () => {
+                            <AgentActionButton tooltip="下载所有图片" className={`rounded-md p-1.5 transition-colors ${readOnly ? readOnlyActionClass : getRoundTasks(round ?? null, tasks).filter(Boolean).length > 0 ? 'text-gray-400 hover:text-green-500 hover:bg-green-50 dark:hover:bg-green-500/10' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={readOnly || getRoundTasks(round ?? null, tasks).filter(Boolean).length === 0} onClick={async () => {
                                const imageIds = tasksForRound.flatMap(t => t.outputImages || []);
                                if (imageIds.length === 0) return;
                                try {
@@ -1304,7 +1309,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
                              }}>
                                <DownloadIcon className="w-4 h-4" />
                              </AgentActionButton>
-                            <AgentActionButton tooltip="删除消息" className="p-1.5 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-md transition-colors" onClick={() => {
+                            <AgentActionButton tooltip="删除消息" disabled={readOnly} className={`rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10'} ${readOnlyActionClass}`} onClick={() => {
                               if (round) handleDeleteMessage(message, round);
                             }}>
                               <TrashIcon className="w-4 h-4" />
@@ -1312,17 +1317,17 @@ export default function AgentWorkspace({ embedded = false, onCollapse }: { embed
                           </>
                         ) : (
                           <>
-                            <AgentActionButton tooltip="复制提示词" className="p-1.5 rounded-md hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-white/[0.04] transition-colors" onClick={() => {
+                            <AgentActionButton tooltip="复制提示词" className="rounded-md p-1.5 transition-colors hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-white/[0.04]" onClick={() => {
                               void handleCopyMessage(message.content);
                             }}>
                               <CopyIcon className="w-4 h-4" />
                             </AgentActionButton>
-                            <AgentActionButton tooltip="编辑" className="p-1.5 rounded-md hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-white/[0.04] transition-colors" onClick={() => {
+                            <AgentActionButton tooltip="编辑" disabled={readOnly} className={`rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-white/[0.04]'} ${readOnlyActionClass}`} onClick={() => {
                                if (round) void handleEditRoundMessage(round, message.content);
                             }}>
                               <EditIcon className="w-4 h-4" />
                             </AgentActionButton>
-                            <AgentActionButton tooltip="删除" className="p-1.5 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors" onClick={() => {
+                            <AgentActionButton tooltip="删除" disabled={readOnly} className={`rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30'} ${readOnlyActionClass}`} onClick={() => {
                               if (round) handleDeleteMessage(message, round);
                             }}>
                               <TrashIcon className="w-4 h-4" />

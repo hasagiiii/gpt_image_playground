@@ -17,7 +17,7 @@ const COMPACT_API_KEY_ICON = (
   </span>
 )
 
-export function ProjectApiKeySelect({ scope = 'gallery', compact = false, iconOnly = false }: { scope?: 'gallery' | 'agent'; compact?: boolean; iconOnly?: boolean } = {}) {
+export function ProjectApiKeySelect({ scope = 'gallery', compact = false, iconOnly = false, disabled = false }: { scope?: 'gallery' | 'agent'; compact?: boolean; iconOnly?: boolean; disabled?: boolean } = {}) {
   const { user } = useAuth()
   const oidcApiOverride = useStore((s) => scope === 'agent' ? s.agentOidcApiOverride : s.oidcApiOverride)
   const setOidcApiOverride = useStore((s) => scope === 'agent' ? s.setAgentOidcApiOverride : s.setOidcApiOverride)
@@ -143,10 +143,10 @@ export function ProjectApiKeySelect({ scope = 'gallery', compact = false, iconOn
       <Select
         value={apiKey}
         onChange={(value) => handleApiKeyChange(String(value))}
-        disabled={apiKeysLoading || apiKeys.length === 0}
+        disabled={disabled || apiKeysLoading || apiKeys.length === 0}
         options={apiKeyOptions}
         className={iconOnly
-          ? 'h-8 w-28 rounded-lg border border-transparent bg-emerald-50 pl-2 pr-3 text-[11px] font-medium text-emerald-700 shadow-none transition hover:bg-emerald-100 dark:border-transparent dark:bg-emerald-400/10 dark:text-emerald-300 dark:hover:bg-emerald-400/20'
+          ? `h-8 w-28 rounded-lg border border-transparent bg-emerald-50 pl-2 pr-3 text-[11px] font-medium text-emerald-700 shadow-none transition hover:bg-emerald-100 dark:border-transparent dark:bg-emerald-400/10 dark:text-emerald-300 dark:hover:bg-emerald-400/20 ${disabled ? 'grayscale' : ''}`
           : compact
           ? 'h-8 rounded-lg border border-gray-200/70 bg-gray-50/80 px-1.5 text-[11px] font-medium leading-4 text-gray-700 shadow-none transition hover:border-gray-300 hover:bg-gray-100 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-200 dark:hover:bg-white/[0.08]'
           : 'h-[42px] rounded-xl border border-gray-200 bg-white px-2.5 text-xs font-semibold leading-4 text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-white/[0.06]'}

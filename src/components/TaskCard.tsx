@@ -21,6 +21,7 @@ interface Props {
   onClick: (e: React.MouseEvent | React.TouchEvent) => void
   isSelected?: boolean
   disableSwipe?: boolean
+  readOnly?: boolean
 }
 
 function TaskActionButton({
@@ -70,6 +71,7 @@ export default function TaskCard({
   onClick,
   isSelected,
   disableSwipe,
+  readOnly = false,
 }: Props) {
   const [thumbSrc, setThumbSrc] = useState<string>('')
   const [coverRatio, setCoverRatio] = useState<string>('')
@@ -102,6 +104,7 @@ export default function TaskCard({
   const swipeFrameRef = useRef<number | null>(null)
   const actualCostRef = useRef<HTMLSpanElement>(null)
   const actualCostVisible = actualCostHovered || actualCostOpen
+  const readOnlyActionClass = readOnly ? 'cursor-not-allowed opacity-40 grayscale text-gray-400 dark:text-gray-600' : ''
 
   useEffect(() => {
     if (!actualCostOpen) return
@@ -479,9 +482,9 @@ export default function TaskCard({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchCancel}
-        draggable={task.status === 'done' && task.outputImages?.length > 0}
+        draggable={!readOnly && task.status === 'done' && task.outputImages?.length > 0}
         onDragStart={(e) => {
-          if (task.status !== 'done' || !task.outputImages?.length) return;
+          if (readOnly || task.status !== 'done' || !task.outputImages?.length) return;
           const imageIds = task.outputImages;
           e.dataTransfer.setData('text/plain', `agent-images:${imageIds.join(',')}`);
           e.dataTransfer.effectAllowed = 'copy';
@@ -589,7 +592,7 @@ export default function TaskCard({
                 <>
                   <span className="flex items-center gap-1 text-center text-sm font-medium leading-tight text-yellow-700 dark:text-yellow-300">
                     <span>{imageDownloadFailure ? '图片下载失败' : '网络异常，请稍后重试。'}</span>
-                    <button type="button" disabled={retryPending || redownloadPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={imageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryPending ? '正在重试' : '重试请求')} onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry()) }}>{imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}</button>
+                    <button type="button" disabled={readOnly || retryPending || redownloadPending} className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400 ${readOnlyActionClass}`} aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={imageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryPending ? '正在重试' : '重试请求')} onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry()) }}>{imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}</button>
                   </span>
                   {task.failureEndpoint && <span className="text-xs text-yellow-700 dark:text-yellow-300">失败接口：{task.failureEndpoint}</span>}
                   {(task.requestId || taskIds.length > 0) && (
@@ -621,8 +624,8 @@ export default function TaskCard({
                     {canRedownloadImage && (
                       <button
                         type="button"
-                        disabled={redownloadPending}
-                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-500 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50"
+                        disabled={readOnly || redownloadPending}
+                        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-500 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50 ${readOnlyActionClass}`}
                         aria-label="重新下载图片"
                         title={redownloadPending ? '正在重新下载' : '重新下载图片'}
                         onTouchStart={(event) => event.stopPropagation()}
@@ -842,8 +845,8 @@ export default function TaskCard({
                 <TaskActionButton
                   tooltip={imageDownloadFailure ? '重新下载图片' : hasPartialOutputFailure ? '重试失败图片' : '重试任务'}
                   onClick={() => void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry())}
-                  disabled={imageDownloadFailure ? redownloadPending : retryPending}
-                  className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={readOnly || (imageDownloadFailure ? redownloadPending : retryPending)}
+                  className={`p-1.5 rounded-md text-gray-400 transition disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:bg-blue-50 dark:hover:bg-blue-950/30 hover:text-blue-500'} ${readOnlyActionClass}`}
                 >
                   {imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}
                 </TaskActionButton>
@@ -851,11 +854,12 @@ export default function TaskCard({
               <TaskActionButton
                 tooltip={task.isFavorite ? '编辑收藏夹' : '收藏任务'}
                 onClick={() => openFavoritePicker([task.id])}
-                className={`p-1.5 rounded-md transition ${
+                disabled={readOnly}
+                className={`${readOnlyActionClass} p-1.5 rounded-md transition disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : (
                   task.isFavorite
                     ? 'text-yellow-400 hover:bg-yellow-50 dark:hover:bg-yellow-500/10'
                     : 'text-gray-400 hover:text-yellow-400 hover:bg-yellow-50 dark:hover:bg-yellow-500/10'
-                }`}
+                )}`}
               >
                 <svg
                   className="w-4 h-4"
@@ -874,7 +878,8 @@ export default function TaskCard({
               <TaskActionButton
                 tooltip="复用配置"
                 onClick={onReuse}
-                className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
+                disabled={readOnly}
+                className={`p-1.5 rounded-md text-gray-400 transition disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:bg-blue-50 dark:hover:bg-blue-950/30 hover:text-blue-500'} ${readOnlyActionClass}`}
               >
                 <svg
                   className="w-4 h-4"
@@ -893,8 +898,8 @@ export default function TaskCard({
               <TaskActionButton
                 tooltip="编辑输出"
                 onClick={onEditOutputs}
-                className="p-1.5 rounded-md hover:bg-green-50 dark:hover:bg-green-950/30 text-gray-400 hover:text-green-500 transition disabled:opacity-30"
-                disabled={!task.outputImages?.length}
+                className={`p-1.5 rounded-md text-gray-400 transition disabled:cursor-not-allowed disabled:opacity-30 ${readOnly ? '' : 'hover:bg-green-50 dark:hover:bg-green-950/30 hover:text-green-500'} ${readOnlyActionClass}`}
+                disabled={readOnly || !task.outputImages?.length}
               >
                 <svg
                   className="w-4 h-4"
@@ -913,15 +918,16 @@ export default function TaskCard({
               <TaskActionButton
                 tooltip={savingToMaterials ? '正在保存到素材库' : '保存到素材库'}
                 onClick={() => void saveOutputsToMaterials()}
-                className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition disabled:cursor-wait disabled:opacity-40"
-                disabled={savingToMaterials || !task.outputImages?.length}
+                className={`p-1.5 rounded-md text-gray-400 transition disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:bg-blue-50 dark:hover:bg-blue-950/30 hover:text-blue-500'} ${readOnlyActionClass}`}
+                disabled={readOnly || savingToMaterials || !task.outputImages?.length}
               >
                 <CloudUploadIcon className={`w-4 h-4 ${savingToMaterials ? 'animate-pulse' : ''}`} />
               </TaskActionButton>
               <TaskActionButton
                 tooltip="删除任务"
                 onClick={onDelete}
-                className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 text-gray-400 hover:text-red-500 transition"
+                disabled={readOnly}
+                className={`p-1.5 rounded-md text-gray-400 transition disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-500'} ${readOnlyActionClass}`}
               >
                 <svg
                   className="w-4 h-4"

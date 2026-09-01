@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import type { Project, ProjectCanvasItem, ProjectCanvasState, TaskRecord } from '../types'
+import type { Project, ProjectCanvasItem, ProjectCanvasState, TaskOutputError, TaskRecord } from '../types'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
-import { useStore } from '../store'
+import { getTaskIds } from '../lib/taskIds'
+import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
+import { redownloadTaskImage, retryImage, retryTaskInPlace, useStore } from '../store'
 import { TooltipButton } from './TooltipButton'
-import { AngleIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, HomeIcon, ImageIcon, InfoIcon, LayersIcon, MapIcon, ScaleIcon, WarningIcon, ZoomInIcon, ZoomOutIcon } from './icons'
+import { AngleIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, HomeIcon, ImageIcon, InfoIcon, LayersIcon, MapIcon, RefreshIcon, ScaleIcon, WarningIcon, ZoomInIcon, ZoomOutIcon } from './icons'
 import CanvasReferenceConnections from './CanvasReferenceConnections'
 import DetailModal from './DetailModal'
 import AgentWorkspace from './AgentWorkspace'
@@ -54,10 +56,22 @@ type CanvasNode = {
   image?: { dataUrl: string; width?: number; height?: number; source?: string }
   status: 'done' | 'error'
   error?: string
+  failure?: TaskOutputError
   placeholderDimensions?: { width: number; height: number }
   placeholderName?: string
   outputRequestIndex?: number
   ratio: number
+}
+
+function getFailureEndpointLabel(endpoint: TaskOutputError['endpoint']) {
+  if (endpoint === 'generation') return 'generation'
+  if (endpoint === 'edit') return 'edit'
+  if (endpoint === 'responses') return 'responses'
+  if (endpoint === 'status') return 'status'
+  if (endpoint === 'result') return 'result'
+  if (endpoint === 'download') return 'download'
+  if (endpoint === 'agent') return 'agent'
+  return '未知'
 }
 
 function CanvasEdgeIndicator({
@@ -140,6 +154,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
   const [infoImageId, setInfoImageId] = useState<string | null>(null)
+  const [agentDetailTask, setAgentDetailTask] = useState<TaskRecord | null>(null)
   const [zoomPresetOpen, setZoomPresetOpen] = useState(false)
   const [zoomHelpOpen, setZoomHelpOpen] = useState(false)
   const [layersOpen, setLayersOpen] = useState(false)
@@ -155,6 +170,8 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
   const [zoomEditing, setZoomEditing] = useState(false)
   const [zoomInput, setZoomInput] = useState(String(Math.round((project.canvas?.viewport.scale ?? 1) * 100)))
   const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(false)
+  const [editingMode, setEditingMode] = useState(false)
+  const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(() => new Set())
 
   useEffect(() => {
     try {
@@ -185,14 +202,14 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
 
   const outputImageIds = useMemo(() => Array.from(new Set(tasks.flatMap((task) => task.outputImages))), [tasks])
   const errorNodeById = useMemo(() => {
-    const result = new Map<string, { task: TaskRecord; error?: string; placeholderName: string; dimensions: { width: number; height: number }; requestIndex: number }>()
+    const result = new Map<string, { task: TaskRecord; error?: string; failure?: TaskOutputError; placeholderName: string; dimensions: { width: number; height: number }; requestIndex: number }>()
     for (const task of tasks) {
       const dimensions = getPlaceholderDimensions(task)
       if (task.status === 'error' && task.outputImages.length === 0 && !task.outputErrors?.length) {
-        result.set(`${task.id}:error`, { task, error: task.error ?? undefined, placeholderName: '占位图1', dimensions, requestIndex: 0 })
+        result.set(`${task.id}:error`, { task, error: task.error ?? '生成失败', placeholderName: '占位图1', dimensions, requestIndex: 0 })
       }
       for (const error of task.outputErrors ?? []) {
-        result.set(`${task.id}:error:${error.requestIndex}`, { task, error: error.error, placeholderName: `占位图${error.requestIndex + 1}`, dimensions, requestIndex: error.requestIndex })
+        result.set(`${task.id}:error:${error.requestIndex}`, { task, error: error.error, failure: error, placeholderName: `占位图${error.requestIndex + 1}`, dimensions, requestIndex: error.requestIndex })
       }
     }
     return result
@@ -214,25 +231,30 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     }
     return map
   }, [tasks])
-  const nodes = useMemo<CanvasNode[]>(() => Object.entries(canvas.items)
-    .map(([id, item]) => {
-      const errorNode = errorNodeById.get(id)
-      const image = images[id]
-      const dimensions = image?.width && image?.height ? { width: image.width, height: image.height } : errorNode?.dimensions
-      return {
-        id,
-        item,
-        task: taskByImageId.get(id) ?? errorNode?.task,
-        image,
-        status: errorNode ? 'error' as const : 'done' as const,
-        error: errorNode?.error,
-        placeholderDimensions: errorNode?.dimensions,
-        placeholderName: errorNode?.placeholderName,
-        outputRequestIndex: errorNode?.requestIndex,
-        ratio: dimensions ? dimensions.width / dimensions.height : 1,
-      }
-    })
-    .sort((a, b) => a.item.z - b.item.z || a.id.localeCompare(b.id)), [canvas.items, errorNodeById, images, taskByImageId])
+  const nodes = useMemo<CanvasNode[]>(() => {
+    const liveNodeIds = new Set([...outputImageIds, ...errorNodeIds])
+    return Object.entries(canvas.items)
+      .filter(([id]) => liveNodeIds.has(id))
+      .map(([id, item]) => {
+        const errorNode = errorNodeById.get(id)
+        const image = images[id]
+        const dimensions = image?.width && image?.height ? { width: image.width, height: image.height } : errorNode?.dimensions
+        return {
+          id,
+          item,
+          task: taskByImageId.get(id) ?? errorNode?.task,
+          image,
+          status: errorNode ? 'error' as const : 'done' as const,
+          error: errorNode?.error,
+          failure: errorNode?.failure,
+          placeholderDimensions: errorNode?.dimensions,
+          placeholderName: errorNode?.placeholderName,
+          outputRequestIndex: errorNode?.requestIndex,
+          ratio: dimensions ? dimensions.width / dimensions.height : 1,
+        }
+      })
+      .sort((a, b) => a.item.z - b.item.z || a.id.localeCompare(b.id))
+  }, [canvas.items, errorNodeById, errorNodeIds, images, outputImageIds, taskByImageId])
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node] as const)), [nodes])
   const selectedNode = selectedImageId ? nodeById.get(selectedImageId) ?? null : null
   const selectedItem = selectedNode?.item
@@ -471,6 +493,15 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     }
   }
 
+  const handleCopyFailureId = async (label: 'request_id' | 'task_id', value: string) => {
+    try {
+      await copyTextToClipboard(value)
+      showToast(`${label} 已复制`, 'success')
+    } catch (err) {
+      showToast(getClipboardFailureMessage(`复制 ${label} 失败`, err), 'error')
+    }
+  }
+
   const toolbarButtonClass = 'flex h-8 w-8 items-center justify-center rounded text-gray-600 transition hover:bg-gray-100 hover:text-gray-950 dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white'
 
   const selectedToolbarPosition = selectedGeometry && selectedVisible && containerSize.width > 0 && containerSize.height > 0 ? (() => {
@@ -509,15 +540,38 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     setZoomEditing(false)
   }
 
+  const handleRetryTask = async (task: TaskRecord, requestIndex?: number, downloadOnly = false) => {
+    if (retryingTaskIds.has(task.id)) return
+    setRetryingTaskIds((current) => new Set(current).add(task.id))
+    try {
+      const existingTask = useStore.getState().tasks.find((item) => item.id === task.id)
+      if (downloadOnly) {
+        await redownloadTaskImage(task, requestIndex)
+        showToast('图片重新下载成功', 'success')
+      } else {
+        if (existingTask?.status === 'error' && existingTask.outputImages.length === 0) await retryTaskInPlace(existingTask)
+        else await retryImage(task)
+        showToast('已提交重试请求', 'success')
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '重试请求失败', 'error')
+    } finally {
+      setRetryingTaskIds((current) => {
+        const next = new Set(current)
+        next.delete(task.id)
+        return next
+      })
+    }
+  }
+
   return (
-    <div className="flex h-[calc(100dvh-2.75rem)] min-h-[320px] flex-col bg-gray-100 dark:bg-gray-950">
+    <div className="flex h-[calc(100dvh-2.75rem)] min-h-[320px] flex-col bg-white dark:bg-gray-950">
       <div className="flex shrink-0 items-center gap-3 border-b border-gray-200 bg-white px-4 py-3 dark:border-white/[0.08] dark:bg-gray-900">
         <button type="button" onClick={onBack} className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-white/[0.08] dark:hover:text-white" aria-label="返回用户画布" title="返回用户画布"><ChevronLeftIcon className="h-4 w-4" /></button>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-sm font-semibold text-gray-900 dark:text-white">{project.title || '未命名画布'}</h1>
           <p className="text-xs text-gray-500">只读查看 · {nodes.length} 个图层</p>
         </div>
-        <span className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">只读</span>
       </div>
       <div className={`relative grid min-h-0 flex-1 w-full transition-[grid-template-columns,gap] duration-300 ease-in-out ${agentPanelCollapsed ? 'xl:grid-cols-1' : 'xl:grid-cols-[minmax(0,1fr)_420px]'}`}>
         <main className="relative min-h-0 min-w-0">
@@ -532,6 +586,18 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
         onPointerUp={handlePointerEnd}
         onPointerCancel={handlePointerEnd}
       >
+        <div
+          data-canvas-toolbar
+          className="pointer-events-none absolute right-3 top-3 z-40 flex items-center gap-2"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <label className="pointer-events-auto inline-flex shrink-0 cursor-pointer items-center gap-2 rounded border border-gray-200 bg-white/90 px-2 py-1 text-xs text-gray-500 shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/90 dark:text-gray-400" title="允许管理员操作失败图片">
+            <span>编辑模式</span>
+            <input type="checkbox" className="peer sr-only" checked={editingMode} onChange={(event) => setEditingMode(event.target.checked)} />
+            <span aria-hidden="true" className="relative h-5 w-9 rounded-full bg-gray-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-emerald-500 peer-checked:after:translate-x-4 dark:bg-gray-700" />
+          </label>
+          <span className={`rounded border bg-white/90 px-2 py-1 text-xs font-medium shadow-sm backdrop-blur dark:bg-gray-900/90 ${editingMode ? 'border-emerald-200 text-emerald-700 dark:border-emerald-900/60 dark:text-emerald-300' : 'border-amber-200 text-amber-700 dark:border-amber-900/60 dark:text-amber-300'}`}>{editingMode ? '可操作' : '只读'}</span>
+        </div>
         <CanvasReferenceConnections connections={canvasConnections} markerId="admin-canvas-reference-arrow" />
         <div className="absolute left-0 top-0 z-10 origin-top-left" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
           {visibleNodes.map((node) => {
@@ -547,6 +613,16 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
               ? { width: node.image.width, height: node.image.height }
               : node.placeholderDimensions
             const metadataScale = 1 / Math.max(viewport.scale, 0.01)
+            const failureEndpoint = node.failure?.endpoint ?? node.task?.failureEndpoint
+            const imageDownloadFailure = isImageDownloadFailureError(failureEndpoint, node.error)
+            const isNetworkFailure = node.task?.failureKind === 'network'
+              || node.failure?.kind === 'network'
+              || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(node.error ?? '')
+            const statusText = node.status === 'error'
+              ? imageDownloadFailure ? '图片下载失败' : isNetworkFailure ? '网络异常，请稍后重试。' : '生成失败'
+              : ''
+            const taskIds = node.task ? getTaskIds(node.task) : []
+            const failureRetryCount = node.failure?.retryCount ?? node.task?.failureRetryCount
 
             return (
               <div
@@ -595,18 +671,49 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
                           : undefined}
                     />
                   ) : (
-                    <div className={`relative flex h-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-400 dark:bg-gray-800 dark:text-gray-500'}`}>
-                      <div className="relative z-10 flex h-full w-full flex-col items-center justify-center gap-2 px-3">
-                        {node.status === 'error' ? <WarningIcon className="h-24 w-24 text-red-600 dark:text-red-400" /> : <ImageIcon className="h-24 w-24 text-gray-400 dark:text-gray-500" />}
-                        {node.status === 'error' && <span className="text-2xl font-medium">生成失败</span>}
-                        {node.status === 'error' && node.error && (
-                          <span className="flex max-w-[92%] items-center gap-1">
-                            <span className="max-h-20 min-w-0 flex-1 overflow-hidden break-words text-center leading-4" title={node.error}>{node.error}</span>
-                            {(node.task?.rawImageUrls?.length || node.error?.includes('图片链接下载失败') || node.error?.includes('图片 URL 下载失败')) && node.task?.outputImages.length === 0 && <button type="button" data-canvas-handle disabled className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 opacity-40 dark:text-red-300" aria-label="重新下载图片" title="重新下载图片"><DownloadIcon className="h-4 w-4" /></button>}
-                          </span>
-                        )}
-                        {node.status !== 'error' && <span>图片不可用</span>}
-                        {node.status === 'error' && node.error && <button type="button" data-canvas-handle className="inline-flex h-7 w-7 items-center justify-center rounded text-red-600 hover:bg-red-200/70 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制失败原因" title="复制失败原因" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureError(node.error!) }}><CopyIcon className="h-4 w-4" /></button>}
+                    <div className={`relative flex h-full w-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? isNetworkFailure || imageDownloadFailure ? 'border border-yellow-300 bg-yellow-100 text-yellow-800 dark:border-yellow-700/70 dark:bg-yellow-950/60 dark:text-yellow-300' : 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`}>
+                      <div className="relative z-10 flex h-full w-full flex-col items-center justify-center gap-2">
+                        {node.status === 'error'
+                          ? <WarningIcon className={`h-32 w-32 ${isNetworkFailure || imageDownloadFailure ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`} />
+                          : <ImageIcon className={`h-[7.5rem] w-[7.5rem] text-[#3f78c5]/70 ${node.status === 'done' ? '' : 'animate-pulse'}`} />}
+                        {node.status === 'error'
+                          ? (isNetworkFailure || imageDownloadFailure)
+                            ? <span className="flex items-center gap-2 text-4xl font-medium">
+                              <span>{statusText}</span>
+                              {editingMode && node.task && <button type="button" data-canvas-handle disabled={retryingTaskIds.has(node.task.id)} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={retryingTaskIds.has(node.task.id) ? '正在重试' : imageDownloadFailure ? '重新下载图片' : '重试请求'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryTask(node.task!, node.failure?.requestIndex ?? node.outputRequestIndex, imageDownloadFailure) }}>{imageDownloadFailure ? <DownloadIcon className="h-6 w-6" /> : <RefreshIcon className={`h-6 w-6 ${retryingTaskIds.has(node.task.id) ? 'animate-spin' : ''}`} />}</button>}
+                            </span>
+                            : <span className="text-4xl font-medium">{statusText}</span>
+                          : <span>{node.status === 'done' ? '' : '图片不可用'}</span>}
+                        {node.status === 'error' && node.error && (isNetworkFailure || imageDownloadFailure ? (
+                          <>
+                            {failureEndpoint && <span className="text-sm font-medium text-yellow-700 dark:text-yellow-300">失败接口：{getFailureEndpointLabel(failureEndpoint)}</span>}
+                            {(node.failure?.requestId || node.task?.requestId || taskIds.length > 0) && (
+                              <span className="flex max-w-[92%] flex-col items-center gap-1 text-center font-mono text-sm leading-5 text-yellow-700/90 dark:text-yellow-300/90">
+                                {node.failure?.requestId && <span className="flex max-w-full items-center gap-1 break-all"><span>image_request_id: {node.failure.requestId}</span><button type="button" data-canvas-handle className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-yellow-700 hover:bg-yellow-200/70 dark:text-yellow-300 dark:hover:bg-yellow-900/50" aria-label="复制图片 request_id" title="复制图片 request_id" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('request_id', node.failure!.requestId!) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>}
+                                {node.task?.requestId && <span className="flex max-w-full items-center gap-1 break-all"><span>request_id: {node.task.requestId}</span><button type="button" data-canvas-handle className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-yellow-700 hover:bg-yellow-200/70 dark:text-yellow-300 dark:hover:bg-yellow-900/50" aria-label="复制 request_id" title="复制 request_id" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('request_id', node.task!.requestId!) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>}
+                                {taskIds.map((id) => <span key={id} className="flex max-w-full items-center gap-1 break-all"><span>task_id: {id}</span><button type="button" data-canvas-handle className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-yellow-700 hover:bg-yellow-200/70 dark:text-yellow-300 dark:hover:bg-yellow-900/50" aria-label="复制 task_id" title="复制 task_id" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('task_id', id) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>)}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {failureEndpoint && <span className="text-sm font-medium text-red-700 dark:text-red-300">失败接口：{getFailureEndpointLabel(failureEndpoint)}</span>}
+                            {failureRetryCount !== undefined && <span className="text-xs text-red-600/80 dark:text-red-300/80">自动重试：{failureRetryCount} 次</span>}
+                            <span className="flex max-w-[92%] items-center gap-1">
+                              <span className="max-h-24 min-w-0 flex-1 overflow-hidden break-words text-center text-base leading-6 text-red-700 dark:text-red-300" title={node.error}>{node.error}</span>
+                              <button type="button" data-canvas-handle className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-600 hover:bg-red-200/70 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制错误原因" title="复制错误原因" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureError(node.error!) }}><CopyIcon className="h-4 w-4" /></button>
+                              {editingMode && node.task && <button type="button" data-canvas-handle disabled={retryingTaskIds.has(node.task.id)} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 transition hover:bg-red-200/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="重试生成" title={retryingTaskIds.has(node.task.id) ? '正在重试' : '重试生成'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryTask(node.task!, node.failure?.requestIndex ?? node.outputRequestIndex) }}><RefreshIcon className={`h-4 w-4 ${retryingTaskIds.has(node.task.id) ? 'animate-spin' : ''}`} /></button>}
+                            </span>
+                            {(node.failure?.status || failureRetryCount !== undefined || node.failure?.requestId || node.task?.requestId || taskIds.length > 0) && (
+                              <span className="flex max-w-[92%] flex-col items-center gap-1 text-center font-mono text-base leading-6 text-red-600/90 dark:text-red-300/90">
+                                {node.failure?.status && <span>HTTP status: {node.failure.status}</span>}
+                                {node.failure?.requestId && <span className="flex max-w-full items-center gap-1 break-all"><span>image_request_id: {node.failure.requestId}</span><button type="button" data-canvas-handle className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-red-600 hover:bg-red-200/70 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制图片 request_id" title="复制图片 request_id" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('request_id', node.failure!.requestId!) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>}
+                                {node.task?.requestId && <span className="flex max-w-full items-center gap-1 break-all"><span>request_id: {node.task.requestId}</span><button type="button" data-canvas-handle className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-red-600 hover:bg-red-200/70 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制 request_id" title="复制 request_id" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('request_id', node.task!.requestId!) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>}
+                                {taskIds.map((id) => <span key={id} className="flex max-w-full items-center gap-1 break-all"><span>task_id: {id}</span><button type="button" data-canvas-handle className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-red-600 hover:bg-red-200/70 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制 task_id" title="复制 task_id" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureId('task_id', id) }}><CopyIcon className="h-3.5 w-3.5" /></button></span>)}
+                              </span>
+                            )}
+                          </>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -688,12 +795,15 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
           </div>
         )}
         <DetailModal
-          taskOverride={infoNode?.task ?? null}
-          imageIdOverride={infoNode?.status === 'done' ? infoNode.id : undefined}
-          outputRequestIndexOverride={infoNode?.status === 'error' ? infoNode.outputRequestIndex : undefined}
+          taskOverride={agentDetailTask ?? infoNode?.task ?? null}
+          imageIdOverride={!agentDetailTask && infoNode?.status === 'done' ? infoNode.id : undefined}
+          outputRequestIndexOverride={!agentDetailTask && infoNode?.status === 'error' ? infoNode.outputRequestIndex : undefined}
           imageOverrides={imageOverrides}
           readOnly
-          onClose={() => setInfoImageId(null)}
+          onClose={() => {
+            setInfoImageId(null)
+            setAgentDetailTask(null)
+          }}
         />
         <div
           ref={zoomControlsRef}
@@ -938,8 +1048,8 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
         </div>
       </div>
         </main>
-        <div data-no-drag-select className={`relative min-w-0 border-gray-200 transition-[transform,opacity] duration-300 ease-in-out xl:block xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
-          <AgentWorkspace embedded onCollapse={() => setAgentPanelCollapsed(true)} />
+        <div data-no-drag-select className={`relative min-w-0 border-gray-200 bg-white transition-[transform,opacity] duration-300 ease-in-out xl:block xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] dark:bg-gray-950 ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
+          <AgentWorkspace embedded readOnly onTaskClick={setAgentDetailTask} onCollapse={() => setAgentPanelCollapsed(true)} />
         </div>
         <button
           type="button"
