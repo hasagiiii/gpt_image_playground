@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import type { Project, ProjectCanvasItem, ProjectCanvasState, TaskOutputError, TaskRecord } from '../types'
+import type { AgentConversation, Project, ProjectCanvasItem, ProjectCanvasState, TaskOutputError, TaskRecord } from '../types'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
@@ -13,6 +13,7 @@ import DetailModal from './DetailModal'
 import AgentWorkspace from './AgentWorkspace'
 
 const CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-zoom-controls-collapsed'
+const EMPTY_AGENT_CONVERSATIONS: AgentConversation[] = []
 
 function getCanvasItemHeight(item: ProjectCanvasItem, ratio: number) {
   const crop = item.operator?.crop
@@ -137,10 +138,11 @@ function CanvasEdgeIndicator({
   )
 }
 
-export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
+export default function AdminCanvasViewer({ project, tasks, images, agentConversations = EMPTY_AGENT_CONVERSATIONS, onBack }: {
   project: Project
   tasks: TaskRecord[]
   images: Record<string, { dataUrl: string; width?: number; height?: number }>
+  agentConversations?: AgentConversation[]
   onBack: () => void
 }) {
   const showToast = useStore((state) => state.showToast)
@@ -1049,7 +1051,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
       </div>
         </main>
         <div data-no-drag-select className={`relative hidden min-w-0 border-gray-200 bg-white transition-[transform,opacity] duration-300 ease-in-out xl:block xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] dark:bg-gray-950 ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
-          <AgentWorkspace embedded readOnly onTaskClick={setAgentDetailTask} onCollapse={() => setAgentPanelCollapsed(true)} />
+          <AgentWorkspace embedded readOnly tasksOverride={tasks} conversationsOverride={agentConversations} projectIdOverride={project.id} onTaskClick={setAgentDetailTask} onCollapse={() => setAgentPanelCollapsed(true)} />
         </div>
         <button
           type="button"

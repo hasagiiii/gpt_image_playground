@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { createAdminProject, downloadAdminUserProject, downloadAdminUserProjectImage, listAdminUserProjectImages, listAdminUserProjects, listAdminUsers, type AdminUser } from '../lib/admin'
-import type { Project, StoredImage, TaskRecord } from '../types'
+import type { AgentConversation, Project, StoredImage, TaskRecord } from '../types'
 import { readOnlineProjectArchive, type OnlineProjectResponse } from '../lib/onlineProjects'
 import { getAdminUsersSelectionFromUrl, updateAdminUsersUrl } from '../lib/projectRoute'
 import { useStore } from '../store'
 import AdminCanvasViewer from './AdminCanvasViewer'
 import { ArrowDownIcon, ChevronLeftIcon, UsersIcon } from './icons'
 
-type ViewerState = { project: Project; tasks: TaskRecord[]; images: Record<string, StoredImage> }
+type ViewerState = { project: Project; tasks: TaskRecord[]; images: Record<string, StoredImage>; agentConversations: AgentConversation[] }
 
 function formatDate(value?: string, emptyLabel = '从未登录') {
 	if (!value) return emptyLabel
@@ -131,7 +131,7 @@ export default function AdminUsers() {
           imageCount: Object.keys(images).length,
           imageIds: Object.keys(images),
         })
-        if (!cancelled) setViewer({ project: loadedProject, tasks: parsed.tasks, images })
+        if (!cancelled) setViewer({ project: loadedProject, tasks: parsed.tasks, images, agentConversations: parsed.agentConversations })
       })
       .catch((error) => {
         if (cancelled) return
@@ -178,7 +178,7 @@ export default function AdminUsers() {
     setViewer(null)
   }
 
-  if (viewer) return <AdminCanvasViewer project={viewer.project} tasks={viewer.tasks} images={viewer.images} onBack={showUserProjects} />
+  if (viewer) return <AdminCanvasViewer project={viewer.project} tasks={viewer.tasks} images={viewer.images} agentConversations={viewer.agentConversations} onBack={showUserProjects} />
 
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-gray-50 p-4 sm:p-6 dark:bg-gray-950">

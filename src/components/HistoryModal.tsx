@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { ALL_PROJECTS_ID, LOCAL_PROJECT_ID, removeMultipleTasks, useStore } from '../store'
-import type { AgentConversation } from '../types'
+import type { AgentConversation, TaskRecord } from '../types'
 import { getAgentConversationTitle, getProjectAgentConversations } from '../lib/agentConversationScope'
 import { useTooltip } from '../hooks/useTooltip'
 import { CloseIcon, EditIcon, TrashIcon } from './icons'
@@ -90,6 +90,12 @@ type HistoryModalProps = {
   ignoreOutsideClickRef?: RefObject<HTMLElement | null>
   align?: 'left' | 'right'
   switchToAgent?: boolean
+  conversationsOverride?: AgentConversation[]
+  tasksOverride?: TaskRecord[]
+  activeProjectIdOverride?: string | null
+  activeConversationIdOverride?: string | null
+  onSelectConversation?: (id: string) => void
+  readOnly?: boolean
 }
 
 export default function HistoryModal({
@@ -97,23 +103,33 @@ export default function HistoryModal({
   ignoreOutsideClickRef,
   align = 'left',
   switchToAgent = true,
+  conversationsOverride,
+  tasksOverride,
+  activeProjectIdOverride,
+  activeConversationIdOverride,
+  onSelectConversation,
+  readOnly = false,
 }: HistoryModalProps) {
-  const conversations = useStore((s) => s.agentConversations)
-  const activeConversationId = useStore((s) => s.activeAgentConversationId)
-  const activeProjectId = useStore((s) => s.activeProjectId)
+  const storeConversations = useStore((s) => s.agentConversations)
+  const storeActiveConversationId = useStore((s) => s.activeAgentConversationId)
+  const storeActiveProjectId = useStore((s) => s.activeProjectId)
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
   const renameConversation = useStore((s) => s.renameAgentConversation)
   const deleteConversation = useStore((s) => s.deleteAgentConversation)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const confirmDialogOpen = useStore((s) => Boolean(s.confirmDialog))
   const setAppMode = useStore((s) => s.setAppMode)
-  const tasks = useStore((s) => s.tasks)
+  const storeTasks = useStore((s) => s.tasks)
   const agentGeneratingTitleIds = useStore((s) => s.agentGeneratingTitleIds)
   const editingId = useStore((s) => s.agentEditingConversationId)
   const setEditingId = useStore((s) => s.setAgentEditingConversationId)
 
   const [editingTitle, setEditingTitle] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const conversations = conversationsOverride ?? storeConversations
+  const tasks = tasksOverride ?? storeTasks
+  const activeProjectId = activeProjectIdOverride !== undefined ? activeProjectIdOverride : storeActiveProjectId
+  const activeConversationId = activeConversationIdOverride !== undefined ? activeConversationIdOverride : storeActiveConversationId
   const scopedConversations = useMemo(
     () => getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
     [activeProjectId, conversations, tasks],
@@ -145,7 +161,8 @@ export default function HistoryModal({
   const handleSelect = (id: string) => {
     if (editingId) return
     if (switchToAgent) setAppMode('agent')
-    setActiveConversationId(id)
+    if (onSelectConversation) onSelectConversation(id)
+    else setActiveConversationId(id)
     onClose()
   }
 
@@ -312,13 +329,14 @@ export default function HistoryModal({
                           tooltip="重命名"
                           onClick={(e) => startRename(e, c.id, c.title)}
                           className="p-1.5 hover:bg-gray-200 dark:hover:bg-white/10 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-white disabled:text-gray-300 disabled:hover:text-gray-300 dark:disabled:text-gray-600 dark:disabled:hover:text-gray-600 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
-                          disabled={Boolean(agentGeneratingTitleIds[c.id])}
+                          disabled={readOnly || Boolean(agentGeneratingTitleIds[c.id])}
                         >
                           <EditIcon className="w-3.5 h-3.5" />
                         </HistoryActionButton>
                         <HistoryActionButton
                           tooltip="删除"
                           onClick={(e) => handleDelete(e, c.id)}
+                          disabled={readOnly}
                           className="p-1.5 hover:bg-gray-200 dark:hover:bg-white/10 rounded-md text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                         >
                           <TrashIcon className="w-3.5 h-3.5" />

@@ -273,10 +273,10 @@ function getPageScrollTop() {
   return window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0
 }
 
-export default function AgentWorkspace({ embedded = false, onCollapse, readOnly = false, onTaskClick }: { embedded?: boolean; onCollapse?: () => void; readOnly?: boolean; onTaskClick?: (task: TaskRecord) => void }) {
-  const conversations = useStore((s) => s.agentConversations)
+export default function AgentWorkspace({ embedded = false, onCollapse, readOnly = false, onTaskClick, conversationsOverride, tasksOverride, projectIdOverride }: { embedded?: boolean; onCollapse?: () => void; readOnly?: boolean; onTaskClick?: (task: TaskRecord) => void; conversationsOverride?: AgentConversation[]; tasksOverride?: TaskRecord[]; projectIdOverride?: string | null }) {
+  const storeConversations = useStore((s) => s.agentConversations)
   const conversationsLoaded = useStore((s) => s.agentConversationsLoaded)
-  const activeProjectId = useStore((s) => s.activeProjectId)
+  const storeActiveProjectId = useStore((s) => s.activeProjectId)
   const activeConversationId = useStore((s) => s.activeAgentConversationId)
   const createConversation = useStore((s) => s.createAgentConversation)
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
@@ -287,7 +287,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   const agentMobileHeaderVisible = useStore((s) => s.agentMobileHeaderVisible)
   const setAgentMobileHeaderVisible = useStore((s) => s.setAgentMobileHeaderVisible)
   const appMode = useStore((s) => s.appMode)
-  const tasks = useStore((s) => s.tasks)
+  const storeTasks = useStore((s) => s.tasks)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
   const setPrompt = useStore((s) => s.setPrompt)
@@ -305,11 +305,16 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   const showToast = useStore((s) => s.showToast)
   const openFavoritePicker = useStore((s) => s.openFavoritePicker)
   const agentGeneratingTitleIds = useStore((s) => s.agentGeneratingTitleIds)
+  const [localActiveConversationId, setLocalActiveConversationId] = useState<string | null>(null)
+  const conversations = conversationsOverride ?? storeConversations
+  const tasks = tasksOverride ?? storeTasks
+  const activeProjectId = projectIdOverride !== undefined ? projectIdOverride : storeActiveProjectId
+  const displayedActiveConversationId = conversationsOverride ? localActiveConversationId : activeConversationId
   const scopedConversations = useMemo(
     () => getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
     [activeProjectId, conversations, tasks],
   )
-  const conversation = scopedConversations.find((item) => item.id === activeConversationId) ?? null
+  const conversation = scopedConversations.find((item) => item.id === displayedActiveConversationId) ?? null
   const conversationTitle = conversation ? getAgentConversationTitle(conversation) : '新对话'
   const readOnlyActionClass = readOnly ? 'cursor-not-allowed opacity-40 grayscale text-gray-400 dark:text-gray-600' : ''
   const [editingConversationTitle, setEditingConversationTitle] = useState('')
@@ -490,17 +495,16 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
 
   useEffect(() => {
     if (!embedded && appMode !== 'agent') return
-    if (!conversationsLoaded) return
+    if (conversationsOverride === undefined && !conversationsLoaded) return
     
     if (scopedConversations.length === 0 && !readOnly) {
       createConversation()
     } else if (!conversation) {
       const latest = [...scopedConversations].sort((a, b) => b.updatedAt - a.updatedAt)[0]
-      if (latest) {
-        setActiveConversationId(latest.id)
-      }
+      if (conversationsOverride !== undefined) setLocalActiveConversationId(latest?.id ?? null)
+      else if (latest) setActiveConversationId(latest.id)
     }
-  }, [appMode, embedded, conversationsLoaded, scopedConversations, conversation, createConversation, readOnly, setActiveConversationId])
+  }, [appMode, conversationsLoaded, conversationsOverride, conversation, createConversation, embedded, readOnly, scopedConversations, setActiveConversationId])
 
   const sortedConversations = useMemo(
     () => [...scopedConversations].sort((a, b) => b.updatedAt - a.updatedAt),
@@ -686,7 +690,8 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   }
 
   const handleConversationSelect = (id: string) => {
-    setActiveConversationId(id)
+    if (conversationsOverride !== undefined) setLocalActiveConversationId(id)
+    else setActiveConversationId(id)
     if (conversationActionsId && conversationActionsId !== id) setConversationActionsId(null)
   }
 
@@ -886,6 +891,12 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                 ignoreOutsideClickRef={historyButtonRef}
                 align="right"
                 switchToAgent={!embedded}
+                conversationsOverride={conversationsOverride}
+                tasksOverride={tasksOverride}
+                activeProjectIdOverride={activeProjectId}
+                activeConversationIdOverride={displayedActiveConversationId}
+                onSelectConversation={conversationsOverride !== undefined ? handleConversationSelect : undefined}
+                readOnly={readOnly}
               />
             )}
             {onCollapse && (
@@ -975,7 +986,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                   </div>
                 ) : (
                   <button type="button" className="min-w-0 flex-1 text-left" onClick={() => handleConversationSelect(item.id)}>
-                    <div className={`truncate ${item.id === activeConversationId ? 'font-semibold text-gray-900 dark:text-white' : 'text-gray-700 dark:text-gray-300'}`}>{item.title}</div>
+                    <div className={`truncate ${item.id === displayedActiveConversationId ? 'font-semibold text-gray-900 dark:text-white' : 'text-gray-700 dark:text-gray-300'}`}>{item.title}</div>
                     <div className="text-xs text-gray-400">{formatTime(item.updatedAt)}</div>
                   </button>
                 )}
@@ -993,10 +1004,10 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                     </AgentActionButton>
                   ) : (
                     <>
-                      <AgentActionButton tooltip="编辑标题" className="p-1.5 text-gray-400 hover:text-gray-700 disabled:text-gray-300 disabled:hover:text-gray-300 disabled:cursor-not-allowed dark:hover:text-gray-200 dark:disabled:text-gray-600 dark:disabled:hover:text-gray-600" onClick={(e) => startRenameConversation(e, item.id, item.title)} disabled={isGeneratingTitle}>
+                      <AgentActionButton tooltip="编辑标题" className="p-1.5 text-gray-400 hover:text-gray-700 disabled:text-gray-300 disabled:hover:text-gray-300 disabled:cursor-not-allowed dark:hover:text-gray-200 dark:disabled:text-gray-600 dark:disabled:hover:text-gray-600" onClick={(e) => startRenameConversation(e, item.id, item.title)} disabled={readOnly || isGeneratingTitle}>
                         <EditIcon className="w-4 h-4" />
                       </AgentActionButton>
-                      <AgentActionButton tooltip="删除" className="p-1.5 text-gray-400 hover:text-red-500" onClick={(e) => { e.stopPropagation(); handleDeleteConversation(item.id) }}>
+                      <AgentActionButton tooltip="删除" className="p-1.5 text-gray-400 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40" onClick={(e) => { e.stopPropagation(); handleDeleteConversation(item.id) }} disabled={readOnly}>
                         <TrashIcon className="w-4 h-4" />
                       </AgentActionButton>
                     </>
@@ -1063,6 +1074,12 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                   ignoreOutsideClickRef={mobileHistoryButtonRef}
                   align="right"
                   switchToAgent={!embedded}
+                  conversationsOverride={conversationsOverride}
+                  tasksOverride={tasksOverride}
+                  activeProjectIdOverride={activeProjectId}
+                  activeConversationIdOverride={displayedActiveConversationId}
+                  onSelectConversation={conversationsOverride !== undefined ? handleConversationSelect : undefined}
+                  readOnly={readOnly}
                 />
               )}
             </div>
@@ -1258,11 +1275,11 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                       <div className="flex items-center gap-2 ml-auto text-gray-400">
                         {!isAssistant && round && hasBranches && siblingIndex >= 0 && (
                           <div className="inline-flex items-center text-sm font-bold text-gray-400 dark:text-gray-500 mr-1">
-                            <AgentActionButton tooltip="上一分支" className="rounded-md p-1 transition-colors hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200" onClick={() => handleSwitchBranch(round, -1)}>
+                            <AgentActionButton tooltip="上一分支" disabled={readOnly} className={`rounded-md p-1 transition-colors ${readOnly ? readOnlyActionClass : 'hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200'}`} onClick={() => handleSwitchBranch(round, -1)}>
                               <ChevronLeftIcon className="w-4 h-4" />
                             </AgentActionButton>
                             <span className="px-1 tabular-nums tracking-widest">{siblingIndex + 1}/{siblingRounds.length}</span>
-                            <AgentActionButton tooltip="下一分支" className="rounded-md p-1 transition-colors hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200" onClick={() => handleSwitchBranch(round, 1)}>
+                            <AgentActionButton tooltip="下一分支" disabled={readOnly} className={`rounded-md p-1 transition-colors ${readOnly ? readOnlyActionClass : 'hover:bg-gray-200/50 dark:hover:bg-white/10 hover:text-gray-800 dark:hover:text-gray-200'}`} onClick={() => handleSwitchBranch(round, 1)}>
                               <ChevronRightIcon className="w-4 h-4" />
                             </AgentActionButton>
                           </div>
