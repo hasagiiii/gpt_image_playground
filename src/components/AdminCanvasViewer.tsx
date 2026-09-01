@@ -970,7 +970,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
                 min="1"
                 max="1000"
                 value={zoomInput}
-                className="h-7 w-14 rounded border border-[#3f78c5] bg-transparent px-1 text-center tabular-nums text-gray-600 outline-none dark:text-gray-300"
+                className="h-7 w-12 rounded border border-[#3f78c5] bg-transparent px-1 text-center tabular-nums text-gray-600 outline-none dark:text-gray-300"
                 onChange={(event) => setZoomInput(event.target.value)}
                 onBlur={commitCanvasZoomInput}
                 onKeyDown={(event) => {
@@ -983,7 +983,7 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
                 type="button"
                 aria-label="选择画布缩放比例"
                 title="点击选择缩放比例，双击输入"
-                className="h-7 w-14 rounded px-1 text-center tabular-nums text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/[0.08]"
+                className="h-7 w-12 rounded px-1 text-center tabular-nums text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/[0.08]"
                 onClick={() => {
                   setZoomPresetOpen((open) => !open)
                   setLayersOpen(false)
@@ -1048,13 +1048,13 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
         </div>
       </div>
         </main>
-        <div data-no-drag-select className={`relative min-w-0 border-gray-200 bg-white transition-[transform,opacity] duration-300 ease-in-out xl:block xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] dark:bg-gray-950 ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
+        <div data-no-drag-select className={`relative hidden min-w-0 border-gray-200 bg-white transition-[transform,opacity] duration-300 ease-in-out xl:block xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] dark:bg-gray-950 ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
           <AgentWorkspace embedded readOnly onTaskClick={setAgentDetailTask} onCollapse={() => setAgentPanelCollapsed(true)} />
         </div>
         <button
           type="button"
           onClick={() => setAgentPanelCollapsed(false)}
-          className={`fixed right-0 top-16 z-30 rounded-l-lg border border-r-0 border-gray-200 bg-white/90 p-2 text-gray-500 shadow-sm backdrop-blur transition-[transform,opacity,background-color,color] duration-300 ease-in-out hover:bg-gray-100 hover:text-gray-800 dark:border-white/[0.08] dark:bg-gray-900/90 dark:hover:bg-white/[0.08] dark:hover:text-gray-200 ${agentPanelCollapsed ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-full opacity-0'}`}
+          className={`fixed right-0 top-16 z-30 hidden rounded-l-lg border border-r-0 border-gray-200 bg-white/90 p-2 text-gray-500 shadow-sm backdrop-blur transition-[transform,opacity,background-color,color] duration-300 ease-in-out hover:bg-gray-100 hover:text-gray-800 dark:border-white/[0.08] dark:bg-gray-900/90 dark:hover:bg-white/[0.08] dark:hover:text-gray-200 xl:flex ${agentPanelCollapsed ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-full opacity-0'}`}
           title="展开 Agent"
           aria-label="展开 Agent"
           aria-hidden={!agentPanelCollapsed}

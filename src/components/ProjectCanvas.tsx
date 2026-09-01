@@ -2933,7 +2933,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
               min="1"
               max="1000"
               value={zoomInput}
-              className="h-7 w-14 rounded border border-[#3f78c5] bg-transparent px-1 text-center tabular-nums text-gray-600 outline-none dark:text-gray-300"
+              className="h-7 w-12 rounded border border-[#3f78c5] bg-transparent px-1 text-center tabular-nums text-gray-600 outline-none dark:text-gray-300"
               onChange={(event) => setZoomInput(event.target.value)}
               onBlur={commitCanvasZoomInput}
               onKeyDown={(event) => {
@@ -2946,7 +2946,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
               type="button"
               aria-label="选择画布缩放比例"
               title="点击选择缩放比例，双击输入"
-              className="h-7 w-14 rounded px-1 text-center tabular-nums text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/[0.08]"
+              className="h-7 w-12 rounded px-1 text-center tabular-nums text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/[0.08]"
               onClick={() => {
                 setZoomPresetOpen((open) => !open)
                 setZoomHelpOpen(false)
