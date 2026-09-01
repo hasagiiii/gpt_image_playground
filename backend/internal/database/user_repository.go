@@ -49,11 +49,13 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*models.User,
 // List 返回所有用户，供管理员只读查看。
 func (r *UserRepository) List(ctx context.Context) ([]models.User, error) {
 	const q = `
-		SELECT id, oidc_provider, oidc_sub, COALESCE(email,''), COALESCE(name,''),
+		SELECT u.id, u.oidc_provider, u.oidc_sub, COALESCE(u.email,''), COALESCE(u.name,''),
 		       COALESCE(picture_url,''), COALESCE(raw_claims,'{}'::jsonb),
-		       created_at, updated_at, last_login_at
-		FROM users
-		ORDER BY last_login_at DESC NULLS LAST, created_at DESC, id`
+		       u.created_at, u.updated_at, u.last_login_at,
+		       (SELECT MAX(p.updated_at) FROM online_projects p
+		        WHERE p.user_id = u.id AND p.deleted_at IS NULL)
+		FROM users u
+		ORDER BY u.last_login_at DESC NULLS LAST, u.created_at DESC, u.id`
 	rows, err := r.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -61,7 +63,7 @@ func (r *UserRepository) List(ctx context.Context) ([]models.User, error) {
 	defer rows.Close()
 	users := make([]models.User, 0)
 	for rows.Next() {
-		user, err := scanUser(rows)
+		user, err := scanUserWithProject(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
@@ -104,12 +106,25 @@ type userScanner interface {
 }
 
 func scanUser(row userScanner) (*models.User, error) {
+	return scanUserFields(row, false)
+}
+
+func scanUserWithProject(row userScanner) (*models.User, error) {
+	return scanUserFields(row, true)
+}
+
+func scanUserFields(row userScanner, withProject bool) (*models.User, error) {
 	var u models.User
 	var lastLogin sql.NullTime
-	if err := row.Scan(
+	var lastProject sql.NullTime
+	dest := []any{
 		&u.ID, &u.OIDCProvider, &u.OIDCSub, &u.Email, &u.Name, &u.PictureURL,
 		&u.RawClaims, &u.CreatedAt, &u.UpdatedAt, &lastLogin,
-	); err != nil {
+	}
+	if withProject {
+		dest = append(dest, &lastProject)
+	}
+	if err := row.Scan(dest...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrUserNotFound
 		}
@@ -118,6 +133,10 @@ func scanUser(row userScanner) (*models.User, error) {
 	if lastLogin.Valid {
 		t := lastLogin.Time
 		u.LastLoginAt = &t
+	}
+	if lastProject.Valid {
+		t := lastProject.Time
+		u.LastProjectUpdatedAt = &t
 	}
 	return &u, nil
 }

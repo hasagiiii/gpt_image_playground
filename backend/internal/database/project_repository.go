@@ -247,10 +247,11 @@ func (r *ProjectRepository) Save(ctx context.Context, userID, id, title string, 
 // List 返回用户的项目元数据，不读取归档字段。
 func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.OnlineProject, error) {
 	const q = `
-		SELECT id, user_id, title, archive_size, archive_sha256, created_at, updated_at
-		FROM online_projects
-		WHERE user_id = $1 AND deleted_at IS NULL
-		ORDER BY updated_at DESC`
+		SELECT p.id, p.user_id, p.title, p.archive_size, p.archive_sha256, p.created_at, p.updated_at,
+		       (SELECT COUNT(*) FROM project_images i WHERE i.project_id = p.id)
+		FROM online_projects p
+		WHERE p.user_id = $1 AND p.deleted_at IS NULL
+		ORDER BY p.updated_at DESC`
 	rows, err := r.db.QueryContext(ctx, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list online projects: %w", err)
@@ -268,6 +269,7 @@ func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.O
 			&project.ArchiveSHA256,
 			&project.CreatedAt,
 			&project.UpdatedAt,
+			&project.ImageCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan online project: %w", err)
 		}

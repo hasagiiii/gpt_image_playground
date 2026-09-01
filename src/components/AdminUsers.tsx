@@ -10,8 +10,8 @@ import { ArrowDownIcon, ChevronLeftIcon, UsersIcon } from './icons'
 
 type ViewerState = { project: Project; tasks: TaskRecord[]; images: Record<string, StoredImage> }
 
-function formatDate(value?: string) {
-  if (!value) return '从未登录'
+function formatDate(value?: string, emptyLabel = '从未登录') {
+	if (!value) return emptyLabel
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
@@ -165,8 +165,8 @@ export default function AdminUsers() {
             <div className="border-b border-gray-200 px-4 py-3 text-sm text-gray-500 dark:border-white/[0.08]">共 {users.length} 位用户</div>
             {loading ? <div className="p-6 text-sm text-gray-500">加载中...</div> : users.length === 0 ? <div className="p-6 text-sm text-gray-500">暂无用户</div> : <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">{users.map((item) => <button key={item.id} type="button" onClick={() => selectUser(item)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/[0.04]">
               {item.picture_url ? <img src={item.picture_url} alt="" className="h-9 w-9 rounded-full object-cover" /> : <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-sm font-medium text-gray-500 dark:bg-white/[0.08]">{(item.name || item.email || '?').slice(0, 1).toUpperCase()}</span>}
-              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{item.name || '未命名用户'}</span><span className="block truncate text-xs text-gray-500">{item.email || item.oidc_provider}</span></span>
-              <span className="hidden text-xs text-gray-400 sm:block">最后登录 {formatDate(item.last_login_at)}</span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" />
+              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{item.name || '未命名用户'}</span><span className="block truncate text-xs text-gray-500">{item.email || item.oidc_provider}</span><span className="block truncate text-[11px] text-gray-400 sm:hidden">最后修改 {formatDate(item.last_project_updated_at, '暂无项目')}</span></span>
+              <span className="hidden shrink-0 flex-col items-end text-xs text-gray-400 sm:flex"><span>最后修改 {formatDate(item.last_project_updated_at, '暂无项目')}</span><span>最后登录 {formatDate(item.last_login_at)}</span></span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" />
             </button>)}</div>}
           </section>
         ) : (
@@ -178,7 +178,7 @@ export default function AdminUsers() {
             </section>
             <section className="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-white/[0.08] dark:bg-gray-900">
               <div className="border-b border-gray-200 px-4 py-3 text-sm text-gray-500 dark:border-white/[0.08]">用户画布 · {projects.length} 个项目</div>
-              {projectsLoading ? <div className="p-6 text-sm text-gray-500">加载中...</div> : projects.length === 0 ? <div className="p-6 text-sm text-gray-500">该用户暂无在线画布</div> : <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">{projects.map((project) => <button key={project.id} type="button" onClick={() => selectProject(project)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/[0.04]"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{project.title || '未命名画布'}</span><span className="block truncate text-xs text-gray-500">更新于 {formatDate(project.updated_at)}</span></span><span className="text-xs text-gray-400">{(project.archive_size / 1024 / 1024).toFixed(1)} MB</span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" /></button>)}</div>}
+              {projectsLoading ? <div className="p-6 text-sm text-gray-500">加载中...</div> : projects.length === 0 ? <div className="p-6 text-sm text-gray-500">该用户暂无在线画布</div> : <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">{projects.map((project) => <button key={project.id} type="button" onClick={() => selectProject(project)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/[0.04]"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{project.title || '未命名画布'}</span><span className="block truncate text-xs text-gray-500">更新于 {formatDate(project.updated_at)}</span></span><span className="flex shrink-0 flex-col items-end text-xs text-gray-400"><span>{project.image_count ?? 0} 个作品</span><span>{(project.archive_size / 1024 / 1024).toFixed(1)} MB</span></span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" /></button>)}</div>}
               {viewerLoading && <div className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-white/[0.06]">正在读取画布...</div>}
               {selectedProjectId && viewerLoading === false && !viewer && <div className="hidden" />}
             </section>

@@ -9,9 +9,10 @@ export interface AdminUser {
   email?: string
   name?: string
   picture_url?: string
-  created_at: string
-  updated_at: string
-  last_login_at?: string
+	created_at: string
+	updated_at: string
+	last_login_at?: string
+	last_project_updated_at?: string
 }
 
 async function readError(resp: Response, fallback: string) {

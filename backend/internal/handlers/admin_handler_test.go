@@ -58,9 +58,10 @@ func (s *adminProjectStoreStub) GetImage(_ context.Context, userID, projectID, i
 
 func newAdminRouter(isAdmin bool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	userStore := &adminUserStoreStub{users: []models.User{{ID: "a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", OIDCProvider: "oidc", OIDCSub: "private-sub", Email: "user@example.com", CreatedAt: time.Unix(1, 0)}}}
+	lastProjectUpdatedAt := time.Unix(2, 0)
+	userStore := &adminUserStoreStub{users: []models.User{{ID: "a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", OIDCProvider: "oidc", OIDCSub: "private-sub", Email: "user@example.com", CreatedAt: time.Unix(1, 0), LastProjectUpdatedAt: &lastProjectUpdatedAt}}}
 	projectStore := &adminProjectStoreStub{
-		projects: []models.OnlineProject{{ID: "86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", UserID: "a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", Title: "画布 A", ArchiveSHA256: "sha"}},
+		projects: []models.OnlineProject{{ID: "86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", UserID: "a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", Title: "画布 A", ArchiveSHA256: "sha", ImageCount: 3}},
 		archive:  []byte("PK archive"),
 		images:   []models.ProjectImage{{ProjectID: "86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", ImageID: "image-a", MIMEType: "image/png"}},
 	}
@@ -80,8 +81,20 @@ func TestAdminHandlerListUsersDoesNotExposeOIDCSub(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
 	}
-	if got := w.Body.String(); got == "" || containsString(got, "private-sub") {
+	if got := w.Body.String(); got == "" || containsString(got, "private-sub") || !containsString(got, "last_project_updated_at") {
 		t.Fatalf("response unexpectedly exposes private user data: %s", got)
+	}
+}
+
+func TestAdminHandlerListsProjectImageCount(t *testing.T) {
+	r := newAdminRouter(true)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8/projects", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !containsString(w.Body.String(), `"image_count":3`) {
+		t.Fatalf("response should include project image count: %s", w.Body.String())
 	}
 }
 

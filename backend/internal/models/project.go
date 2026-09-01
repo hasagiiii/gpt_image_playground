@@ -9,6 +9,7 @@ type OnlineProject struct {
 	Title         string    `json:"title"`
 	ArchiveSize   int64     `json:"archive_size"`
 	ArchiveSHA256 string    `json:"archive_sha256"`
+	ImageCount    int64     `json:"image_count"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

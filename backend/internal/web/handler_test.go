@@ -13,8 +13,11 @@ import (
 
 func testFS() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":    &fstest.MapFile{Data: []byte("<!doctype html><html><head><title>t</title></head><body><div id=\"root\"></div><script type=\"module\" src=\"./assets/app.js\"></script></body></html>")},
-		"assets/app.js": &fstest.MapFile{Data: []byte("console.log('app')")},
+		"index.html":           &fstest.MapFile{Data: []byte("<!doctype html><html><head><title>t</title></head><body><div id=\"root\"></div><script type=\"module\" src=\"./assets/app.js\"></script></body></html>")},
+		"manifest.webmanifest": &fstest.MapFile{Data: []byte(`{"name":"test-app"}`)},
+		"assets/app.js":        &fstest.MapFile{Data: []byte("console.log('app')")},
+		"assets/app.css":       &fstest.MapFile{Data: []byte("body { color: red; }")},
+		"assets/index-app.js":  &fstest.MapFile{Data: []byte("export default true")},
 	}
 }
 
@@ -84,6 +87,45 @@ func TestStaticAssetLongCache(t *testing.T) {
 	}
 	if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=31536000") {
 		t.Fatalf("静态资源应带长缓存，实际 Cache-Control=%q", cc)
+	}
+}
+
+func TestStaticAssetFromSPARoute(t *testing.T) {
+	w := doRequest(NewHandler(testFS()), http.MethodGet, "/admin/assets/app.css")
+	if w.Code != http.StatusOK {
+		t.Fatalf("SPA 深路径下的静态资源应返回 200，实际 %d", w.Code)
+	}
+	if w.Body.String() != "body { color: red; }" {
+		t.Fatalf("SPA 深路径下应返回静态资源内容，实际：%s", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Fatalf("CSS 静态资源 Content-Type 不符，实际 %q", got)
+	}
+}
+
+func TestChunkAssetFromSPARoute(t *testing.T) {
+	w := doRequest(NewHandler(testFS()), http.MethodGet, "/admin/index-app.js")
+	if w.Code != http.StatusOK {
+		t.Fatalf("SPA 深路径下的 chunk 应返回 200，实际 %d", w.Code)
+	}
+	if w.Body.String() != "export default true" {
+		t.Fatalf("SPA 深路径下应返回 chunk 内容，实际：%s", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/javascript") {
+		t.Fatalf("chunk Content-Type 不符，实际 %q", got)
+	}
+}
+
+func TestRootStaticAssetFromSPARoute(t *testing.T) {
+	w := doRequest(NewHandler(testFS()), http.MethodGet, "/admin/manifest.webmanifest")
+	if w.Code != http.StatusOK {
+		t.Fatalf("SPA 深路径下的 manifest 应返回 200，实际 %d", w.Code)
+	}
+	if w.Body.String() != `{"name":"test-app"}` {
+		t.Fatalf("SPA 深路径下应返回 manifest 内容，实际：%s", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/manifest+json") {
+		t.Fatalf("manifest Content-Type 不符，实际 %q", got)
 	}
 }
 

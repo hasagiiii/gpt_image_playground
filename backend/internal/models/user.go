@@ -8,16 +8,17 @@ import (
 
 // User 表示一个本地用户记录，资料完全来自 OIDC 提供商
 type User struct {
-	ID           string     `json:"id" db:"id"`
-	OIDCProvider string     `json:"oidc_provider" db:"oidc_provider"`
-	OIDCSub      string     `json:"oidc_sub" db:"oidc_sub"`
-	Email        string     `json:"email,omitempty" db:"email"`
-	Name         string     `json:"name,omitempty" db:"name"`
-	PictureURL   string     `json:"picture_url,omitempty" db:"picture_url"`
-	RawClaims    []byte     `json:"-" db:"raw_claims"` // JSONB 原始 claims
-	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
-	LastLoginAt  *time.Time `json:"last_login_at,omitempty" db:"last_login_at"`
+	ID                   string     `json:"id" db:"id"`
+	OIDCProvider         string     `json:"oidc_provider" db:"oidc_provider"`
+	OIDCSub              string     `json:"oidc_sub" db:"oidc_sub"`
+	Email                string     `json:"email,omitempty" db:"email"`
+	Name                 string     `json:"name,omitempty" db:"name"`
+	PictureURL           string     `json:"picture_url,omitempty" db:"picture_url"`
+	RawClaims            []byte     `json:"-" db:"raw_claims"` // JSONB 原始 claims
+	CreatedAt            time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at" db:"updated_at"`
+	LastLoginAt          *time.Time `json:"last_login_at,omitempty" db:"last_login_at"`
+	LastProjectUpdatedAt *time.Time `json:"-" db:"last_project_updated_at"`
 }
 
 // PublicProfile 暴露给前端 /auth/user 的字段子集
@@ -34,21 +35,22 @@ type PublicProfile struct {
 
 // AdminProfile 是管理员用户列表使用的资料子集，不暴露 OIDC sub 和原始 claims。
 type AdminProfile struct {
-	ID           string     `json:"id"`
-	OIDCProvider string     `json:"oidc_provider"`
-	Email        string     `json:"email,omitempty"`
-	Name         string     `json:"name,omitempty"`
-	PictureURL   string     `json:"picture_url,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	ID                   string     `json:"id"`
+	OIDCProvider         string     `json:"oidc_provider"`
+	Email                string     `json:"email,omitempty"`
+	Name                 string     `json:"name,omitempty"`
+	PictureURL           string     `json:"picture_url,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	LastLoginAt          *time.Time `json:"last_login_at,omitempty"`
+	LastProjectUpdatedAt *time.Time `json:"last_project_updated_at,omitempty"`
 }
 
 func (u *User) ToAdminProfile() AdminProfile {
 	return AdminProfile{
 		ID: u.ID, OIDCProvider: u.OIDCProvider, Email: u.Email, Name: u.Name,
 		PictureURL: u.PictureURL, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
-		LastLoginAt: u.LastLoginAt,
+		LastLoginAt: u.LastLoginAt, LastProjectUpdatedAt: u.LastProjectUpdatedAt,
 	}
 }
 

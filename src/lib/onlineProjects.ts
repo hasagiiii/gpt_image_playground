@@ -17,9 +17,10 @@ export interface OnlineProjectResponse {
   id: string
   title: string
   archive_size: number
-  archive_sha256: string
-  created_at: string
-  updated_at: string
+	archive_sha256: string
+	created_at: string
+	updated_at: string
+	image_count?: number
 }
 
 export interface OnlineProjectImageResponse {

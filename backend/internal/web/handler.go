@@ -47,10 +47,17 @@ func serve(c *gin.Context, dist fs.FS) {
 
 	// 静态资源：命中嵌入 FS 中的真实文件则带长缓存返回
 	reqPath := strings.TrimPrefix(c.Request.URL.Path, "/")
-	if reqPath != "" && reqPath != "index.html" && fs.ValidPath(reqPath) {
-		if data, err := fs.ReadFile(dist, reqPath); err == nil {
+	if reqPath != "" && reqPath != "index.html" {
+		for _, staticPath := range staticPaths(reqPath) {
+			if !fs.ValidPath(staticPath) {
+				continue
+			}
+			data, err := fs.ReadFile(dist, staticPath)
+			if err != nil {
+				continue
+			}
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
-			c.Data(http.StatusOK, contentType(reqPath, data), data)
+			c.Data(http.StatusOK, contentType(staticPath, data), data)
 			return
 		}
 	}
@@ -63,6 +70,18 @@ func serve(c *gin.Context, dist fs.FS) {
 	}
 	c.Header("Cache-Control", "no-cache")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", injectConfig(html))
+}
+
+func staticPaths(reqPath string) []string {
+	paths := []string{reqPath}
+	if idx := strings.Index(reqPath, "/assets/"); idx >= 0 {
+		paths = append(paths, reqPath[idx+1:])
+	}
+	if idx := strings.LastIndex(reqPath, "/"); idx >= 0 && idx+1 < len(reqPath) {
+		fileName := reqPath[idx+1:]
+		paths = append(paths, fileName, "assets/"+fileName)
+	}
+	return paths
 }
 
 // injectConfig 在 </head> 前插入 window.__APP_CONFIG__ 内联脚本，使其早于前端入口 module 执行。
@@ -97,6 +116,9 @@ func configJSON() string {
 }
 
 func contentType(name string, data []byte) string {
+	if strings.EqualFold(filepath.Ext(name), ".webmanifest") {
+		return "application/manifest+json"
+	}
 	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
 		return ct
 	}
