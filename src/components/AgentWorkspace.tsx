@@ -14,12 +14,33 @@ import { TooltipButton as AgentActionButton } from './TooltipButton'
 import HistoryModal from './HistoryModal'
 import { TrashIcon, DownloadIcon, EditIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, SidebarLeftIcon, FavoriteIcon, CloseIcon, CopyIcon, RefreshIcon, ArrowDownIcon } from './icons'
 
-function ChatImageThumb({ imageId, imageIndex, maskImageId }: { imageId: string; imageIndex: number; maskImageId?: string | null }) {
-  const [src, setSrc] = useState<string>(() => getCachedImage(imageId) || '')
+export type AgentWorkspaceReadOnlyData = {
+  conversations: AgentConversation[]
+  tasks: TaskRecord[]
+  images: Record<string, { dataUrl: string; width?: number; height?: number }>
+}
+
+function ChatImageThumb({ imageId, imageIndex, maskImageId, imageOverrides }: { imageId: string; imageIndex: number; maskImageId?: string | null; imageOverrides?: AgentWorkspaceReadOnlyData['images'] }) {
+  const imageOverride = imageOverrides?.[imageId]?.dataUrl
+  const maskOverride = maskImageId ? imageOverrides?.[maskImageId]?.dataUrl : undefined
+  const [src, setSrc] = useState<string>(() => imageOverride ?? getCachedImage(imageId) ?? '')
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
 
   useEffect(() => {
     let cancelled = false
+
+    if (imageOverrides) {
+      if (imageOverride && maskOverride) {
+        createMaskPreviewDataUrl(imageOverride, maskOverride).then((url) => {
+          if (!cancelled) setSrc(url)
+        }).catch(() => {
+          if (!cancelled) setSrc(imageOverride)
+        })
+      } else {
+        setSrc(imageOverride ?? '')
+      }
+      return () => { cancelled = true }
+    }
 
     if (maskImageId) {
       Promise.all([ensureImageCached(imageId), ensureImageCached(maskImageId)])
@@ -45,14 +66,16 @@ function ChatImageThumb({ imageId, imageIndex, maskImageId }: { imageId: string;
       if (!cancelled && url) setSrc(url)
     })
     return () => { cancelled = true }
-  }, [imageId, maskImageId])
+  }, [imageId, imageOverride, imageOverrides, maskImageId, maskOverride])
 
   return (
     <div 
-      className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg shadow-sm cursor-pointer transition-opacity hover:opacity-90 ${
+      className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg shadow-sm transition-opacity ${imageOverrides ? '' : 'cursor-pointer hover:opacity-90'} ${
         maskImageId ? 'border-2 border-blue-500' : 'border border-gray-200 dark:border-white/[0.08]'
       }`}
-      onClick={() => setLightboxImageId(imageId, [imageId])}
+      onClick={() => {
+        if (!imageOverrides) setLightboxImageId(imageId, [imageId])
+      }}
     >
       {src ? <img src={src} className="h-full w-full object-cover" alt="" /> : <div className="h-full w-full bg-gray-100 dark:bg-white/[0.04]" />}
       {maskImageId && (
@@ -273,11 +296,11 @@ function getPageScrollTop() {
   return window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0
 }
 
-export default function AgentWorkspace({ embedded = false, onCollapse, readOnly = false, onTaskClick }: { embedded?: boolean; onCollapse?: () => void; readOnly?: boolean; onTaskClick?: (task: TaskRecord) => void }) {
-  const conversations = useStore((s) => s.agentConversations)
-  const conversationsLoaded = useStore((s) => s.agentConversationsLoaded)
+export default function AgentWorkspace({ embedded = false, onCollapse, readOnly = false, readOnlyData, onTaskClick }: { embedded?: boolean; onCollapse?: () => void; readOnly?: boolean; readOnlyData?: AgentWorkspaceReadOnlyData; onTaskClick?: (task: TaskRecord) => void }) {
+  const storedConversations = useStore((s) => s.agentConversations)
+  const storedConversationsLoaded = useStore((s) => s.agentConversationsLoaded)
   const activeProjectId = useStore((s) => s.activeProjectId)
-  const activeConversationId = useStore((s) => s.activeAgentConversationId)
+  const storedActiveConversationId = useStore((s) => s.activeAgentConversationId)
   const createConversation = useStore((s) => s.createAgentConversation)
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
   const renameConversation = useStore((s) => s.renameAgentConversation)
@@ -287,7 +310,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   const agentMobileHeaderVisible = useStore((s) => s.agentMobileHeaderVisible)
   const setAgentMobileHeaderVisible = useStore((s) => s.setAgentMobileHeaderVisible)
   const appMode = useStore((s) => s.appMode)
-  const tasks = useStore((s) => s.tasks)
+  const storedTasks = useStore((s) => s.tasks)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
   const setPrompt = useStore((s) => s.setPrompt)
@@ -305,11 +328,25 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   const showToast = useStore((s) => s.showToast)
   const openFavoritePicker = useStore((s) => s.openFavoritePicker)
   const agentGeneratingTitleIds = useStore((s) => s.agentGeneratingTitleIds)
+  const conversations = readOnlyData?.conversations ?? storedConversations
+  const conversationsLoaded = readOnlyData ? true : storedConversationsLoaded
+  const tasks = readOnlyData?.tasks ?? storedTasks
   const scopedConversations = useMemo(
-    () => getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
-    [activeProjectId, conversations, tasks],
+    () => readOnlyData ? conversations : getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
+    [activeProjectId, conversations, readOnlyData, tasks],
   )
-  const conversation = scopedConversations.find((item) => item.id === activeConversationId) ?? null
+  const [readOnlyConversationId, setReadOnlyConversationId] = useState<string | null>(null)
+  const [readOnlyActiveRoundIds, setReadOnlyActiveRoundIds] = useState<Record<string, string>>({})
+  const activeConversationId = readOnlyData
+    ? scopedConversations.some((item) => item.id === readOnlyConversationId)
+      ? readOnlyConversationId
+      : [...scopedConversations].sort((a, b) => b.updatedAt - a.updatedAt)[0]?.id ?? null
+    : storedActiveConversationId
+  const baseConversation = scopedConversations.find((item) => item.id === activeConversationId) ?? null
+  const conversation = useMemo(() => {
+    if (!readOnlyData || !baseConversation || !readOnlyActiveRoundIds[baseConversation.id]) return baseConversation
+    return { ...baseConversation, activeRoundId: readOnlyActiveRoundIds[baseConversation.id] }
+  }, [baseConversation, readOnlyActiveRoundIds, readOnlyData])
   const conversationTitle = conversation ? getAgentConversationTitle(conversation) : '新对话'
   const readOnlyActionClass = readOnly ? 'cursor-not-allowed opacity-40 grayscale text-gray-400 dark:text-gray-600' : ''
   const [editingConversationTitle, setEditingConversationTitle] = useState('')
@@ -407,10 +444,10 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   }
 
   useEffect(() => {
-    if (sidebarCollapsed) {
+    if (sidebarCollapsed && !readOnlyData) {
       setAgentEditingConversationId(null)
     }
-  }, [sidebarCollapsed, setAgentEditingConversationId])
+  }, [readOnlyData, sidebarCollapsed, setAgentEditingConversationId])
 
   useEffect(() => {
     if (!embedded && appMode !== 'agent') return
@@ -491,6 +528,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   useEffect(() => {
     if (!embedded && appMode !== 'agent') return
     if (!conversationsLoaded) return
+    if (readOnlyData) return
     
     if (scopedConversations.length === 0 && !readOnly) {
       createConversation()
@@ -500,7 +538,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
         setActiveConversationId(latest.id)
       }
     }
-  }, [appMode, embedded, conversationsLoaded, scopedConversations, conversation, createConversation, readOnly, setActiveConversationId])
+  }, [appMode, embedded, conversationsLoaded, scopedConversations, conversation, createConversation, readOnly, readOnlyData, setActiveConversationId])
 
   const sortedConversations = useMemo(
     () => [...scopedConversations].sort((a, b) => b.updatedAt - a.updatedAt),
@@ -595,8 +633,12 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
     const currentIndex = siblings.findIndex((item) => item.id === round.id)
     const nextRound = siblings[(currentIndex + direction + siblings.length) % siblings.length]
     const nextLeafId = getAgentBranchLeafId(conversation, nextRound.id)
-    setActiveAgentRoundId(conversation.id, nextLeafId)
-    setAgentEditingRoundId(null)
+    if (readOnlyData) {
+      setReadOnlyActiveRoundIds((current) => ({ ...current, [conversation.id]: nextLeafId }))
+    } else {
+      setActiveAgentRoundId(conversation.id, nextLeafId)
+      setAgentEditingRoundId(null)
+    }
     setScrollTargetRoundId(nextRound.id)
   }
 
@@ -686,7 +728,8 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   }
 
   const handleConversationSelect = (id: string) => {
-    setActiveConversationId(id)
+    if (readOnlyData) setReadOnlyConversationId(id)
+    else setActiveConversationId(id)
     if (conversationActionsId && conversationActionsId !== id) setConversationActionsId(null)
   }
 
@@ -848,8 +891,11 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
     <main 
       data-agent-workspace 
       className={embedded
-        ? 'relative mx-auto flex h-full min-h-[calc(100vh-100px)] min-w-0 flex-col overflow-hidden px-0 transition-all duration-300'
+        ? 'relative mx-auto flex h-full min-h-[calc(100vh-100px)] min-w-0 flex-col overflow-hidden overscroll-contain px-0 transition-all duration-300'
         : 'safe-area-x relative mx-auto flex min-h-[calc(100vh-100px)] max-w-7xl flex-col overflow-visible px-3 transition-all duration-300 lg:flex-row lg:gap-3 lg:px-0'}
+      onWheel={(event) => {
+        if (embedded) event.stopPropagation()
+      }}
     >
       {embedded && (
         <div className="sticky top-0 z-20 hidden h-12 items-center justify-between border-b border-gray-200 bg-white/90 px-3 backdrop-blur xl:flex dark:border-white/[0.08] dark:bg-gray-950/90">
@@ -886,6 +932,8 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                 ignoreOutsideClickRef={historyButtonRef}
                 align="right"
                 switchToAgent={!embedded}
+                readOnly={readOnly}
+                dataOverride={readOnlyData ? { conversations: scopedConversations, tasks, activeConversationId, onSelect: setReadOnlyConversationId } : undefined}
               />
             )}
             {onCollapse && (
@@ -960,7 +1008,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                   if (conversationActionsId === item.id) e.preventDefault()
                 }}
               >
-                {agentEditingConversationId === item.id ? (
+                {!readOnly && agentEditingConversationId === item.id ? (
                   <div className="min-w-0 flex-1 flex flex-col justify-center h-[38px]">
                     <input
                       type="text"
@@ -979,7 +1027,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                     <div className="text-xs text-gray-400">{formatTime(item.updatedAt)}</div>
                   </button>
                 )}
-                <div className={`flex shrink-0 items-center gap-1 overflow-hidden transition-all duration-150 ${agentEditingConversationId === item.id ? 'w-6 opacity-100' : `group-hover:w-[4.5rem] group-hover:opacity-100 group-focus-within:w-[4.5rem] group-focus-within:opacity-100 ${conversationActionsId === item.id ? 'w-[4.5rem] opacity-100' : 'w-0 opacity-0'}`}`}>
+                {!readOnly && <div className={`flex shrink-0 items-center gap-1 overflow-hidden transition-all duration-150 ${agentEditingConversationId === item.id ? 'w-6 opacity-100' : `group-hover:w-[4.5rem] group-hover:opacity-100 group-focus-within:w-[4.5rem] group-focus-within:opacity-100 ${conversationActionsId === item.id ? 'w-[4.5rem] opacity-100' : 'w-0 opacity-0'}`}`}>
                   {agentEditingConversationId === item.id ? (
                     <AgentActionButton
                       tooltip="确认"
@@ -1001,7 +1049,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                       </AgentActionButton>
                     </>
                   )}
-                </div>
+                </div>}
               </div>
             )
           })}
@@ -1026,7 +1074,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
               type="button"
               onClick={() => {
                 setSidebarCollapsed(false)
-                if (conversation) {
+                if (conversation && !readOnly) {
                   useStore.getState().setAgentEditingConversationId(conversation.id)
                 }
               }}
@@ -1063,6 +1111,8 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                   ignoreOutsideClickRef={mobileHistoryButtonRef}
                   align="right"
                   switchToAgent={!embedded}
+                  readOnly={readOnly}
+                  dataOverride={readOnlyData ? { conversations: scopedConversations, tasks, activeConversationId, onSelect: setReadOnlyConversationId } : undefined}
                 />
               )}
             </div>
@@ -1076,7 +1126,8 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
 
         <div 
           ref={scrollContainerRef}
-          className={`min-h-0 flex-1 space-y-4 ${embedded ? 'overflow-y-auto' : 'overflow-visible'} pb-[calc(var(--input-bar-clearance,12rem)+1.5rem)] px-1 lg:pt-14 lg:px-4`}
+          data-agent-scroll-container
+          className={`min-h-0 flex-1 space-y-4 ${embedded ? 'overflow-y-auto overscroll-contain' : 'overflow-visible'} pb-[calc(var(--input-bar-clearance,12rem)+1.5rem)] px-1 lg:pt-14 lg:px-4`}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
@@ -1101,7 +1152,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                 const round = conversation.rounds.find((item) => item.id === message.roundId)
                 const isAssistant = message.role === 'assistant'
                 const isStreamingAssistant = isAssistant && round?.status === 'running'
-                const isEditing = !isAssistant && round?.id === agentEditingRoundId
+                const isEditing = !readOnly && !isAssistant && round?.id === agentEditingRoundId
                 const siblingRounds = !isAssistant && round ? getAgentSiblingRounds(conversation, round) : []
                 const siblingIndex = round ? siblingRounds.findIndex((item) => item.id === round.id) : -1
                 const hasBranches = siblingRounds.length > 1
@@ -1141,6 +1192,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                               imageId={imgId}
                               imageIndex={imageIndex}
                               maskImageId={imgId === (round.maskTargetImageId ?? round.inputImageIds[0]) ? round.maskImageId : null}
+                              imageOverrides={readOnlyData?.images}
                             />
                           ))}
                       </div>
@@ -1204,17 +1256,15 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                                     task={block.task}
                                     disableSwipe={true}
                                     readOnly={readOnly}
+                                    imageOverrides={readOnlyData?.images}
                                     onClick={() => onTaskClick ? onTaskClick(block.task) : setDetailTaskId(block.task.id)}
                                     onReuse={() => handleReuse(block.task)}
                                     onEditOutputs={() => editOutputs(block.task)}
                                     onDelete={() => setConfirmDialog({ title: '删除任务', message: '确定要删除这个任务吗？', action: () => removeTask(block.task) })}
+                                    onRetry={() => {
+                                      if (conversation && round) return regenerateAgentAssistantMessage(conversation.id, round.id)
+                                    }}
                                   />
-                                  {block.task.outputImageSlots?.map((imageId, imageIndex) => imageId === null ? (
-                                    <div key={imageIndex} className="mt-2 flex h-9 items-center gap-2 rounded-md border border-dashed border-gray-200 px-3 text-xs text-gray-400 dark:border-white/[0.08] dark:text-gray-500">
-                                      <TrashIcon className="h-3.5 w-3.5 opacity-60" />
-                                      第 {imageIndex + 1} 张图片已删除
-                                    </div>
-                                  ) : null)}
                                 </div>
                               )
                             }) : isStreamingAssistant ? <AgentStreamingCursor /> : null}

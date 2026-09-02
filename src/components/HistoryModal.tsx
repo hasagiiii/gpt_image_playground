@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { ALL_PROJECTS_ID, LOCAL_PROJECT_ID, removeMultipleTasks, useStore } from '../store'
-import type { AgentConversation } from '../types'
+import type { AgentConversation, TaskRecord } from '../types'
 import { getAgentConversationTitle, getProjectAgentConversations } from '../lib/agentConversationScope'
 import { useTooltip } from '../hooks/useTooltip'
 import { CloseIcon, EditIcon, TrashIcon } from './icons'
@@ -90,6 +90,13 @@ type HistoryModalProps = {
   ignoreOutsideClickRef?: RefObject<HTMLElement | null>
   align?: 'left' | 'right'
   switchToAgent?: boolean
+  readOnly?: boolean
+  dataOverride?: {
+    conversations: AgentConversation[]
+    tasks: TaskRecord[]
+    activeConversationId: string | null
+    onSelect: (id: string) => void
+  }
 }
 
 export default function HistoryModal({
@@ -97,9 +104,11 @@ export default function HistoryModal({
   ignoreOutsideClickRef,
   align = 'left',
   switchToAgent = true,
+  readOnly = false,
+  dataOverride,
 }: HistoryModalProps) {
-  const conversations = useStore((s) => s.agentConversations)
-  const activeConversationId = useStore((s) => s.activeAgentConversationId)
+  const storedConversations = useStore((s) => s.agentConversations)
+  const storedActiveConversationId = useStore((s) => s.activeAgentConversationId)
   const activeProjectId = useStore((s) => s.activeProjectId)
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
   const renameConversation = useStore((s) => s.renameAgentConversation)
@@ -107,29 +116,34 @@ export default function HistoryModal({
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const confirmDialogOpen = useStore((s) => Boolean(s.confirmDialog))
   const setAppMode = useStore((s) => s.setAppMode)
-  const tasks = useStore((s) => s.tasks)
+  const storedTasks = useStore((s) => s.tasks)
   const agentGeneratingTitleIds = useStore((s) => s.agentGeneratingTitleIds)
   const editingId = useStore((s) => s.agentEditingConversationId)
   const setEditingId = useStore((s) => s.setAgentEditingConversationId)
 
   const [editingTitle, setEditingTitle] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const conversations = dataOverride?.conversations ?? storedConversations
+  const activeConversationId = dataOverride ? dataOverride.activeConversationId : storedActiveConversationId
+  const tasks = dataOverride?.tasks ?? storedTasks
   const scopedConversations = useMemo(
-    () => getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
-    [activeProjectId, conversations, tasks],
+    () => dataOverride ? conversations : getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
+    [activeProjectId, conversations, dataOverride, tasks],
   )
   useEffect(() => {
+    if (readOnly) return
     if (editingId) {
       const convo = scopedConversations.find((c) => c.id === editingId)
       if (convo) setEditingTitle(convo.title)
     }
-  }, [editingId, scopedConversations])
+  }, [editingId, readOnly, scopedConversations])
 
   useEffect(() => {
+    if (readOnly) return
     return () => {
       setEditingId(null)
     }
-  }, [setEditingId])
+  }, [readOnly, setEditingId])
 
   const sortedConversations = useMemo(
     () => [...scopedConversations].sort((a, b) => b.updatedAt - a.updatedAt),
@@ -143,7 +157,12 @@ export default function HistoryModal({
   }, [searchQuery, sortedConversations])
 
   const handleSelect = (id: string) => {
-    if (editingId) return
+    if (!readOnly && editingId) return
+    if (dataOverride) {
+      dataOverride.onSelect(id)
+      onClose()
+      return
+    }
     if (switchToAgent) setAppMode('agent')
     setActiveConversationId(id)
     onClose()
@@ -271,7 +290,7 @@ export default function HistoryModal({
                 onClick={() => handleSelect(c.id)}
               >
                 <div className="min-w-0 flex-1">
-                  {editingId === c.id ? (
+                  {!readOnly && editingId === c.id ? (
                     <input
                       type="text"
                       className="h-7 flex-1 bg-white dark:bg-black/20 border border-blue-400/50 dark:border-white/20 rounded px-1.5 py-0 text-sm leading-7 outline-none text-gray-900 dark:text-white focus:border-blue-500 dark:focus:border-white/40 shadow-sm min-w-0"
@@ -293,7 +312,7 @@ export default function HistoryModal({
                     </div>
                   )}
                 </div>
-                <div className="flex shrink-0 items-center gap-1">
+                {!readOnly && <div className="flex shrink-0 items-center gap-1">
                   <div className={`flex items-center justify-end gap-1 overflow-hidden transition-all duration-150 ${editingId === c.id ? 'w-7 opacity-100' : 'w-0 opacity-0 group-hover:w-16 group-hover:opacity-100 group-focus-within:w-16 group-focus-within:opacity-100'}`}>
                     {editingId === c.id ? (
                       <HistoryActionButton
@@ -326,7 +345,7 @@ export default function HistoryModal({
                       </>
                     )}
                   </div>
-                </div>
+                </div>}
               </div>
             ))}
           </div>

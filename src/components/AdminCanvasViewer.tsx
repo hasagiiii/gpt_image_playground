@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import type { Project, ProjectCanvasItem, ProjectCanvasState, TaskOutputError, TaskRecord } from '../types'
+import type { AgentConversation, Project, ProjectCanvasItem, ProjectCanvasState, TaskOutputError, TaskRecord } from '../types'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
@@ -7,12 +7,11 @@ import { getTaskIds } from '../lib/taskIds'
 import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
 import { redownloadTaskImage, retryImage, retryTaskInPlace, useStore } from '../store'
 import { TooltipButton } from './TooltipButton'
-import { AngleIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, HomeIcon, ImageIcon, InfoIcon, LayersIcon, MapIcon, RefreshIcon, ScaleIcon, WarningIcon, ZoomInIcon, ZoomOutIcon } from './icons'
+import { AngleIcon, ChevronLeftIcon, CopyIcon, DownloadIcon, ImageIcon, InfoIcon, RefreshIcon, ScaleIcon, WarningIcon } from './icons'
 import CanvasReferenceConnections from './CanvasReferenceConnections'
+import CanvasControls, { type CanvasControlLayer } from './CanvasControls'
 import DetailModal from './DetailModal'
 import AgentWorkspace from './AgentWorkspace'
-
-const CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-zoom-controls-collapsed'
 
 function getCanvasItemHeight(item: ProjectCanvasItem, ratio: number) {
   const crop = item.operator?.crop
@@ -137,58 +136,29 @@ function CanvasEdgeIndicator({
   )
 }
 
-export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
+export default function AdminCanvasViewer({ project, tasks, agentConversations, images, onBack }: {
   project: Project
   tasks: TaskRecord[]
+  agentConversations: AgentConversation[]
   images: Record<string, { dataUrl: string; width?: number; height?: number }>
   onBack: () => void
 }) {
   const showToast = useStore((state) => state.showToast)
   const canvasWheelMode = useStore((state) => state.settings?.canvasWheelMode ?? 'pan')
   const containerRef = useRef<HTMLDivElement>(null)
-  const zoomInputRef = useRef<HTMLInputElement>(null)
-  const zoomControlsRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ pointerId: number; x: number; y: number; viewport: ProjectCanvasState['viewport'] } | null>(null)
-  const minimapDragRef = useRef<{ pointerId: number; start: { x: number; y: number }; viewport: ProjectCanvasState['viewport']; width: number; height: number } | null>(null)
   const [viewport, setViewport] = useState(project.canvas?.viewport ?? { x: 0, y: 0, scale: 1 })
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
   const [infoImageId, setInfoImageId] = useState<string | null>(null)
   const [agentDetailTask, setAgentDetailTask] = useState<TaskRecord | null>(null)
-  const [zoomPresetOpen, setZoomPresetOpen] = useState(false)
-  const [zoomHelpOpen, setZoomHelpOpen] = useState(false)
-  const [layersOpen, setLayersOpen] = useState(false)
-  const [minimapOpen, setMinimapOpen] = useState(false)
-  const [zoomControlsCollapsed, setZoomControlsCollapsed] = useState(() => {
-    if (typeof window === 'undefined') return false
-    try {
-      return window.localStorage.getItem(CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY) === 'true'
-    } catch {
-      return false
-    }
-  })
-  const [zoomEditing, setZoomEditing] = useState(false)
-  const [zoomInput, setZoomInput] = useState(String(Math.round((project.canvas?.viewport.scale ?? 1) * 100)))
   const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(false)
   const [editingMode, setEditingMode] = useState(false)
   const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(() => new Set())
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY, String(zoomControlsCollapsed))
-    } catch {
-      // 本地存储不可用时保持内存状态即可
-    }
-  }, [zoomControlsCollapsed])
-
-  useEffect(() => {
     setViewport(project.canvas?.viewport ?? { x: 0, y: 0, scale: 1 })
   }, [project.canvas?.viewport.x, project.canvas?.viewport.y, project.canvas?.viewport.scale])
-
-  useEffect(() => {
-    if (zoomEditing) return
-    setZoomInput(String(Math.round(viewport.scale * 100)))
-  }, [viewport.scale, zoomEditing])
 
   useEffect(() => {
     const el = containerRef.current
@@ -310,45 +280,16 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     })
   }), [nodeById, nodes, viewport])
 
-  const minimapData = useMemo(() => {
-    const entries = nodes.flatMap((node) => {
-      const item = node.item
-      const height = getCanvasItemHeight(item, node.ratio)
-      return [{ node, item, height }]
-    })
-    if (entries.length === 0) return null
-    const minX = Math.min(...entries.map(({ item }) => item.x))
-    const minY = Math.min(...entries.map(({ item }) => item.y))
-    const maxX = Math.max(...entries.map(({ item }) => item.x + item.width))
-    const maxY = Math.max(...entries.map(({ item, height }) => item.y + height))
-    const padding = Math.max(60, Math.max(maxX - minX, maxY - minY) * 0.08)
-    const bounds = {
-      minX: minX - padding,
-      minY: minY - padding,
-      width: maxX - minX + padding * 2,
-      height: maxY - minY + padding * 2,
-    }
-    const viewportScale = Math.max(0.01, viewport.scale)
-    const viewportX = -viewport.x / viewportScale
-    const viewportY = -viewport.y / viewportScale
-    return {
-      entries,
-      bounds,
-      viewport: {
-        left: (viewportX - bounds.minX) / bounds.width * 100,
-        top: (viewportY - bounds.minY) / bounds.height * 100,
-        width: containerSize.width / viewportScale / bounds.width * 100,
-        height: containerSize.height / viewportScale / bounds.height * 100,
-      },
-    }
-  }, [containerSize.height, containerSize.width, nodes, viewport])
-
-  const zoom = (scale: number) => {
-    const point = { x: containerSize.width / 2, y: containerSize.height / 2 }
-    setViewport((current) => zoomCanvasViewport(current, point, scale))
-    setZoomPresetOpen(false)
-    setZoomEditing(false)
-  }
+  const canvasControlLayers = useMemo<CanvasControlLayer[]>(() => nodes.map((node) => ({
+    id: node.id,
+    label: node.item.name ?? node.placeholderName ?? node.id,
+    status: node.status,
+    x: node.item.x,
+    y: node.item.y,
+    width: node.item.width,
+    height: getCanvasItemHeight(node.item, node.ratio),
+    z: node.item.z,
+  })), [nodes])
 
   const focusCanvasImage = (imageId: string) => {
     const node = nodeById.get(imageId)
@@ -422,59 +363,6 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
     return () => container.removeEventListener('wheel', handleWheel)
   }, [canvasWheelMode])
 
-  const handleMinimapDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!minimapData) return
-    const mapRect = event.currentTarget.parentElement?.getBoundingClientRect()
-    if (!mapRect) return
-    event.stopPropagation()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    minimapDragRef.current = {
-      pointerId: event.pointerId,
-      start: { x: event.clientX, y: event.clientY },
-      viewport,
-      width: mapRect.width,
-      height: mapRect.height,
-    }
-  }
-
-  const handleMinimapDragMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = minimapDragRef.current
-    if (!drag || drag.pointerId !== event.pointerId || !minimapData) return
-    event.stopPropagation()
-    const dx = (event.clientX - drag.start.x) / Math.max(1, drag.width) * minimapData.bounds.width
-    const dy = (event.clientY - drag.start.y) / Math.max(1, drag.height) * minimapData.bounds.height
-    setViewport({
-      ...drag.viewport,
-      x: drag.viewport.x - dx * drag.viewport.scale,
-      y: drag.viewport.y - dy * drag.viewport.scale,
-    })
-  }
-
-  const handleMinimapDragEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (minimapDragRef.current?.pointerId !== event.pointerId) return
-    event.stopPropagation()
-    minimapDragRef.current = null
-  }
-
-  useEffect(() => {
-    if (!zoomEditing) return
-    zoomInputRef.current?.focus()
-    zoomInputRef.current?.select()
-  }, [zoomEditing])
-
-  const setCanvasZoomPercent = (percent: number) => {
-    if (!Number.isFinite(percent)) return
-    const scale = clampCanvasScale(percent / 100)
-    zoom(scale)
-    setZoomInput(String(Math.round(scale * 100)))
-  }
-
-  const commitCanvasZoomInput = () => {
-    const percent = Number(zoomInput)
-    if (Number.isFinite(percent) && percent > 0) setCanvasZoomPercent(percent)
-    else setZoomEditing(false)
-  }
-
   const handleCopyImageId = async (imageId: string) => {
     try {
       await copyTextToClipboard(imageId)
@@ -532,13 +420,6 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
       top: Math.round(Math.min(Math.max(selectedGeometry.centerY - selectedGeometry.rotatedHeight / 2, 8), Math.max(8, containerSize.height - panelHeight - 8))),
     }
   })() : null
-
-  const zoomTo = (scale: number) => {
-    const point = { x: containerSize.width / 2, y: containerSize.height / 2 }
-    setViewport((current) => zoomCanvasViewport(current, point, scale))
-    setZoomPresetOpen(false)
-    setZoomEditing(false)
-  }
 
   const handleRetryTask = async (task: TaskRecord, requestIndex?: number, downloadOnly = false) => {
     if (retryingTaskIds.has(task.id)) return
@@ -805,251 +686,21 @@ export default function AdminCanvasViewer({ project, tasks, images, onBack }: {
             setAgentDetailTask(null)
           }}
         />
-        <div
-          ref={zoomControlsRef}
-          data-canvas-toolbar
-          data-canvas-zoom-controls
-          className={`pointer-events-auto fixed bottom-2 z-[150] flex items-center rounded-md border border-gray-200 bg-white/95 p-1 text-xs shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95 sm:bottom-3 ${agentPanelCollapsed ? 'right-2 sm:right-3' : 'right-2 sm:right-3 xl:right-[428px]'}`}
-          style={{ zIndex: 150 }}
-        >
-          {!zoomControlsCollapsed && layersOpen && (
-            <div
-              data-canvas-layers-panel
-              className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-md border border-gray-200 bg-white/95 p-2 text-xs shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <div className="mb-1.5 font-medium text-gray-800 dark:text-gray-100">图层</div>
-              <div data-canvas-scrollable className="max-h-64 overflow-y-auto overscroll-contain">
-                {[...nodes].sort((a, b) => b.item.z - a.item.z).map((node) => {
-                  const label = node.item.name ?? node.id
-                  return (
-                    <button
-                      key={node.id}
-                      type="button"
-                      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition ${node.id === selectedImageId ? 'bg-[#3f78c5]/12 text-[#3f78c5]' : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/[0.08]'}`}
-                      onClick={() => {
-                        focusCanvasImage(node.id)
-                        setLayersOpen(false)
-                        setMinimapOpen(false)
-                        setZoomHelpOpen(false)
-                      }}
-                    >
-                      {node.image?.dataUrl
-                        ? <img src={node.image.dataUrl} alt="" className="h-4 w-4 shrink-0 rounded object-cover" />
-                        : <ImageIcon className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500" />}
-                      <span className="min-w-0 flex-1 truncate">{label}</span>
-                      <span className="shrink-0 tabular-nums text-[10px] text-gray-400">z{Math.round(node.item.z)}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-          {!zoomControlsCollapsed && minimapOpen && minimapData && (
-            <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()}>
-              <div className="relative h-36 overflow-hidden rounded border border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800">
-                <div
-                  className="absolute z-20 cursor-move border border-[#3f78c5] bg-[#3f78c5]/10"
-                  style={{
-                    left: `${Math.max(0, Math.min(100, minimapData.viewport.left))}%`,
-                    top: `${Math.max(0, Math.min(100, minimapData.viewport.top))}%`,
-                    width: `${Math.max(2, Math.min(100, minimapData.viewport.width))}%`,
-                    height: `${Math.max(2, Math.min(100, minimapData.viewport.height))}%`,
-                  }}
-                  onPointerDown={handleMinimapDragStart}
-                  onPointerMove={handleMinimapDragMove}
-                  onPointerUp={handleMinimapDragEnd}
-                  onPointerCancel={handleMinimapDragEnd}
-                />
-                {minimapData.entries.map(({ node, item, height }) => {
-                  const label = item.name ?? node.id
-                  return (
-                    <button
-                      key={node.id}
-                      type="button"
-                      aria-label={`跳转到${label}`}
-                      title={label}
-                      className={`absolute z-30 min-h-1 min-w-1 rounded-sm ${node.id === selectedImageId ? 'bg-[#3f78c5] ring-2 ring-[#3f78c5]/40' : 'bg-[#3f78c5]/65 hover:bg-[#3f78c5]'}`}
-                      style={{
-                        left: `${(item.x - minimapData.bounds.minX) / minimapData.bounds.width * 100}%`,
-                        top: `${(item.y - minimapData.bounds.minY) / minimapData.bounds.height * 100}%`,
-                        width: `${Math.max(1.5, item.width / minimapData.bounds.width * 100)}%`,
-                        height: `${Math.max(1.5, height / minimapData.bounds.height * 100)}%`,
-                      }}
-                      onClick={() => focusCanvasImage(node.id)}
-                    />
-                  )
-                })}
-              </div>
-            </div>
-          )}
-          <button
-            type="button"
-            className="flex h-7 w-7 items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-white/[0.08]"
-            aria-label={zoomControlsCollapsed ? '展开画布工具栏' : '收起画布工具栏'}
-            title={zoomControlsCollapsed ? '展开画布工具栏' : '收起画布工具栏'}
-            aria-expanded={!zoomControlsCollapsed}
-            onClick={() => {
-              setZoomControlsCollapsed((collapsed) => !collapsed)
-              setZoomPresetOpen(false)
-              setLayersOpen(false)
-              setMinimapOpen(false)
-              setZoomHelpOpen(false)
-              setZoomEditing(false)
-            }}
-          >
-            {zoomControlsCollapsed ? <ChevronLeftIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
-          </button>
-          <div className={`flex items-center overflow-hidden transition-[max-width,opacity,transform] duration-200 ease-out ${zoomControlsCollapsed ? 'pointer-events-none max-w-0 -translate-x-2 opacity-0' : 'max-w-[28rem] translate-x-0 opacity-100'}`}>
-          <button
-            type="button"
-            className={`flex h-7 w-7 items-center justify-center rounded text-[#3f78c5] transition ${zoomHelpOpen ? 'bg-[#3f78c5]/15' : 'hover:bg-[#3f78c5]/10'}`}
-            aria-label="画布操作说明"
-            title="画布操作说明"
-            onClick={() => {
-              setZoomHelpOpen((open) => !open)
-              setLayersOpen(false)
-              setMinimapOpen(false)
-              setZoomPresetOpen(false)
-            }}
-          >
-            <InfoIcon className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            className={`flex h-7 w-7 items-center justify-center rounded transition ${layersOpen ? 'bg-[#3f78c5]/15 text-[#3f78c5]' : 'hover:bg-gray-100 dark:hover:bg-white/[0.08]'}`}
-            aria-label="图层"
-            title="图层"
-            onClick={() => {
-              setLayersOpen((open) => !open)
-              setMinimapOpen(false)
-              setZoomHelpOpen(false)
-              setZoomPresetOpen(false)
-            }}
-          >
-            <LayersIcon className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            className={`flex h-7 w-7 items-center justify-center rounded transition ${minimapOpen ? 'bg-[#3f78c5]/15 text-[#3f78c5]' : 'hover:bg-gray-100 dark:hover:bg-white/[0.08]'}`}
-            aria-label="小地图"
-            title="小地图"
-            onClick={() => {
-              setMinimapOpen((open) => !open)
-              setLayersOpen(false)
-              setZoomHelpOpen(false)
-              setZoomPresetOpen(false)
-            }}
-          >
-            <MapIcon className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            className="flex h-7 w-7 items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-white/[0.08]"
-            aria-label="回到画布原点"
-            title="回到画布原点"
-            onClick={() => setViewport((current) => ({ ...current, x: containerSize.width / 2, y: containerSize.height / 2 }))}
-          >
-            <HomeIcon className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            className="h-7 w-7 rounded hover:bg-gray-100 dark:hover:bg-white/[0.08]"
-            aria-label="缩小画布"
-            title="缩小画布"
-            onClick={() => zoomTo(viewport.scale / 1.2)}
-          >
-            <ZoomOutIcon className="mx-auto h-3.5 w-3.5" />
-          </button>
-          <div className="relative">
-            {zoomEditing ? (
-              <input
-                ref={zoomInputRef}
-                aria-label="输入画布缩放比例"
-                type="number"
-                min="1"
-                max="1000"
-                value={zoomInput}
-                className="h-7 w-12 rounded border border-[#3f78c5] bg-transparent px-1 text-center tabular-nums text-gray-600 outline-none dark:text-gray-300"
-                onChange={(event) => setZoomInput(event.target.value)}
-                onBlur={commitCanvasZoomInput}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') commitCanvasZoomInput()
-                  if (event.key === 'Escape') setZoomEditing(false)
-                }}
-              />
-            ) : (
-              <button
-                type="button"
-                aria-label="选择画布缩放比例"
-                title="点击选择缩放比例，双击输入"
-                className="h-7 w-12 rounded px-1 text-center tabular-nums text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/[0.08]"
-                onClick={() => {
-                  setZoomPresetOpen((open) => !open)
-                  setLayersOpen(false)
-                  setMinimapOpen(false)
-                  setZoomHelpOpen(false)
-                }}
-                onDoubleClick={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  setZoomInput(String(Math.round(viewport.scale * 100)))
-                  setZoomPresetOpen(false)
-                  setZoomEditing(true)
-                }}
-              >
-                {Math.round(viewport.scale * 100)}%
-              </button>
-            )}
-            {zoomPresetOpen && !zoomEditing && (
-              <div
-                data-canvas-zoom-preset
-                className="absolute bottom-full left-1/2 mb-2 flex -translate-x-1/2 gap-1 rounded-md border border-gray-200 bg-white p-1 text-[11px] shadow-lg dark:border-white/[0.1] dark:bg-gray-900"
-                onPointerDown={(event) => event.stopPropagation()}
-              >
-                {[50, 100, 200].map((percent) => (
-                  <button
-                    key={percent}
-                    type="button"
-                    className="rounded px-2 py-1 text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/[0.08]"
-                    onClick={() => setCanvasZoomPercent(percent)}
-                  >
-                    {percent}%
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            className="h-7 w-7 rounded hover:bg-gray-100 dark:hover:bg-white/[0.08]"
-            aria-label="放大画布"
-            title="放大画布"
-            onClick={() => zoomTo(viewport.scale * 1.2)}
-          >
-            <ZoomInIcon className="mx-auto h-3.5 w-3.5" />
-          </button>
-          </div>
-          {!zoomControlsCollapsed && zoomHelpOpen && (
-            <div
-              className="absolute bottom-full right-0 mb-2 w-80 rounded-md border border-gray-200 bg-white p-4 text-xs leading-6 text-gray-600 shadow-lg dark:border-white/[0.1] dark:bg-gray-900 dark:text-gray-300"
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <div className="mb-1 text-sm font-medium text-gray-800 dark:text-gray-100">画布操作说明</div>
-              <div>滚轮：{canvasWheelMode === 'zoom' ? '缩放画布' : '移动位置'}</div>
-              <div>Ctrl + 滚轮：缩放画布</div>
-              <div>双指：缩放画布</div>
-              <div>空白拖动：平移画布</div>
-              <div>点击图片：选中图片并显示信息</div>
-              <div>图层 / 小地图：快速跳转图片</div>
-              <div>双击缩放比例：输入缩放百分比</div>
-            </div>
-          )}
-        </div>
+        <CanvasControls
+          viewport={viewport}
+          containerSize={containerSize}
+          layers={canvasControlLayers}
+          selectedLayerId={selectedImageId}
+          canvasWheelMode={canvasWheelMode}
+          agentPanelCollapsed={agentPanelCollapsed}
+          readOnly
+          onViewportChange={setViewport}
+          onFocusLayer={focusCanvasImage}
+        />
       </div>
         </main>
         <div data-no-drag-select className={`relative hidden min-w-0 border-gray-200 bg-white transition-[transform,opacity] duration-300 ease-in-out xl:block xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] dark:bg-gray-950 ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
-          <AgentWorkspace embedded readOnly onTaskClick={setAgentDetailTask} onCollapse={() => setAgentPanelCollapsed(true)} />
+          <AgentWorkspace embedded readOnly readOnlyData={{ conversations: agentConversations, tasks, images }} onTaskClick={setAgentDetailTask} onCollapse={() => setAgentPanelCollapsed(true)} />
         </div>
         <button
           type="button"

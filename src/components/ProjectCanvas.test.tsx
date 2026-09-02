@@ -253,8 +253,8 @@ describe('ProjectCanvas interactions', () => {
     expect(nw.style.top).toBe('-5px')
     expect(rotate.style.transform).toBe('scale(0.5)')
     expect(rotateButtons).toHaveLength(4)
-    expect(rotate.className).toContain('right-[-44px]')
-    expect(rotate.className).toContain('top-[-44px]')
+    expect(rotate.className).toContain('right-[-52px]')
+    expect(rotate.className).toContain('top-[-52px]')
   })
 
   it('centers the first generated image on the world origin', async () => {

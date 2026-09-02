@@ -10,7 +10,7 @@ import { uploadMaterialImage } from '../lib/materialApi'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getTaskIds } from '../lib/taskIds'
 import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
-import { CloudUploadIcon, CodeIcon, CopyIcon, DownloadIcon, RefreshIcon, TransparentBgIcon } from './icons'
+import { CloudUploadIcon, CodeIcon, CopyIcon, DownloadIcon, RefreshIcon, TransparentBgIcon, TrashIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
 interface Props {
@@ -19,9 +19,11 @@ interface Props {
   onEditOutputs: () => void
   onDelete: () => void
   onClick: (e: React.MouseEvent | React.TouchEvent) => void
+  onRetry?: () => Promise<void> | void
   isSelected?: boolean
   disableSwipe?: boolean
   readOnly?: boolean
+  imageOverrides?: Record<string, { dataUrl: string; width?: number; height?: number }>
 }
 
 function TaskActionButton({
@@ -69,9 +71,11 @@ export default function TaskCard({
   onEditOutputs,
   onDelete,
   onClick,
+  onRetry,
   isSelected,
   disableSwipe,
   readOnly = false,
+  imageOverrides,
 }: Props) {
   const [thumbSrc, setThumbSrc] = useState<string>('')
   const [coverRatio, setCoverRatio] = useState<string>('')
@@ -321,6 +325,12 @@ export default function TaskCard({
       }
     }
 
+    if (imageOverrides) {
+      const image = imageId ? imageOverrides[imageId] : undefined
+      if (image) applyThumbnail(image)
+      return () => { cancelled = true }
+    }
+
     if (imageId) {
       unsubscribe = subscribeImageThumbnail(imageId, applyThumbnail)
       ensureImageThumbnailCached(imageId).then((thumbnail) => {
@@ -335,7 +345,7 @@ export default function TaskCard({
       cancelled = true
       unsubscribe?.()
     }
-  }, [task.outputImages])
+  }, [imageOverrides, task.outputImages])
 
   const duration = (() => {
     let seconds: number
@@ -376,11 +386,9 @@ export default function TaskCard({
   const showN = !isAgentTask && (task.params.n > 1 || nDisplay.isMismatch)
   const outputErrorCount = task.outputErrors?.length ?? 0
   const outputSuccessCount = task.outputImages?.length ?? 0
+  const outputDeleted = task.status === 'done' && outputSuccessCount === 0 && task.outputImageSlots?.some((imageId) => imageId === null) === true
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
   const hasPartialOutputFailure = task.status === 'done' && outputErrorCount > 0
-  const canRedownloadImage = task.status === 'error' && outputSuccessCount === 0 && (
-    Boolean(task.rawImageUrls?.length) || task.error?.includes('图片链接下载失败') || task.error?.includes('图片 URL 下载失败')
-  )
   const imageDownloadFailure = isImageDownloadFailureError(task.failureEndpoint, task.error)
     || Boolean(task.outputErrors?.some((error) => isImageDownloadFailureError(error.endpoint, error.error)))
   const downloadFailureRequestIndex = task.outputErrors?.find((error) => isImageDownloadFailureError(error.endpoint, error.error))?.requestIndex
@@ -388,7 +396,10 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
-  const isNetworkFailure = task.failureKind === 'network' || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(task.error ?? '')
+  const failedToFetch = /failed to fetch/i.test(task.error ?? '')
+  const requestTimeout = /请求超时|request (?:timed out|timeout)|timed out/i.test(task.error ?? '')
+  const inlineRetryableFailure = task.status === 'error' && (failedToFetch || imageDownloadFailure || requestTimeout)
+  const agentBranchRetry = task.status === 'error' && Boolean(onRetry)
   const taskIds = getTaskIds(task)
 
   const handleCopyFailureId = async (label: 'request_id' | 'task_id', value: string) => {
@@ -422,11 +433,12 @@ export default function TaskCard({
     }
   }
 
-  const handleRetry = async () => {
+  const handleRetry = async (inPlace = false) => {
     if (retryPending) return
     setRetryPending(true)
     try {
       if (hasPartialOutputFailure) await retryImage(task)
+      else if (!inPlace && task.status === 'error' && onRetry) await onRetry()
       else await retryTaskInPlace(task)
       showToast('已开始重试生成', 'success')
     } catch (err) {
@@ -464,7 +476,7 @@ export default function TaskCard({
         } ${
           task.status === 'running'
             ? 'border-blue-400 generating'
-            : isNetworkFailure
+            : inlineRetryableFailure
             ? '!border-yellow-300 !bg-yellow-50 dark:!border-yellow-700/70 dark:!bg-yellow-950/30'
             : isSelected
             ? 'border-blue-500 shadow-md ring-2 ring-blue-500/50'
@@ -512,7 +524,7 @@ export default function TaskCard({
       )}
       <div className="flex h-40">
         {/* 左侧图片区域 */}
-        <div className={`w-40 min-w-[10rem] h-full relative flex items-center justify-center overflow-hidden flex-shrink-0 ${isNetworkFailure ? 'bg-yellow-100 dark:bg-yellow-950/50' : 'bg-gray-100 dark:bg-black/20'}`}>
+        <div className={`w-40 min-w-[10rem] h-full relative flex items-center justify-center overflow-hidden flex-shrink-0 ${inlineRetryableFailure ? 'bg-yellow-100 dark:bg-yellow-950/50' : 'bg-gray-100 dark:bg-black/20'}`}>
           {task.status === 'running' && streamPreviewSrc && (
             <>
               <img
@@ -576,7 +588,7 @@ export default function TaskCard({
           {task.status === 'error' && !isFalReconnecting && (
             <div className="flex flex-col items-center gap-1 px-2">
               <svg
-                className={`w-7 h-7 ${isInterrupted || isNetworkFailure || imageDownloadFailure ? 'text-yellow-500' : 'text-red-400'}`}
+                className={`w-7 h-7 ${isInterrupted || inlineRetryableFailure ? 'text-yellow-500' : 'text-red-400'}`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -588,11 +600,11 @@ export default function TaskCard({
                   d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
-              {isNetworkFailure || imageDownloadFailure ? (
+              {inlineRetryableFailure ? (
                 <>
                   <span className="flex items-center gap-1 text-center text-sm font-medium leading-tight text-yellow-700 dark:text-yellow-300">
-                    <span>{imageDownloadFailure ? '图片下载失败' : '网络异常，请稍后重试。'}</span>
-                    <button type="button" disabled={readOnly || retryPending || redownloadPending} className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400 ${readOnlyActionClass}`} aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={imageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryPending ? '正在重试' : '重试请求')} onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry()) }}>{imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}</button>
+                    <span>{imageDownloadFailure ? '图片下载失败' : requestTimeout ? '请求超时，请稍后重试。' : '网络异常，请稍后重试。'}</span>
+                    <button type="button" disabled={readOnly || retryPending || redownloadPending} className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400 ${readOnlyActionClass}`} aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={imageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryPending ? '正在重试' : '重试请求')} onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry(true)) }}>{imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}</button>
                   </span>
                   {task.failureEndpoint && <span className="text-xs text-yellow-700 dark:text-yellow-300">失败接口：{task.failureEndpoint}</span>}
                   {(task.requestId || taskIds.length > 0) && (
@@ -621,22 +633,6 @@ export default function TaskCard({
                       {task.error}
                     </span>
                     <button type="button" className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-500 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制错误原因" title="复制错误原因" onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureError(task.error!) }}><CopyIcon className="h-4 w-4" /></button>
-                    {canRedownloadImage && (
-                      <button
-                        type="button"
-                        disabled={readOnly || redownloadPending}
-                        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-500 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50 ${readOnlyActionClass}`}
-                        aria-label="重新下载图片"
-                        title={redownloadPending ? '正在重新下载' : '重新下载图片'}
-                        onTouchStart={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void handleRedownloadImage()
-                        }}
-                      >
-                        <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} />
-                      </button>
-                    )}
                   </span>}
                   {task.failureEndpoint && <span className="text-xs text-red-400">失败接口：{task.failureEndpoint}</span>}
                   {task.failureRetryCount !== undefined && <span className="text-xs text-red-400">自动重试：{task.failureRetryCount} 次</span>}
@@ -668,7 +664,13 @@ export default function TaskCard({
               )}
             </>
           )}
-          {task.status === 'done' && !thumbSrc && (
+          {outputDeleted && (
+            <div data-task-image-deleted className="flex flex-col items-center gap-2 text-gray-400 dark:text-gray-500">
+              <TrashIcon className="h-7 w-7 opacity-60" />
+              <span className="text-xs">图片已删除</span>
+            </div>
+          )}
+          {task.status === 'done' && !thumbSrc && !outputDeleted && (
             <svg
               className="w-8 h-8 text-gray-300"
               fill="none"
@@ -684,7 +686,7 @@ export default function TaskCard({
             </svg>
           )}
           {/* 运行中显示耗时，完成后显示封面图比例与分辨率标签 */}
-          <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+          {!outputDeleted && <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
             {showRunningTimer || task.status !== 'done' || !coverRatio || !coverSize ? (
               <span className="flex items-center gap-1 bg-black/50 text-white text-[10px] sm:text-xs px-1.5 py-0.5 rounded backdrop-blur-sm font-mono">
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -702,7 +704,7 @@ export default function TaskCard({
                 </span>
               </>
             )}
-          </div>
+          </div>}
         </div>
 
         {/* 右侧信息区域 */}
@@ -843,12 +845,12 @@ export default function TaskCard({
             >
               {((task.status === 'error' && !isFalReconnecting) || hasPartialOutputFailure || settings.alwaysShowRetryButton) && (
                 <TaskActionButton
-                  tooltip={imageDownloadFailure ? '重新下载图片' : hasPartialOutputFailure ? '重试失败图片' : '重试任务'}
-                  onClick={() => void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry())}
-                  disabled={readOnly || (imageDownloadFailure ? redownloadPending : retryPending)}
+                  tooltip={agentBranchRetry ? '重试任务' : imageDownloadFailure ? '重新下载图片' : hasPartialOutputFailure ? '重试失败图片' : '重试任务'}
+                  onClick={() => void (agentBranchRetry ? handleRetry() : imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry())}
+                  disabled={readOnly || (agentBranchRetry ? retryPending : imageDownloadFailure ? redownloadPending : retryPending)}
                   className={`p-1.5 rounded-md text-gray-400 transition disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:bg-blue-50 dark:hover:bg-blue-950/30 hover:text-blue-500'} ${readOnlyActionClass}`}
                 >
-                  {imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}
+                  {imageDownloadFailure && !agentBranchRetry ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}
                 </TaskActionButton>
               )}
               <TaskActionButton

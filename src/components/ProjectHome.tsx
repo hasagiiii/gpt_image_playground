@@ -121,7 +121,7 @@ function ProjectCard({ project, task, isLegacy = false }: { project: Project; ta
             </button>
           )}
           <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-            更新于 {new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(project.updatedAt)} · {taskCount} 个作品{isLegacy ? ' · 未保存' : ''}
+            更新于 {new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(project.contentUpdatedAt ?? project.updatedAt)} · {taskCount} 个作品{isLegacy ? ' · 未保存' : ''}
           </p>
         </div>
         {!isLegacy && <button
