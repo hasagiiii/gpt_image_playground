@@ -31,6 +31,27 @@ func doRequest(h gin.HandlerFunc, method, path string) *httptest.ResponseRecorde
 	return w
 }
 
+// 缺失的构建产物必须 404，不能走 SPA fallback：
+// 返回 200 + text/html 会被 Service Worker 按 asset URL 永久缓存，导致 MIME 校验失败
+func TestMissingAssetReturns404(t *testing.T) {
+	for _, path := range []string{"/assets/index-MISSING.js", "/admin/assets/index-MISSING.js", "/assets/missing.css", "/missing.js"} {
+		w := doRequest(NewHandler(testFS()), http.MethodGet, path)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s 期望 404，实际 %d（Content-Type=%q）", path, w.Code, w.Header().Get("Content-Type"))
+		}
+	}
+}
+
+// SPA 路由仍须返回 index.html，不能被 asset 判定误伤
+func TestSPARoutesStillFallback(t *testing.T) {
+	for _, path := range []string{"/settings", "/admin", "/admin/users", "/"} {
+		w := doRequest(NewHandler(testFS()), http.MethodGet, path)
+		if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Type"), "text/html") {
+			t.Fatalf("%s 期望返回 HTML，实际 %d %q", path, w.Code, w.Header().Get("Content-Type"))
+		}
+	}
+}
+
 // 4.1：给定 env → 注入 HTML 含正确 window.__APP_CONFIG__ 字段值，且脚本先于 </head>
 func TestInjectConfigValues(t *testing.T) {
 	t.Setenv("DEFAULT_API_URL", "https://example.com/v1")

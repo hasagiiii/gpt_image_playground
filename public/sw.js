@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpt-image-playground-v0.6.34-range-bypass-v1'
+const CACHE_NAME = 'gpt-image-playground-v0.6.34-asset-mime-guard-v1'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './logo.png']
 const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href))
 const ASSETS_PATH = new URL('./assets/', self.registration.scope).pathname
@@ -57,13 +57,18 @@ self.addEventListener('fetch', (event) => {
   // 只缓存明确的静态资源，避免按 URL 缓存带用户身份的 API 响应。
   if (!APP_SHELL_URLS.has(request.url) && !url.pathname.startsWith(ASSETS_PATH)) return
 
+  const isAsset = url.pathname.startsWith(ASSETS_PATH)
+
   event.respondWith(
     caches.match(request).then((cached) => {
-      if (cached) return cached
+      // 历史版本把 SPA fallback 的 HTML 按 asset URL 缓存过，这类条目会让
+      // 浏览器 MIME 校验失败且永不失效，命中即视为无效并回源。
+      if (cached && !(isAsset && isHtmlResponse(cached))) return cached
 
       return fetch(request).then((response) => {
         // 206 等非完整响应无法写入 Cache，只缓存 200。
-        if (response.status === 200) {
+        // asset 请求拿到 HTML 说明服务端走了 SPA fallback，绝不能缓存。
+        if (response.status === 200 && !(isAsset && isHtmlResponse(response))) {
           const copy = response.clone()
           caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
         }
@@ -72,3 +77,7 @@ self.addEventListener('fetch', (event) => {
     }),
   )
 })
+
+function isHtmlResponse(response) {
+  return (response.headers.get('content-type') || '').includes('text/html')
+}

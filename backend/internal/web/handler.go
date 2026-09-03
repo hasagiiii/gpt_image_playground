@@ -62,6 +62,14 @@ func serve(c *gin.Context, dist fs.FS) {
 		}
 	}
 
+	// 构建产物请求落空时必须 404。若走 SPA fallback 返回 200 + text/html，
+	// Service Worker 会把这份 HTML 按 asset URL 缓存下来（assets/ 是 cache-first
+	// 且永不过期），此后即使部署正确也永远返回 HTML，浏览器报 MIME 校验失败。
+	if isStaticAssetRequest(reqPath) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
 	// 其余路径：SPA fallback，返回注入运行时配置后的 index.html
 	html, err := fs.ReadFile(dist, "index.html")
 	if err != nil {
@@ -80,6 +88,19 @@ func cacheControl(staticPath string) string {
 		return "public, max-age=31536000, immutable"
 	}
 	return "no-cache"
+}
+
+// isStaticAssetRequest 判断请求是否指向构建产物。SPA 路由不带扩展名，
+// 因此按 assets/ 段与常见静态扩展名识别即可，不会误伤 /admin 这类前端路由。
+func isStaticAssetRequest(reqPath string) bool {
+	if reqPath == "assets" || strings.HasPrefix(reqPath, "assets/") || strings.Contains(reqPath, "/assets/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(reqPath)) {
+	case ".js", ".mjs", ".css", ".map", ".wasm", ".json", ".webmanifest":
+		return true
+	}
+	return false
 }
 
 func staticPaths(reqPath string) []string {
