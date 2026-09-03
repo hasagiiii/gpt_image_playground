@@ -120,6 +120,7 @@ const CUSTOM_RECOVERY_POLL_MS = 10_000
 const COMPOSITE_RECOVERY_POLL_MS = 5_000
 const COMPOSITE_RECOVERY_TIMEOUT_MS = 10 * 60 * 1000
 const IMAGE_STATUS_RECOVERY_POLL_MS = 5_000
+const IMAGE_STATUS_API_KEY_WAIT_MS = 250
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
@@ -2969,6 +2970,14 @@ function getImageStatusRecoveryProfile(settings: AppSettings, task: TaskRecord) 
       ...(task.apiOverride.model ? { model: task.apiOverride.model } : {}),
     }
   }
+  const oidcOverride = useStore.getState().oidcApiOverride
+  if (oidcOverride?.apiKey || oidcOverride?.model) {
+    return {
+      ...taskProfile,
+      ...(oidcOverride.apiKey ? { apiKey: oidcOverride.apiKey } : {}),
+      ...(oidcOverride.model ? { model: oidcOverride.model } : {}),
+    }
+  }
   return taskProfile
 }
 
@@ -3818,15 +3827,33 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
   }
 
   const timedOut = Date.now() - round.createdAt >= Math.max(0, profile.timeout * 1000)
+  if (!profile.apiKey.trim()) {
+    if (timedOut) {
+      clearAgentImageStatusRecoveryTimer(conversationId, roundId)
+      updateAgentConversation(conversationId, (current) => ({
+        ...current,
+        updatedAt: Date.now(),
+        rounds: current.rounds.map((item) =>
+          item.id === roundId
+            ? { ...item, status: 'error', error: 'API Key 尚未加载，无法查询图片状态。', imageStatusRecoverable: false, finishedAt: Date.now() }
+            : item,
+        ),
+      }))
+      return
+    }
+    scheduleAgentImageStatusRecovery(conversationId, roundId, IMAGE_STATUS_API_KEY_WAIT_MS)
+    return
+  }
   try {
-    // 在线项目走项目后端轮询，不直连供应商域名。取该 round 关联的任意任务判定，
-    // 同一 round 的任务共享项目与 API 配置。
+    // 在线项目走项目后端轮询，不直连供应商域名。优先取 round 任务的项目，
+    // 任务尚未落地时回退到会话项目；Agent 的 API Key 来自当前生效配置。
     const roundTask = getAgentRoundImageStatusTasks(conversationId, round)[0]
       ?? useStore.getState().tasks.find((task) => task.agentConversationId === conversationId && task.agentRoundId === round.id)
-    const project = roundTask?.projectId
-      ? useStore.getState().projects.find((item) => item.id === roundTask.projectId)
+    const projectId = roundTask?.projectId ?? conversation.projectId
+    const project = projectId
+      ? useStore.getState().projects.find((item) => item.id === projectId)
       : undefined
-    const viaBackend = project?.storage === 'online' && Boolean(project.remoteId) && (roundTask?.apiProvider ?? 'openai') === 'openai' && Boolean(roundTask?.apiOverride?.apiKey)
+    const viaBackend = project?.storage === 'online' && Boolean(project.remoteId) && (roundTask?.apiProvider ?? profile.provider) === 'openai' && Boolean(profile.apiKey)
     const result = viaBackend
       ? await queryImageStatuses(profile, requestIds, { viaBackend: true, requestId })
       : await queryImageStatuses(profile, requestIds, { requestId })
@@ -4035,6 +4062,21 @@ async function recoverImageStatusTask(taskId: string) {
   }
 
   const timedOut = Date.now() - task.createdAt >= Math.max(0, profile.timeout * 1000)
+  if (!profile.apiKey.trim()) {
+    if (timedOut) {
+      clearImageStatusRecoveryTimer(taskId)
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: 'API Key 尚未加载，无法查询图片状态。',
+        imageStatusRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      return
+    }
+    scheduleImageStatusRecovery(taskId, IMAGE_STATUS_API_KEY_WAIT_MS)
+    return
+  }
   try {
     const project = task.projectId
       ? useStore.getState().projects.find((item) => item.id === task.projectId)

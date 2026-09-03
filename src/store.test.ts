@@ -2196,6 +2196,8 @@ describe('image status recovery', () => {
       galleryInputDraft: null,
       agentConversations: [],
       activeAgentConversationId: null,
+      oidcApiOverride: null,
+      agentOidcApiOverride: null,
       showToast: vi.fn(),
     })
   })
@@ -2271,6 +2273,42 @@ describe('image status recovery', () => {
     expect(recovered.failureEndpoint).toBe('download')
     expect(recovered.failureKind).toBe('network')
     fetchMock.mockRestore()
+  })
+
+  it('waits for the gallery API key before querying image status after refresh', async () => {
+    const profileWithoutKey = createDefaultOpenAIProfile({ id: 'gallery-profile-without-key', apiKey: '', timeout: 60 })
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [profileWithoutKey],
+        activeProfileId: profileWithoutKey.id,
+      }),
+      oidcApiOverride: null,
+    })
+    const runningTask = task({
+      id: 'gallery-api-key-race-task',
+      apiProvider: 'openai',
+      apiProfileId: profileWithoutKey.id,
+      apiMode: 'images',
+      status: 'running',
+      imageStatusRequestIds: ['img_gallery_api_key_race'],
+      createdAt: Date.now(),
+      finishedAt: null,
+      elapsed: null,
+    })
+    await putDbTask(runningTask)
+    vi.mocked(queryImageStatuses).mockResolvedValue({ records: [{ requestId: 'img_gallery_api_key_race', status: 'running' }], notFound: [] })
+
+    await initStore()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(queryImageStatuses).not.toHaveBeenCalled()
+
+    useStore.getState().setOidcApiOverride({ apiKey: 'loaded-gallery-key' })
+    await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(
+      expect.objectContaining({ id: profileWithoutKey.id, apiKey: 'loaded-gallery-key' }),
+      ['img_gallery_api_key_race'],
+      { requestId: 'frontend-request-id' },
+    ))
   })
 
   it('restores Agent assistant message from image status texts after refresh', async () => {
@@ -2353,6 +2391,7 @@ describe('image status recovery', () => {
   it('queries Agent round image status through the project backend for online projects', async () => {
     const conversation = agentConversation({
       id: 'agent-backend-status-conversation',
+      projectId: 'online-project',
       activeRoundId: 'agent-backend-status-round',
       rounds: [{
         id: 'agent-backend-status-round',
@@ -2381,7 +2420,6 @@ describe('image status recovery', () => {
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
       apiMode: 'responses',
-      apiOverride: { apiKey: 'oidc-key' },
       status: 'running',
       imageStatusRequestIds: ['img_agent_backend'],
       createdAt: Date.now(),
@@ -2413,6 +2451,52 @@ describe('image status recovery', () => {
       expect.objectContaining({ id: openAIProfile.id }),
       ['img_agent_backend'],
       { viaBackend: true, requestId: 'frontend-request-id' },
+    ))
+  })
+
+  it('waits for the Agent API key before querying image status after refresh', async () => {
+    const profileWithoutKey = createDefaultOpenAIProfile({ id: 'agent-profile-without-key', apiKey: '', timeout: 60 })
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [profileWithoutKey],
+        activeProfileId: profileWithoutKey.id,
+      }),
+      agentOidcApiOverride: null,
+    })
+    const conversation = agentConversation({
+      id: 'agent-api-key-race-conversation',
+      activeRoundId: 'agent-api-key-race-round',
+      rounds: [{
+        id: 'agent-api-key-race-round',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'agent-api-key-race-user',
+        assistantMessageId: 'agent-api-key-race-assistant',
+        prompt: '生成图片',
+        inputImageIds: [],
+        outputTaskIds: [],
+        imageStatusRequestIds: ['img_agent_api_key_race'],
+        imageStatusApiProfileId: profileWithoutKey.id,
+        status: 'running',
+        error: null,
+        createdAt: Date.now(),
+        finishedAt: null,
+      }],
+      messages: [],
+    })
+    await putAgentConversation(conversation)
+    vi.mocked(queryImageStatuses).mockResolvedValue({ records: [{ requestId: 'img_agent_api_key_race', status: 'running' }], notFound: [] })
+
+    await initStore()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(queryImageStatuses).not.toHaveBeenCalled()
+
+    useStore.getState().setAgentOidcApiOverride({ apiKey: 'loaded-agent-key' })
+    await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(
+      expect.objectContaining({ id: profileWithoutKey.id, apiKey: 'loaded-agent-key' }),
+      ['img_agent_api_key_race'],
+      { requestId: 'frontend-request-id' },
     ))
   })
 
