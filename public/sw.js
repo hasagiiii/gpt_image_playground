@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpt-image-playground-v0.6.10-api-bypass-v2'
+const CACHE_NAME = 'gpt-image-playground-v0.6.34-range-bypass-v1'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './logo.png']
 const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href))
 const ASSETS_PATH = new URL('./assets/', self.registration.scope).pathname
@@ -36,12 +36,17 @@ self.addEventListener('fetch', (event) => {
   // API 请求始终交给浏览器网络栈，不进入 Service Worker 的响应与缓存流程。
   if (url.pathname.startsWith(API_PATH) || url.pathname.startsWith(SCOPED_API_PATH)) return
 
+  // Range 请求的响应是 206，Cache API 不接受，直接交给浏览器处理。
+  if (request.headers.has('range')) return
+
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', copy))
+          if (response.status === 200) {
+            const copy = response.clone()
+            caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', copy))
+          }
           return response
         })
         .catch(() => caches.match('./index.html')),
@@ -57,7 +62,8 @@ self.addEventListener('fetch', (event) => {
       if (cached) return cached
 
       return fetch(request).then((response) => {
-        if (response.ok) {
+        // 206 等非完整响应无法写入 Cache，只缓存 200。
+        if (response.status === 200) {
           const copy = response.clone()
           caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
         }
