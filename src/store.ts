@@ -4441,13 +4441,20 @@ async function initializeStore() {
       }
     })
     await replaceStoredAgentConversations(loadedAgentConversations)
+    // 从磁盘恢复不是内容变更：此处已完成写盘，必须把基准对齐到恢复后的值。
+    // 否则 getChangedAgentConversationProjectIds 会把全部会话判为“新增”，
+    // 进而给每个项目排一次全量同步，刷新页面就会刷新 content_updated_at。
+    lastStoredAgentConversations = useStore.getState().agentConversations
   } else {
     useStore.setState({ agentConversationsLoaded: true })
+    lastStoredAgentConversations = useStore.getState().agentConversations
   }
   const shouldRewritePersistedLocalState = agentConversationMigrationPending
   agentConversationPersistenceReady = true
   agentConversationMigrationPending = false
-  if (agentConversationPersistQueued || useStore.getState().agentConversations !== lastStoredAgentConversations) {
+  // 恢复阶段的 setState 会把 queued 置位，此处数据已与磁盘一致，不需要再回写。
+  agentConversationPersistQueued = false
+  if (useStore.getState().agentConversations !== lastStoredAgentConversations) {
     await flushAgentConversationsToIndexedDB()
   }
   if (shouldRewritePersistedLocalState) {
