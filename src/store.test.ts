@@ -4130,6 +4130,38 @@ describe('agent built-in image tool failure', () => {
     })
   })
 
+  it('updates a completed streaming task with the revised prompt from the final response', async () => {
+    vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
+      await opts.onImageToolStarted?.({ toolCallId: 'ig-revised' })
+      await opts.onImageToolCompleted?.({
+        toolCallId: 'ig-revised',
+        dataUrl: 'data:image/png;base64,aW1hZ2U=',
+      })
+      return {
+        text: '已完成',
+        images: [{
+          toolCallId: 'ig-revised',
+          dataUrl: 'data:image/png;base64,aW1hZ2U=',
+          revisedPrompt: '模型返回的提示词',
+        }],
+        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '已完成' }] }],
+        responseId: 'response-revised',
+      }
+    })
+
+    await submitAgentMessage()
+    for (let i = 0; i < 10 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const completedTask = useStore.getState().tasks[0]
+    expect(completedTask).toMatchObject({
+      status: 'done',
+      prompt: '模型返回的提示词',
+    })
+    expect(completedTask.revisedPromptByImage?.[completedTask.outputImages[0]]).toBe('模型返回的提示词')
+  })
+
   it('marks a failed built-in image task as error while the Agent stream continues', async () => {
     vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
       await opts.onImageToolStarted?.({ toolCallId: 'ig-fail' })

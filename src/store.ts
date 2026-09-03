@@ -6136,7 +6136,8 @@ async function executeAgentRound(
         id: genId(),
         requestId,
         ...(projectId ? { projectId } : {}),
-        prompt: taskPrompt,
+        // 流式 image_generation 的 started 事件没有携带 prompt，回退到本轮用户消息。
+        prompt: taskPrompt.trim() || round.prompt || userMessage.content,
         params: options.taskParams ?? { ...params, n: 1 },
         apiProvider: imageProfile.provider,
         apiProfileId: imageProfile.id,
@@ -6176,7 +6177,21 @@ async function executeAgentRound(
       const toolCallId = image.toolCallId ?? genId()
       const taskId = await ensureStreamingAgentTask(toolCallId)
       const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
-      if (latestTask?.status === 'done' && latestTask.outputImages.length > 0) return taskId
+      if (latestTask?.status === 'done' && latestTask.outputImages.length > 0) {
+        // 流式回调可能先完成图片，最终 response.completed 才补充 revised_prompt。
+        // 任务已完成时仍需写入这份接口返回的提示词，不能被早期请求提示词覆盖。
+        if (image.revisedPrompt?.trim()) {
+          const outputImageId = latestTask.outputImages[0]
+          updateTaskInStore(taskId, {
+            prompt: image.revisedPrompt,
+            revisedPromptByImage: outputImageId
+              ? { ...(latestTask.revisedPromptByImage ?? {}), [outputImageId]: image.revisedPrompt }
+              : latestTask.revisedPromptByImage,
+            ...(rawResponsePayload ? { rawResponsePayload } : {}),
+          })
+        }
+        return taskId
+      }
 
       const stored = await storeImageWithSize(image.dataUrl, 'generated')
       cacheImage(stored.id, image.dataUrl)
@@ -6186,7 +6201,11 @@ async function executeAgentRound(
         n: 1,
       }
       updateTaskInStore(taskId, {
-        prompt: image.revisedPrompt ?? latestTask?.prompt ?? '',
+        prompt: image.revisedPrompt?.trim()
+          ? image.revisedPrompt
+          : latestTask?.prompt?.trim()
+            ? latestTask.prompt
+            : round.prompt || userMessage.content,
         outputImages: [stored.id],
         actualParams,
         actualParamsByImage: { [stored.id]: actualParams },
@@ -6311,7 +6330,7 @@ async function executeAgentRound(
         image: dataUrl ? {
           dataUrl,
           actualParams: result.actualParamsList?.[0] ?? result.actualParams,
-          revisedPrompt: result.revisedPrompts?.[0] ?? opts.prompt,
+          revisedPrompt: result.revisedPrompts?.[0],
         } satisfies AgentApiResultImage : null,
         error: result.failedRequests?.[0]?.error ?? (dataUrl ? null : '接口未返回图片数据'),
         rawResponsePayload: JSON.stringify({

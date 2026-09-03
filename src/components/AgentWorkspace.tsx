@@ -102,7 +102,7 @@ function AgentStreamingCursor() {
 const AGENT_STOPPED_MESSAGE = '已停止生成。'
 
 function formatTime(value: number) {
-  return new Date(value).toLocaleString()
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
 function AgentWebSearchInlineStatus({ status }: { status: AgentWebSearchStatus }) {

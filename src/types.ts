@@ -519,6 +519,7 @@ export interface ResponsesOutputItem {
     base64?: string
     image?: string
     data?: string
+    revised_prompt?: string
   }
   size?: string
   quality?: string

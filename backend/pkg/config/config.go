@@ -16,6 +16,7 @@ type Config struct {
 	Server         ServerConfig         `yaml:"server"`
 	Log            LogConfig            `yaml:"log"`
 	Database       DatabaseConfig       `yaml:"database"`
+	Redis          RedisConfig          `yaml:"redis"`
 	JWT            JWTConfig            `yaml:"jwt"`
 	OIDC           OIDCConfig           `yaml:"oidc"`
 	Admin          AdminConfig          `yaml:"admin"`
@@ -184,6 +185,18 @@ type DatabaseConfig struct {
 	MaxOpenConns int    `yaml:"max_open_conns"`
 	MaxIdleConns int    `yaml:"max_idle_conns"`
 	MaxLifetime  int    `yaml:"max_lifetime_seconds"`
+}
+
+// RedisConfig 配置跨实例共享的短期状态存储（OAuth state 等）。
+type RedisConfig struct {
+	Addr      string `yaml:"addr"`
+	Password  string `yaml:"password"`
+	DB        int    `yaml:"db"`
+	KeyPrefix string `yaml:"key_prefix"`
+}
+
+func (c RedisConfig) Enabled() bool {
+	return strings.TrimSpace(c.Addr) != ""
 }
 
 // JWTConfig JWT配置

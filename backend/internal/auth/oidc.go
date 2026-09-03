@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
 
 	"gpt-image-backend/pkg/config"
@@ -308,9 +309,11 @@ func firstNonEmpty(values ...string) string {
 
 // StateStore 暂存 OAuth state -> PKCE verifier 映射，含 TTL
 type StateStore struct {
-	mu    sync.Mutex
-	items map[string]stateEntry
-	ttl   time.Duration
+	mu     sync.Mutex
+	items  map[string]stateEntry
+	ttl    time.Duration
+	redis  *redis.Client
+	prefix string
 }
 
 type stateEntry struct {
@@ -325,6 +328,59 @@ func NewStateStore(ttl time.Duration) *StateStore {
 		ttl = 10 * time.Minute
 	}
 	return &StateStore{items: make(map[string]stateEntry), ttl: ttl}
+}
+
+// NewRedisStateStore 创建使用 Redis 的 OAuth state 存储。
+func NewRedisStateStore(client *redis.Client, prefix string, ttl time.Duration) *StateStore {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	return &StateStore{redis: client, prefix: prefix, ttl: ttl}
+}
+
+type redisStateEntry struct {
+	Verifier string `json:"verifier"`
+	Provider string `json:"provider"`
+}
+
+func (s *StateStore) stateKey(state string) string {
+	return s.prefix + state
+}
+
+// SaveContext 保存 state；Redis 模式下使用 TTL 防止短期凭据残留。
+func (s *StateStore) SaveContext(ctx context.Context, state, provider, verifier string) error {
+	if s.redis == nil {
+		s.Save(state, provider, verifier)
+		return nil
+	}
+	payload, err := json.Marshal(redisStateEntry{Verifier: verifier, Provider: provider})
+	if err != nil {
+		return fmt.Errorf("marshal oauth state: %w", err)
+	}
+	if err := s.redis.Set(ctx, s.stateKey(state), payload, s.ttl).Err(); err != nil {
+		return fmt.Errorf("save oauth state: %w", err)
+	}
+	return nil
+}
+
+// ConsumeContext 原子地读取并删除 state，避免回调重放或多实例并发消费。
+func (s *StateStore) ConsumeContext(ctx context.Context, state string) (provider, verifier string, ok bool, err error) {
+	if s.redis == nil {
+		provider, verifier, ok = s.Consume(state)
+		return provider, verifier, ok, nil
+	}
+	value, err := s.redis.GetDel(ctx, s.stateKey(state)).Result()
+	if err == redis.Nil {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("consume oauth state: %w", err)
+	}
+	var entry redisStateEntry
+	if err := json.Unmarshal([]byte(value), &entry); err != nil {
+		return "", "", false, fmt.Errorf("decode oauth state: %w", err)
+	}
+	return entry.Provider, entry.Verifier, true, nil
 }
 
 // Save 保存 state -> (provider, pkce verifier)

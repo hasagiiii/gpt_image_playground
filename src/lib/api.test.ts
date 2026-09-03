@@ -551,6 +551,27 @@ describe('callImageApi', () => {
     })
   })
 
+  it('reads a revised prompt nested in a Responses image result', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'image_generation_call',
+        result: { b64_json: 'aW1hZ2U=', revised_prompt: '模型返回的提示词' },
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: '请求提示词',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.revisedPrompts).toEqual(['模型返回的提示词'])
+  })
+
   it('uses one Responses API request even when n is greater than 1', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       const callIndex = fetchMock.mock.calls.length

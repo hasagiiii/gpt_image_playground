@@ -27,13 +27,21 @@ type AuthService struct {
 	admin    config.AdminConfig
 }
 
+// ErrStateStore 表示 OAuth state 存储不可用，而不是用户提交了无效 state。
+var ErrStateStore = errors.New("oauth state store unavailable")
+
 // NewAuthService 构造 AuthService
 func NewAuthService(reg *auth.ProviderRegistry, users *database.UserRepository, jwtMgr *appjwt.Manager, admin config.AdminConfig) *AuthService {
+	return NewAuthServiceWithStateStore(reg, users, jwtMgr, admin, auth.NewStateStore(10*time.Minute))
+}
+
+// NewAuthServiceWithStateStore 构造 AuthService，并注入跨实例共享的 OAuth state 存储。
+func NewAuthServiceWithStateStore(reg *auth.ProviderRegistry, users *database.UserRepository, jwtMgr *appjwt.Manager, admin config.AdminConfig, states *auth.StateStore) *AuthService {
 	return &AuthService{
 		registry: reg,
 		users:    users,
 		jwtMgr:   jwtMgr,
-		states:   auth.NewStateStore(10 * time.Minute),
+		states:   states,
 		admin:    admin,
 	}
 }
@@ -59,6 +67,11 @@ type LoginInit struct {
 
 // InitiateLogin 生成 OIDC 授权 URL
 func (s *AuthService) InitiateLogin(providerName string) (*LoginInit, error) {
+	return s.InitiateLoginContext(context.Background(), providerName)
+}
+
+// InitiateLoginContext 生成授权 URL，并把 state/PKCE 暂存到共享存储。
+func (s *AuthService) InitiateLoginContext(ctx context.Context, providerName string) (*LoginInit, error) {
 	p, ok := s.registry.Get(providerName)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider: %s", providerName)
@@ -71,7 +84,9 @@ func (s *AuthService) InitiateLogin(providerName string) (*LoginInit, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.states.Save(state, providerName, pkce.Verifier)
+	if err := s.states.SaveContext(ctx, state, providerName, pkce.Verifier); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
 	return &LoginInit{
 		AuthURL: p.AuthCodeURL(state, pkce),
 		State:   state,
@@ -90,7 +105,10 @@ type CallbackResult struct {
 
 // HandleCallback 处理 OIDC 回调：交换 token、upsert 用户、签发 JWT
 func (s *AuthService) HandleCallback(ctx context.Context, providerName, state, code string) (*CallbackResult, error) {
-	storedProvider, verifier, ok := s.states.Consume(state)
+	storedProvider, verifier, ok, err := s.states.ConsumeContext(ctx, state)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStateStore, err)
+	}
 	if !ok {
 		return nil, errors.New("invalid or expired state")
 	}

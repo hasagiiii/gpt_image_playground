@@ -16,6 +16,7 @@
 
 - 框架：Gin + zerolog
 - 数据库：PostgreSQL
+- 状态存储：Redis（多实例部署共享 OAuth state；未配置时单实例回退内存）
 - 认证：OIDC Authorization Code + PKCE → JWT (access + refresh)
 - 配置：YAML（不再使用环境变量）
 
@@ -132,6 +133,12 @@ inner_api_rpc:
 file_api:
   developer_key: "dev_完整开发者密钥"
   timeout_seconds: 600
+
+redis:
+  addr: redis:6379
+  password: ""
+  db: 0
+  key_prefix: gpt-image-playground:oauth:state:
 ```
 
 对应的内部 API App 必须允许调用 `GetBalance`；使用素材库时还需授予 `materials:write` 权限。`inner_api_rpc` 未配置或当前用户没有 `account_id` 时，余额接口返回 `{"available":false}`，不会影响其它功能。`app_token` 与 `developer_key` 都只保存在后台配置中，不会返回前端。`developer_key` 必须填写创建时一次性展示的完整密钥，不能填写 `key_prefix`。
@@ -254,7 +261,7 @@ go test ./pkg/jwt -v    # 单包
 |---|---|
 | 前端登录页空白 | 后端 `/auth/providers` 返回了空数组，检查 `oidc.providers` 是否配置 |
 | 提供商页面报 `redirect_uri_mismatch` | OIDC 提供商注册的 redirect URI 与 config 不一致 |
-| 回调 401 `invalid or expired state` | state 暂存只存 10 分钟；或后端重启清空了内存 store |
+| 回调 401 `invalid or expired state` | state 默认只存 10 分钟；多实例部署需配置 Redis，否则登录与回调落到不同实例时会找不到 state |
 | 回调 401 `verify id_token: ...` | client_id / issuer 不匹配 |
 | 前端拿到 token 但 `/auth/user` 401 | 检查浏览器是否实际带了 `Authorization` 头；同源部署需通过 nginx 转发 |
 

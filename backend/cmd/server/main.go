@@ -15,6 +15,7 @@ import (
 	"github.com/gin-contrib/cors"
 	ginlogger "github.com/gin-contrib/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -32,6 +33,7 @@ import (
 const (
 	deletedProjectRetention       = 7 * 24 * time.Hour
 	deletedProjectCleanupInterval = time.Hour
+	oauthStateTTL                 = 10 * time.Minute
 )
 
 func startDeletedProjectCleanup(ctx context.Context, repo *database.ProjectRepository) {
@@ -104,14 +106,39 @@ func main() {
 		log.Fatal().Err(err).Msg("init oidc providers failed")
 	}
 
-	// 5. JWT manager / repo / service
+	// 5. JWT manager / repo / OAuth state store
 	jwtMgr := appjwt.NewManager(cfg.JWT)
 	userRepo := database.NewUserRepository(db)
 	projectRepo := database.NewProjectRepository(db)
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	defer cleanupCancel()
 	startDeletedProjectCleanup(cleanupCtx, projectRepo)
-	authSvc := services.NewAuthService(registry, userRepo, jwtMgr, cfg.Admin)
+	var redisClient *redis.Client
+	stateStore := auth.NewStateStore(oauthStateTTL)
+	if cfg.Redis.Enabled() {
+		redisClient = redis.NewClient(&redis.Options{
+			Addr:     cfg.Redis.Addr,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+		})
+		redisCtx, redisCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		redisErr := redisClient.Ping(redisCtx).Err()
+		redisCancel()
+		if redisErr != nil {
+			redisClient.Close()
+			log.Fatal().Err(redisErr).Str("addr", cfg.Redis.Addr).Msg("connect redis failed")
+		}
+		prefix := cfg.Redis.KeyPrefix
+		if prefix == "" {
+			prefix = "gpt-image-playground:oauth:state:"
+		}
+		stateStore = auth.NewRedisStateStore(redisClient, prefix, oauthStateTTL)
+		defer redisClient.Close()
+		log.Info().Str("addr", cfg.Redis.Addr).Str("key_prefix", prefix).Msg("oauth state store uses redis")
+	} else {
+		log.Warn().Msg("redis.addr 未配置，OAuth state 使用进程内存；多实例部署请配置 Redis")
+	}
+	authSvc := services.NewAuthServiceWithStateStore(registry, userRepo, jwtMgr, cfg.Admin, stateStore)
 
 	// 6. gin 引擎
 	if cfg.Server.Environment == "production" {

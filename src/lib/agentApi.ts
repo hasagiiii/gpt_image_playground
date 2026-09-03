@@ -444,6 +444,15 @@ function extractText(payload: ResponsesApiResponse) {
   return chunks.join('\n').trim()
 }
 
+function getRevisedPrompt(item: ResponsesOutputItem) {
+  if (typeof item.revised_prompt === 'string' && item.revised_prompt.trim()) return item.revised_prompt
+  const result = item.result
+  if (result && typeof result === 'object' && typeof result.revised_prompt === 'string' && result.revised_prompt.trim()) {
+    return result.revised_prompt
+  }
+  return undefined
+}
+
 function decodeXmlText(text: string) {
   return text.replace(/&(?:#(\d+)|#x([\da-fA-F]+)|amp|lt|gt|quot|apos);/g, (entity, decimal: string | undefined, hex: string | undefined) => {
     if (decimal) return String.fromCodePoint(Number(decimal))
@@ -480,7 +489,7 @@ function extractImages(payload: ResponsesApiResponse, fallbackMime: string): Age
         action: typeof item.action === 'string' ? item.action : undefined,
         dataUrl: normalizeBase64Image(result, fallbackMime),
         actualParams: pickActualParams(item),
-        revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+        revisedPrompt: getRevisedPrompt(item),
       })
       continue
     }
@@ -501,7 +510,7 @@ function extractImages(payload: ResponsesApiResponse, fallbackMime: string): Age
           action: typeof item.action === 'string' ? item.action : undefined,
           dataUrl: normalizeBase64Image(b64, fallbackMime),
           actualParams: pickActualParams(item),
-          revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+          revisedPrompt: getRevisedPrompt(item),
         })
       }
     }
@@ -534,7 +543,7 @@ function extractImageFromOutputItem(item: ResponsesOutputItem, fallbackMime: str
     action: typeof item.action === 'string' ? item.action : undefined,
     dataUrl: normalizeBase64Image(b64, fallbackMime),
     actualParams: pickActualParams(item),
-    revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+    revisedPrompt: getRevisedPrompt(item),
   }
 }
 

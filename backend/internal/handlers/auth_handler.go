@@ -54,8 +54,12 @@ func (h *AuthHandler) ListProviders(c *gin.Context) {
 // 直接 302 到 OIDC 提供商授权地址
 func (h *AuthHandler) Login(c *gin.Context) {
 	providerName := c.Param("provider")
-	init, err := h.svc.InitiateLogin(providerName)
+	init, err := h.svc.InitiateLoginContext(c.Request.Context(), providerName)
 	if err != nil {
+		if errors.Is(err, services.ErrStateStore) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "message": "oauth state store unavailable"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": err.Error()})
 		return
 	}
@@ -75,6 +79,10 @@ func (h *AuthHandler) Callback(c *gin.Context) {
 
 	result, err := h.svc.HandleCallback(c.Request.Context(), providerName, state, code)
 	if err != nil {
+		if errors.Is(err, services.ErrStateStore) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "message": "oauth state store unavailable"})
+			return
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": err.Error()})
 		return
 	}

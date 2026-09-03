@@ -266,7 +266,7 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
       results.push({
         image: normalizeBase64Image(b64, fallbackMime),
         actualParams: mergeActualParams(pickActualParams(item)),
-        revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+        revisedPrompt: getResponsesRevisedPrompt(item),
       })
     }
   }
@@ -296,6 +296,15 @@ function getResponsesImageResultBase64(result: ResponsesOutputItem['result']): s
     : ''
 
   return b64.trim() ? b64 : undefined
+}
+
+function getResponsesRevisedPrompt(item: ResponsesOutputItem) {
+  if (typeof item.revised_prompt === 'string' && item.revised_prompt.trim()) return item.revised_prompt
+  const result = item.result
+  if (result && typeof result === 'object' && typeof result.revised_prompt === 'string' && result.revised_prompt.trim()) {
+    return result.revised_prompt
+  }
+  return undefined
 }
 
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
