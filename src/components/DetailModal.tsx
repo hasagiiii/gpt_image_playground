@@ -6,6 +6,7 @@ import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
 import { formatImageRatio } from '../lib/size'
 import { formatActualCost } from '../lib/cost'
+import { formatDurationMs } from '../lib/formatDuration'
 import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
 import { copyImageSourceToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getTaskIds } from '../lib/taskIds'
@@ -361,16 +362,10 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
 
   const formatDuration = () => {
     if (task.status === 'running' || isFalReconnecting || isCustomReconnecting) {
-      const seconds = Math.max(0, Math.floor((now - task.createdAt) / 1000))
-      const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
-      const ss = String(seconds % 60).padStart(2, '0')
-      return `${mm}:${ss}`
+      return formatDurationMs(now - task.createdAt)
     }
     if (task.elapsed == null) return null
-    const seconds = Math.floor(task.elapsed / 1000)
-    const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
-    const ss = String(seconds % 60).padStart(2, '0')
-    return `${mm}:${ss}`
+    return formatDurationMs(task.elapsed)
   }
 
   const handleReuse = () => {

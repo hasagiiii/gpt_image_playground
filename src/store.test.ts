@@ -2349,6 +2349,73 @@ describe('image status recovery', () => {
     fetchMock.mockRestore()
   })
 
+  // 在线项目必须走项目后端轮询，直连供应商域名会被 CORS 拦且暴露 key
+  it('queries Agent round image status through the project backend for online projects', async () => {
+    const conversation = agentConversation({
+      id: 'agent-backend-status-conversation',
+      activeRoundId: 'agent-backend-status-round',
+      rounds: [{
+        id: 'agent-backend-status-round',
+        index: 1,
+        parentRoundId: null,
+        userMessageId: 'agent-backend-status-user',
+        assistantMessageId: 'agent-backend-status-assistant',
+        prompt: '生成图片',
+        inputImageIds: [],
+        outputTaskIds: ['agent-backend-status-task'],
+        imageStatusRequestIds: ['img_agent_backend'],
+        imageStatusApiProfileId: openAIProfile.id,
+        status: 'running',
+        error: null,
+        createdAt: Date.now(),
+        finishedAt: null,
+      }],
+      messages: [
+        { id: 'agent-backend-status-user', role: 'user', content: '生成图片', roundId: 'agent-backend-status-round', createdAt: Date.now() },
+        { id: 'agent-backend-status-assistant', role: 'assistant', content: '', roundId: 'agent-backend-status-round', createdAt: Date.now() },
+      ],
+    })
+    const runningTask = task({
+      id: 'agent-backend-status-task',
+      projectId: 'online-project',
+      apiProvider: 'openai',
+      apiProfileId: openAIProfile.id,
+      apiMode: 'responses',
+      apiOverride: { apiKey: 'oidc-key' },
+      status: 'running',
+      imageStatusRequestIds: ['img_agent_backend'],
+      createdAt: Date.now(),
+      finishedAt: null,
+      elapsed: null,
+      sourceMode: 'agent',
+      agentConversationId: conversation.id,
+      agentRoundId: 'agent-backend-status-round',
+      agentMessageId: 'agent-backend-status-assistant',
+    })
+    await putAgentConversation(conversation)
+    await putDbTask(runningTask)
+    await putProject({
+      id: 'online-project',
+      title: '在线项目',
+      initialPrompt: '',
+      storage: 'online',
+      remoteId: 'remote-online-project',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+    vi.mocked(queryImageStatuses).mockResolvedValue({
+      records: [{ requestId: 'img_agent_backend', status: 'running' }],
+      notFound: [],
+    })
+
+    await initStore()
+    await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(
+      expect.objectContaining({ id: openAIProfile.id }),
+      ['img_agent_backend'],
+      { viaBackend: true, requestId: 'frontend-request-id' },
+    ))
+  })
+
   it('keeps a tracked Agent round running and queries image status after refresh before a task exists', async () => {
     const conversation = agentConversation({
       id: 'agent-round-status-conversation',

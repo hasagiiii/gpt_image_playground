@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ProjectCanvasViewport } from '../types'
 import { clampCanvasScale, zoomCanvasViewport } from '../lib/projectCanvas'
+import { formatDurationMs } from '../lib/formatDuration'
 import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, ExportIcon, HomeIcon, ImageIcon, InfoIcon, LayersIcon, MapIcon, WarningIcon } from './icons'
 
 const CANVAS_ZOOM_CONTROLS_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-zoom-controls-collapsed'
@@ -26,12 +27,6 @@ export type CanvasControlLayer = {
 
 /** 订阅缩略图，返回取消订阅函数。由父组件注入，避免本组件依赖 store。 */
 export type CanvasControlsThumbnailSubscriber = (imageId: string, onChange: (dataUrl: string) => void) => () => void
-
-/** 与 TaskCard / DetailModal 保持一致的 mm:ss 耗时格式。 */
-function formatLayerElapsed(elapsed: number) {
-  const seconds = Math.max(0, Math.floor(elapsed / 1000))
-  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
-}
 
 const LAYER_TIME_FORMAT = new Intl.DateTimeFormat('zh-CN', {
   month: '2-digit',
@@ -303,8 +298,8 @@ export default function CanvasControls({
                           <span>{LAYER_TIME_FORMAT.format(layer.createdAt)}</span>
                           {/* 生成中的任务没有 elapsed，改用当前时间实时计时，与 TaskCard 一致。 */}
                           {layer.status === 'running'
-                            ? <span title="已生成">生成中 {formatLayerElapsed(now - layer.createdAt)}</span>
-                            : layer.elapsed != null && <span title="生成耗时">{formatLayerElapsed(layer.elapsed)}</span>}
+                            ? <span title="已生成">生成中 {formatDurationMs(now - layer.createdAt)}</span>
+                            : layer.elapsed != null && <span title="生成耗时">{formatDurationMs(layer.elapsed)}</span>}
                         </span>
                       )}
                     </span>

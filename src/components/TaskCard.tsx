@@ -3,6 +3,7 @@ import type { TaskRecord } from '../types'
 import { useStore, ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail, retryImage, retryTaskInPlace, redownloadTaskImage } from '../store'
 import { formatImageRatio } from '../lib/size'
 import { formatActualCost } from '../lib/cost'
+import { formatDurationMs } from '../lib/formatDuration'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
@@ -348,17 +349,11 @@ export default function TaskCard({
   }, [imageOverrides, task.outputImages])
 
   const duration = (() => {
-    let seconds: number
     if (task.status === 'running' || task.falRecoverable || task.customRecoverable) {
-      seconds = Math.floor((now - task.createdAt) / 1000)
-    } else if (task.elapsed != null) {
-      seconds = Math.floor(task.elapsed / 1000)
-    } else {
-      return '00:00'
+      return formatDurationMs(now - task.createdAt)
     }
-    const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
-    const ss = String(seconds % 60).padStart(2, '0')
-    return `${mm}:${ss}`
+    if (task.elapsed == null) return '00:00'
+    return formatDurationMs(task.elapsed)
   })()
   const showSwipeAction = swipeActionActive
   const isFalReconnecting = task.status === 'error' && task.falRecoverable

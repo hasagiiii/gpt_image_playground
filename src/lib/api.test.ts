@@ -8,6 +8,7 @@ describe('callImageApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
@@ -689,7 +690,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/images/generations',
+      '/api-proxy/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -716,7 +717,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/images/generations',
+      '/api-proxy/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -765,7 +766,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/custom/images',
+      '/api-proxy/custom/images',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -843,7 +844,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/images/generations',
+      '/api-proxy/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -870,8 +871,12 @@ describe('callImageApi', () => {
     expect((init as RequestInit).cache).toBe('no-store')
   })
 
+  // 该场景的前提是 dev 部署自身提供了代理配置，而非 VITE_API_PROXY_AVAILABLE。
+  // 需要同时 stub DEV 与注入的 __DEV_PROXY_CONFIG__，否则 isApiProxyAvailable 两条来源都为假。
   it('uses the same-origin API proxy when the current dev deployment provides one', async () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'false')
+    vi.stubEnv('DEV', true)
+    vi.stubGlobal('__DEV_PROXY_CONFIG__', { enabled: true, prefix: '/api-proxy', target: 'http://api.example.com' })
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       data: [{ b64_json: 'aW1hZ2U=' }],
     }), {
@@ -892,7 +897,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/images/generations',
+      '/api-proxy/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })

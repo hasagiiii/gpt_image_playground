@@ -13,11 +13,18 @@ describe('service worker fetch 缓存范围', () => {
         listeners.set(type, listener)
       }),
     }
+    const cache = {
+      match: vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))),
+      put: vi.fn(() => Promise.resolve()),
+      addAll: vi.fn(() => Promise.resolve()),
+      keys: vi.fn(() => Promise.resolve([])),
+      delete: vi.fn(() => Promise.resolve(true)),
+    }
     const cacheStorage = {
       match: vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))),
-      open: vi.fn(),
-      keys: vi.fn(),
-      delete: vi.fn(),
+      open: vi.fn(() => Promise.resolve(cache)),
+      keys: vi.fn(() => Promise.resolve([])),
+      delete: vi.fn(() => Promise.resolve(true)),
     }
 
     const source = readFileSync('public/sw.js', 'utf8')
@@ -65,5 +72,9 @@ describe('service worker fetch 缓存范围', () => {
     const assetRespondWith = vi.fn()
     handleFetch({ request: new Request('https://img.opentk.ai/assets/index-abc.js'), respondWith: assetRespondWith })
     expect(assetRespondWith).toHaveBeenCalledOnce()
+
+    // 必须限定 cacheName：全局 caches.match 会命中历史版本残留的 API 响应
+    expect(cacheStorage.match).not.toHaveBeenCalled()
+    expect(cacheStorage.open).toHaveBeenCalledWith(expect.stringContaining('gpt-image-playground-'))
   })
 })

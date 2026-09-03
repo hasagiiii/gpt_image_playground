@@ -2378,20 +2378,6 @@ async function flushAgentConversationsToIndexedDB() {
       lastStoredAgentConversations = conversations
       const currentState = useStore.getState()
       const affectedProjectIds = getChangedAgentConversationProjectIds(previousConversations, conversations, currentState.tasks)
-      console.warn('[同步诊断] 会话持久化触发同步检查', {
-        上次基准会话数: previousConversations.length,
-        当前会话数: conversations.length,
-        判定受影响项目: [...affectedProjectIds],
-        引用变化的会话: conversations
-          .filter((item) => !previousConversations.includes(item))
-          .map((item) => ({
-            id: item.id,
-            title: item.title,
-            updatedAt: item.updatedAt,
-            上次基准中存在: previousConversations.some((prev) => prev.id === item.id),
-          })),
-        调用栈: new Error().stack,
-      })
       if (onlineProjectCacheReady) {
         for (const projectId of affectedProjectIds) scheduleOnlineProjectSync(projectId)
       }
@@ -2452,12 +2438,6 @@ function queueOnlineTaskSync(task: TaskRecord) {
     const latestTask = state.tasks.find((item) => item.id === task.id) ?? task
     const latestProject = state.projects.find((item) => item.id === latestTask.projectId)
     if (latestProject?.storage !== 'online' || !latestProject.remoteId) return
-    console.warn('[同步诊断] 发起单任务同步(会刷新content_updated_at)', {
-      projectId: latestProject.id,
-      taskId: latestTask.id,
-      taskStatus: latestTask.status,
-      调用栈: new Error().stack,
-    })
     const response = await saveOnlineProjectTask(latestProject, getPersistableTask(latestTask))
     const current = useStore.getState().projects.find((item) => item.id === latestProject.id)
     if (!current) return
@@ -2545,11 +2525,6 @@ function queueOnlineProjectCanvasSync(project: Project) {
     const latest = useStore.getState().projects.find((item) => item.id === project.id)
     if (latest?.storage !== 'online' || !latest.remoteId || !latest.canvas) return
     const version = latest.contentVersion ?? 0
-    console.warn('[同步诊断] 发起画布同步(会刷新content_updated_at)', {
-      projectId: latest.id,
-      contentVersion: version,
-      调用栈: new Error().stack,
-    })
     const response = await saveOnlineProjectCanvas(latest, latest.canvas)
     const current = useStore.getState().projects.find((item) => item.id === latest.id)
     if (!current) return
@@ -2586,11 +2561,6 @@ function queueOnlineProjectViewportSync(project: Project) {
     const latest = useStore.getState().projects.find((item) => item.id === project.id)
     if (latest?.storage !== 'online' || !latest.remoteId || !latest.canvas) return
     const version = latest.contentVersion ?? 0
-    console.warn('[同步诊断] 发起视口同步(不应刷新content_updated_at)', {
-      projectId: latest.id,
-      contentVersion: version,
-      调用栈: new Error().stack,
-    })
     const response = await saveOnlineProjectViewport(latest, latest.canvas.viewport)
     const current = useStore.getState().projects.find((item) => item.id === latest.id)
     if (!current) return
@@ -2628,13 +2598,6 @@ function scheduleOnlineProjectSync(projectId: string, delay = 1200) {
   if (!onlineProjectCacheReady) return
   const project = useStore.getState().projects.find((item) => item.id === projectId)
   if (project?.storage !== 'online' || !project.remoteId) return
-  console.warn('[同步诊断] 排队全量同步', {
-    projectId,
-    delay,
-    syncPending: project.syncPending,
-    contentVersion: project.contentVersion,
-    调用栈: new Error().stack,
-  })
   if (!project.syncPending) {
     const pending = { ...project, syncPending: true }
     useStore.setState((state) => ({
@@ -2663,16 +2626,6 @@ function syncOnlineProject(projectId: string) {
     const current = useStore.getState().projects.find((item) => item.id === projectId)
     if (!current) return
     const changedWhileSyncing = (current.contentVersion ?? 0) !== version
-    console.warn('[同步诊断] 全量同步完成', {
-      projectId,
-      同步前版本: version,
-      同步后版本: current.contentVersion,
-      判定为同步期间又变更: changedWhileSyncing,
-      新syncPending: changedWhileSyncing,
-      归档大小: archive.size,
-      本次上传后服务端sha: response.archive_sha256,
-      上传前本地记录sha: current.remoteArchiveSha256,
-    })
     const updated: Project = {
       ...current,
       remoteArchiveSha256: response.archive_sha256,
@@ -2756,13 +2709,6 @@ function touchProject(id?: string, syncArchive = true) {
   const project = useStore.getState().projects.find((item) => item.id === id)
   if (!project) return
   const now = Date.now()
-  console.warn('[同步诊断] touchProject 推进内容版本', {
-    projectId: id,
-    syncArchive,
-    旧版本: project.contentVersion,
-    新版本: nextContentVersion(project),
-    调用栈: new Error().stack,
-  })
   const updated = {
     ...project,
     ...(project.storage === 'online' && syncArchive ? { syncPending: true } : {}),
@@ -3873,7 +3819,17 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
 
   const timedOut = Date.now() - round.createdAt >= Math.max(0, profile.timeout * 1000)
   try {
-    const result = await queryImageStatuses(profile, requestIds, { requestId })
+    // 在线项目走项目后端轮询，不直连供应商域名。取该 round 关联的任意任务判定，
+    // 同一 round 的任务共享项目与 API 配置。
+    const roundTask = getAgentRoundImageStatusTasks(conversationId, round)[0]
+      ?? useStore.getState().tasks.find((task) => task.agentConversationId === conversationId && task.agentRoundId === round.id)
+    const project = roundTask?.projectId
+      ? useStore.getState().projects.find((item) => item.id === roundTask.projectId)
+      : undefined
+    const viaBackend = project?.storage === 'online' && Boolean(project.remoteId) && (roundTask?.apiProvider ?? 'openai') === 'openai' && Boolean(roundTask?.apiOverride?.apiKey)
+    const result = viaBackend
+      ? await queryImageStatuses(profile, requestIds, { viaBackend: true, requestId })
+      : await queryImageStatuses(profile, requestIds, { requestId })
     const latestRound = useStore.getState().agentConversations
       .find((item) => item.id === conversationId)
       ?.rounds.find((item) => item.id === roundId)
@@ -4609,40 +4565,18 @@ async function initializeStore() {
     applyingProjectImageHistory = false
   }
   onlineProjectCacheReady = true
-  const pendingByFlag = projects.filter((project) => project.syncPending && isActiveProjectRecord(project.id)).map((project) => project.id)
-  const pendingByInterrupted = interruptedTasks.filter((task) => isActiveProjectRecord(task.projectId)).map((task) => task.projectId).filter((id): id is string => Boolean(id))
-  // 内容已完整载入内存才能重新打包，否则会把归档写空。
-  const pendingByOversized = oversizedProjectIds.filter((projectId) => isActiveProjectRecord(projectId) && projects.some((project) => project.id === projectId))
-  console.warn('[同步诊断] 启动同步来源', {
-    activeProjectId,
-    syncPending来源: pendingByFlag,
-    中断任务来源: pendingByInterrupted,
-    归档超大来源: pendingByOversized,
-    各项目状态: projects.map((project) => ({
-      id: project.id,
-      title: project.title,
-      storage: project.storage,
-      syncPending: project.syncPending,
-      contentVersion: project.contentVersion,
-      updatedAt: project.updatedAt,
-      contentUpdatedAt: project.contentUpdatedAt,
-    })),
-  })
-  const projectsToSync = new Set([...pendingByFlag, ...pendingByInterrupted, ...pendingByOversized])
+  const projectsToSync = new Set([
+    ...projects.filter((project) => project.syncPending && isActiveProjectRecord(project.id)).map((project) => project.id),
+    ...interruptedTasks.filter((task) => isActiveProjectRecord(task.projectId)).map((task) => task.projectId).filter((id): id is string => Boolean(id)),
+    // 内容已完整载入内存才能重新打包，否则会把归档写空。
+    ...oversizedProjectIds.filter((projectId) => isActiveProjectRecord(projectId) && projects.some((project) => project.id === projectId)),
+  ])
   for (const projectId of projectsToSync) scheduleOnlineProjectSync(projectId, 0)
   const recoveredAgentConversations = recoverAgentConversationsForImageStatus(useStore.getState().agentConversations, tasks)
   if (recoveredAgentConversations !== useStore.getState().agentConversations) {
-    const before = useStore.getState().agentConversations
-    console.warn('[同步诊断] recoverAgentConversationsForImageStatus 改写了会话', {
-      变化的会话: recoveredAgentConversations
-        .filter((item, idx) => item !== before[idx])
-        .map((item) => ({ id: item.id, title: item.title, 旧updatedAt: before.find((p) => p.id === item.id)?.updatedAt, 新updatedAt: item.updatedAt })),
-    })
     useStore.setState({ agentConversations: recoveredAgentConversations })
   }
-  console.warn('[同步诊断] 即将执行 syncAgentConversationsFromTerminalImageStatusTasks')
   syncAgentConversationsFromTerminalImageStatusTasks(tasks)
-  console.warn('[同步诊断] syncAgentConversationsFromTerminalImageStatusTasks 执行完毕')
   showSupportPromptForExistingLocalData(tasks)
   const agentRoundRequestIds = new Set(
     useStore.getState().agentConversations.flatMap((conversation) =>
@@ -4984,42 +4918,9 @@ function getActiveAgentConversation(): AgentConversation {
 
 function updateAgentConversation(conversationId: string, updater: (conversation: AgentConversation) => AgentConversation) {
   useStore.setState((state) => ({
-    agentConversations: state.agentConversations.map((conversation) => {
-      if (conversation.id !== conversationId) return conversation
-      const next = updater(conversation)
-      if (next !== conversation) {
-        const changedRounds = next.rounds.filter((round, idx) => round !== conversation.rounds[idx]).map((round) => {
-          const prev = conversation.rounds.find((item) => item.id === round.id)
-          const diff: Record<string, unknown> = {}
-          for (const key of Object.keys(round) as (keyof typeof round)[]) {
-            const a = prev?.[key]
-            const b = round[key]
-            const same = Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((v, i) => v === b[i]) : a === b
-            if (!same) diff[key as string] = { 旧: a, 新: b }
-          }
-          return { roundId: round.id, 差异: diff }
-        })
-        const changedMessages = next.messages.filter((message, idx) => message !== conversation.messages[idx]).map((message) => {
-          const prev = conversation.messages.find((item) => item.id === message.id)
-          return {
-            messageId: message.id,
-            内容是否变化: prev?.content !== message.content,
-            旧内容长度: prev?.content?.length,
-            新内容长度: message.content?.length,
-            outputTaskIds是否变化: JSON.stringify(prev?.outputTaskIds) !== JSON.stringify(message.outputTaskIds),
-          }
-        })
-        console.warn('[同步诊断] 会话被改写', {
-          conversationId,
-          旧updatedAt: conversation.updatedAt,
-          新updatedAt: next.updatedAt,
-          变化的rounds: changedRounds,
-          变化的messages: changedMessages,
-          调用栈: new Error().stack,
-        })
-      }
-      return next
-    }),
+    agentConversations: state.agentConversations.map((conversation) =>
+      conversation.id === conversationId ? updater(conversation) : conversation,
+    ),
   }))
 }
 
@@ -6226,6 +6127,11 @@ async function executeAgentRound(
         return existingTask.id
       }
 
+      // round 是闭包里的旧快照，requestId 是调用 API 前才写进 store 的，必须读最新值。
+      const latestRound = useStore.getState().agentConversations
+        .find((item) => item.id === conversationId)?.rounds
+        .find((item) => item.id === roundId)
+
       const task: TaskRecord = {
         id: genId(),
         requestId,
@@ -6252,6 +6158,10 @@ async function executeAgentRound(
         agentMessageId: assistantMessageId,
         agentToolCallId: toolCallId,
         ...(options.agentBatchCallId ? { agentBatchCallId: options.agentBatchCallId } : {}),
+        // 主请求的 imageStatusRequestId 在调用前就落到了 round 上，那时 task 还不存在。
+        // 这里必须继承，否则恢复判定找不到对应 task，会误认为图片没拿到而去查
+        // status 接口，并为查不到的 requestId 新建一个失败任务。
+        ...(latestRound?.imageStatusRequestIds?.length ? { imageStatusRequestIds: [...latestRound.imageStatusRequestIds] } : {}),
       }
 
       taskIdByToolCallId.set(toolCallId, task.id)

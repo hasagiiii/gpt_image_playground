@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpt-image-playground-v0.6.34-asset-mime-guard-v1'
+const CACHE_NAME = 'gpt-image-playground-v0.6.34-scoped-match-v1'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './logo.png']
 const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href))
 const ASSETS_PATH = new URL('./assets/', self.registration.scope).pathname
@@ -16,7 +16,17 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
+      Promise.all(keys.map(async (key) => {
+        // 单个删除失败不应中断其余清理，否则旧 cache 会一直残留。
+        if (key !== CACHE_NAME) return caches.delete(key).catch(() => false)
+        // 历史版本缓存过带用户身份的 API 响应，而 caches.match 会遍历全部 cache，
+        // 残留条目会让接口一直读到陈旧数据，这里显式清掉。
+        const cache = await caches.open(key)
+        const requests = await cache.keys()
+        return Promise.all(requests
+          .filter((request) => new URL(request.url).pathname.includes('/api/'))
+          .map((request) => cache.delete(request).catch(() => false)))
+      })),
     ),
   )
   self.clients.claim()
@@ -49,7 +59,7 @@ self.addEventListener('fetch', (event) => {
           }
           return response
         })
-        .catch(() => caches.match('./index.html')),
+        .catch(() => caches.open(CACHE_NAME).then((cache) => cache.match('./index.html'))),
     )
     return
   }
@@ -60,7 +70,9 @@ self.addEventListener('fetch', (event) => {
   const isAsset = url.pathname.startsWith(ASSETS_PATH)
 
   event.respondWith(
-    caches.match(request).then((cached) => {
+    // 必须限定 cacheName：caches.match 不指定时会遍历全部 cache，
+    // 历史版本残留的条目（含 API 响应）会被错误命中。
+    caches.open(CACHE_NAME).then((cache) => cache.match(request).then((cached) => {
       // 历史版本把 SPA fallback 的 HTML 按 asset URL 缓存过，这类条目会让
       // 浏览器 MIME 校验失败且永不失效，命中即视为无效并回源。
       if (cached && !(isAsset && isHtmlResponse(cached))) return cached
@@ -69,12 +81,11 @@ self.addEventListener('fetch', (event) => {
         // 206 等非完整响应无法写入 Cache，只缓存 200。
         // asset 请求拿到 HTML 说明服务端走了 SPA fallback，绝不能缓存。
         if (response.status === 200 && !(isAsset && isHtmlResponse(response))) {
-          const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
+          cache.put(request, response.clone())
         }
         return response
       })
-    }),
+    })),
   )
 })
 
