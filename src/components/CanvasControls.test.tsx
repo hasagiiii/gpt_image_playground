@@ -14,6 +14,9 @@ const layers: CanvasControlLayer[] = [{
   width: 512,
   height: 512,
   z: 1,
+  createdAt: Date.parse('2026-09-03T10:20:00+08:00'),
+  elapsed: 95_000,
+  thumbnailSrc: 'data:image/png;base64,AAECAw==',
 }]
 
 describe('CanvasControls', () => {
@@ -78,5 +81,15 @@ describe('CanvasControls', () => {
     act(() => layer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })))
 
     expect(host.querySelector('[aria-label="图层名称"]')).toBeNull()
+  })
+
+  it('图层列表展示缩略图、创建时间与耗时', async () => {
+    await renderControls()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="图层"]')!.click())
+
+    const panel = host.querySelector<HTMLElement>('[data-canvas-layers-panel]')!
+    expect(panel.querySelector('img')?.getAttribute('src')).toBe(layers[0].thumbnailSrc)
+    expect(panel.textContent).toContain('01:35')
+    expect(panel.textContent).toMatch(/09\/03|09-03/)
   })
 })

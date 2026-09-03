@@ -289,6 +289,10 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
     width: node.item.width,
     height: getCanvasItemHeight(node.item, node.ratio),
     z: node.item.z,
+    createdAt: node.task?.createdAt,
+    elapsed: node.task?.elapsed,
+    // 只读画布没有本地图片库，直接用随归档下载的图片地址。
+    thumbnailSrc: node.image?.dataUrl,
   })), [nodes])
 
   const focusCanvasImage = (imageId: string) => {

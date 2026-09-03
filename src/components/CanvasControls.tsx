@@ -14,6 +14,67 @@ export type CanvasControlLayer = {
   width: number
   height: number
   z: number
+  /** 生成任务创建时间（ms） */
+  createdAt?: number
+  /** 生成耗时（ms） */
+  elapsed?: number | null
+  /** 用于取缩略图的 image store id；只读画布没有本地库时改用 thumbnailSrc */
+  imageId?: string
+  /** 直接可用的预览地址，优先于 imageId */
+  thumbnailSrc?: string
+}
+
+/** 订阅缩略图，返回取消订阅函数。由父组件注入，避免本组件依赖 store。 */
+export type CanvasControlsThumbnailSubscriber = (imageId: string, onChange: (dataUrl: string) => void) => () => void
+
+/** 与 TaskCard / DetailModal 保持一致的 mm:ss 耗时格式。 */
+function formatLayerElapsed(elapsed: number) {
+  const seconds = Math.max(0, Math.floor(elapsed / 1000))
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+const LAYER_TIME_FORMAT = new Intl.DateTimeFormat('zh-CN', {
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+})
+
+function LayerThumbnail({ layer, subscribeThumbnail }: {
+  layer: CanvasControlLayer
+  subscribeThumbnail?: CanvasControlsThumbnailSubscriber
+}) {
+  const [src, setSrc] = useState(layer.thumbnailSrc ?? '')
+
+  useEffect(() => {
+    if (layer.thumbnailSrc) {
+      setSrc(layer.thumbnailSrc)
+      return
+    }
+    if (!layer.imageId || !subscribeThumbnail) {
+      setSrc('')
+      return
+    }
+    let cancelled = false
+    const unsubscribe = subscribeThumbnail(layer.imageId, (dataUrl) => {
+      if (!cancelled) setSrc(dataUrl)
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [layer.imageId, layer.thumbnailSrc, subscribeThumbnail])
+
+  return (
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-100 dark:border-white/[0.08] dark:bg-white/[0.04]">
+      {src
+        ? <img src={src} alt="" className="h-full w-full object-cover" />
+        : layer.status === 'error'
+          ? <WarningIcon className="h-4 w-4 text-red-500" />
+          : <ImageIcon className="h-4 w-4 text-gray-400 dark:text-gray-500" />}
+    </span>
+  )
 }
 
 export default function CanvasControls({
@@ -27,6 +88,7 @@ export default function CanvasControls({
   onViewportChange,
   onFocusLayer,
   onRenameLayer,
+  subscribeThumbnail,
 }: {
   viewport: ProjectCanvasViewport
   containerSize: { width: number; height: number }
@@ -38,6 +100,7 @@ export default function CanvasControls({
   onViewportChange: (viewport: ProjectCanvasViewport) => void
   onFocusLayer: (id: string) => void
   onRenameLayer?: (id: string, name: string) => boolean
+  subscribeThumbnail?: CanvasControlsThumbnailSubscriber
 }) {
   const controlsRef = useRef<HTMLDivElement>(null)
   const zoomInputRef = useRef<HTMLInputElement>(null)
@@ -58,6 +121,16 @@ export default function CanvasControls({
       return false
     }
   })
+  const [now, setNow] = useState(() => Date.now())
+
+  const hasRunningLayer = layers.some((layer) => layer.status === 'running')
+  useEffect(() => {
+    // 仅在面板展开且存在生成中的图层时计时，避免常驻定时器。
+    if (collapsed || !layersOpen || !hasRunningLayer) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [collapsed, hasRunningLayer, layersOpen])
 
   const minimap = useMemo(() => {
     if (layers.length === 0) return null
@@ -178,7 +251,7 @@ export default function CanvasControls({
       {!collapsed && layersOpen && (
         <div
           data-canvas-layers-panel
-          className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-md border border-gray-200 bg-white/95 p-2 text-xs shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
+          className="absolute bottom-full right-0 mb-2 w-64 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-md border border-gray-200 bg-white/95 p-2 text-xs shadow-lg backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/95"
           onPointerDown={(event) => event.stopPropagation()}
           onWheel={(event) => {
             event.stopPropagation()
@@ -187,7 +260,7 @@ export default function CanvasControls({
           }}
         >
           <div className="mb-1.5 font-medium text-gray-800 dark:text-gray-100">图层</div>
-          <div data-canvas-scrollable className="max-h-64 overflow-y-auto overscroll-contain">
+          <div data-canvas-scrollable className="max-h-96 overflow-y-auto overscroll-contain">
             {[...layers].sort((a, b) => b.z - a.z).map((layer) => (
               <div key={layer.id} className={`flex w-full items-center gap-2 rounded px-2 py-1.5 transition ${layer.id === selectedLayerId ? 'bg-[#3f78c5]/12 text-[#3f78c5]' : 'text-gray-700 dark:text-gray-200'}`}>
                 {editingLayerId === layer.id && !readOnly && onRenameLayer ? (
@@ -222,8 +295,19 @@ export default function CanvasControls({
                       setEditingLayerId(layer.id)
                     } : undefined}
                   >
-                    {layer.status === 'error' ? <WarningIcon className="h-4 w-4 shrink-0 text-red-500" /> : <ImageIcon className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500" />}
-                    <span className="min-w-0 flex-1 truncate">{layer.label}</span>
+                    <LayerThumbnail layer={layer} subscribeThumbnail={subscribeThumbnail} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{layer.label}</span>
+                      {layer.createdAt != null && (
+                        <span className="mt-0.5 flex items-center gap-1.5 text-[10px] font-normal tabular-nums text-gray-400 dark:text-gray-500">
+                          <span>{LAYER_TIME_FORMAT.format(layer.createdAt)}</span>
+                          {/* 生成中的任务没有 elapsed，改用当前时间实时计时，与 TaskCard 一致。 */}
+                          {layer.status === 'running'
+                            ? <span title="已生成">生成中 {formatLayerElapsed(now - layer.createdAt)}</span>
+                            : layer.elapsed != null && <span title="生成耗时">{formatLayerElapsed(layer.elapsed)}</span>}
+                        </span>
+                      )}
+                    </span>
                   </button>
                 )}
                 <span className="shrink-0 tabular-nums text-[10px] text-gray-400">z{Math.round(layer.z)}</span>

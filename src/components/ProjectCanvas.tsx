@@ -38,7 +38,7 @@ import { uploadMaterialImage } from '../lib/materialApi'
 import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
 import { TooltipButton } from './TooltipButton'
 import CanvasReferenceConnections from './CanvasReferenceConnections'
-import CanvasControls, { type CanvasControlLayer } from './CanvasControls'
+import CanvasControls, { type CanvasControlLayer, type CanvasControlsThumbnailSubscriber } from './CanvasControls'
 import SearchBar from './SearchBar'
 import {
   AlignCenterHorizontalIcon,
@@ -1444,8 +1444,21 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       width: item.width,
       height,
       z: item.z,
+      createdAt: node.task.createdAt,
+      elapsed: node.task.elapsed,
+      imageId: node.imageId,
+      thumbnailSrc: node.previewSrc,
     }]
   }), [nodeItems, nodes, ratios])
+
+  // 由本组件注入，使 CanvasControls 保持不依赖 store 的纯展示组件。
+  const subscribeLayerThumbnail = useMemo<CanvasControlsThumbnailSubscriber>(() => (imageId, onChange) => {
+    const unsubscribe = subscribeImageThumbnail(imageId, (thumbnail) => onChange(thumbnail.dataUrl))
+    void ensureImageThumbnailCached(imageId).then((thumbnail) => {
+      if (thumbnail) onChange(thumbnail.dataUrl)
+    }).catch(() => undefined)
+    return unsubscribe
+  }, [])
 
   const canvasConnections = useMemo<CanvasConnection[]>(() => {
     const nodesByImageId = new Map(nodes.flatMap((node) => node.imageId ? [[node.imageId, node] as const] : []))
@@ -2691,6 +2704,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         onViewportChange={setViewport}
         onFocusLayer={focusCanvasImage}
         onRenameLayer={handleRenameImage}
+        subscribeThumbnail={subscribeLayerThumbnail}
       />
       {marquee && <div className="pointer-events-none absolute z-30 border border-[#3f78c5]/70 bg-[#3f78c5]/15" style={{ left: Math.min(marquee.start.x, marquee.current.x), top: Math.min(marquee.start.y, marquee.current.y), width: Math.abs(marquee.current.x - marquee.start.x), height: Math.abs(marquee.current.y - marquee.start.y) }} />}
     </div>
