@@ -52,7 +52,7 @@ func (r *UserRepository) List(ctx context.Context) ([]models.User, error) {
 		SELECT u.id, u.oidc_provider, u.oidc_sub, COALESCE(u.email,''), COALESCE(u.name,''),
 		       COALESCE(picture_url,''), COALESCE(raw_claims,'{}'::jsonb),
 		       u.created_at, u.updated_at, u.last_login_at,
-		       (SELECT MAX(p.updated_at) FROM online_projects p
+		       (SELECT MAX(p.content_updated_at) FROM online_projects p
 		        WHERE p.user_id = u.id AND p.deleted_at IS NULL)
 		FROM users u
 		ORDER BY u.last_login_at DESC NULLS LAST, u.created_at DESC, u.id`

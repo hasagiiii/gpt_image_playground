@@ -4,14 +4,15 @@ import "time"
 
 // OnlineProject 表示用户上传到服务端的项目归档。
 type OnlineProject struct {
-	ID            string    `json:"id"`
-	UserID        string    `json:"-"`
-	Title         string    `json:"title"`
-	ArchiveSize   int64     `json:"archive_size"`
-	ArchiveSHA256 string    `json:"archive_sha256"`
-	ImageCount    int64     `json:"image_count"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	UserID           string    `json:"-"`
+	Title            string    `json:"title"`
+	ArchiveSize      int64     `json:"archive_size"`
+	ArchiveSHA256    string    `json:"archive_sha256"`
+	ImageCount       int64     `json:"image_count"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	ContentUpdatedAt time.Time `json:"content_updated_at"`
 }
 
 // ProjectImage 表示在线项目中独立持久化的一张图片。

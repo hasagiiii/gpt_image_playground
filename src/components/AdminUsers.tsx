@@ -64,6 +64,7 @@ export default function AdminUsers() {
   const [projectsLoading, setProjectsLoading] = useState(Boolean(initialSelection.userId))
   const [viewerLoading, setViewerLoading] = useState(Boolean(initialSelection.projectId))
   const [viewerError, setViewerError] = useState<string | null>(null)
+  const [projectsError, setProjectsError] = useState<string | null>(null)
   const selectedUser = useMemo(() => users.find((item) => item.id === selectedUserId), [selectedUserId, users])
 
   useEffect(() => {
@@ -97,18 +98,22 @@ export default function AdminUsers() {
 
     let cancelled = false
     setProjects([])
+    setProjectsError(null)
     setProjectsLoading(true)
     void listAdminUserProjects(selectedUserId)
       .then((nextProjects) => {
         if (cancelled) return
-        setProjects([...nextProjects].sort((a, b) => (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0)))
-        setProjectsLoading(false)
+        setProjects([...nextProjects].sort((a, b) => (Date.parse(b.content_updated_at ?? b.updated_at) || 0) - (Date.parse(a.content_updated_at ?? a.updated_at) || 0)))
       })
       .catch((error) => {
         if (cancelled) return
         setProjects([])
-        setProjectsLoading(false)
-        showToast(error instanceof Error ? error.message : '用户画布列表加载失败', 'error')
+        const message = error instanceof Error ? error.message : '用户画布列表加载失败'
+        setProjectsError(message)
+        showToast(message, 'error')
+      })
+      .finally(() => {
+        if (!cancelled) setProjectsLoading(false)
       })
 
     return () => {
@@ -128,7 +133,8 @@ export default function AdminUsers() {
       setViewer(null)
       if (projectsLoading) return
       setViewerLoading(false)
-      setViewerError('找不到该用户画布')
+      // 列表加载失败时同样查不到项目，此时不能报“找不到”，否则会把网络错误说成项目不存在。
+      setViewerError(projectsError ? `用户画布列表加载失败：${projectsError}` : '找不到该用户画布')
       return
     }
 
@@ -204,7 +210,7 @@ export default function AdminUsers() {
     return () => {
       cancelled = true
     }
-  }, [projects, projectsLoading, selectedProjectId, selectedUserId, showToast])
+  }, [projects, projectsError, projectsLoading, selectedProjectId, selectedUserId, showToast])
 
   if (!user?.is_admin) return <div className="p-6 text-sm text-gray-500">无权访问</div>
 
@@ -246,7 +252,7 @@ export default function AdminUsers() {
   }
 
   if (viewer) return <AdminCanvasViewer project={viewer.project} tasks={viewer.tasks} agentConversations={viewer.agentConversations} images={viewer.images} onBack={showUserProjects} />
-  if (selectedProjectId) return <AdminCanvasLoading title={projects.find((project) => project.id === selectedProjectId)?.title} error={viewerLoading || projectsLoading ? null : viewerError} onBack={showUserProjects} />
+  if (selectedProjectId) return <AdminCanvasLoading title={projects.find((project) => project.id === selectedProjectId)?.title} error={viewerError} onBack={showUserProjects} />
 
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-gray-50 p-4 sm:p-6 dark:bg-gray-950">
@@ -270,7 +276,7 @@ export default function AdminUsers() {
             </section>
             <section className="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-white/[0.08] dark:bg-gray-900">
               <div className="border-b border-gray-200 px-4 py-3 text-sm text-gray-500 dark:border-white/[0.08]">用户画布 · {projects.length} 个项目</div>
-              {projectsLoading ? <div className="p-6 text-sm text-gray-500">加载中...</div> : projects.length === 0 ? <div className="p-6 text-sm text-gray-500">该用户暂无在线画布</div> : <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">{projects.map((project) => <button key={project.id} type="button" onClick={() => selectProject(project)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/[0.04]"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{project.title || '未命名画布'}</span><span className="block truncate text-xs text-gray-500">更新于 {formatDate(project.updated_at)}</span></span><span className="flex shrink-0 flex-col items-end text-xs text-gray-400"><span>{project.image_count ?? 0} 个作品</span><span>{(project.archive_size / 1024 / 1024).toFixed(1)} MB</span></span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" /></button>)}</div>}
+              {projectsLoading ? <div className="p-6 text-sm text-gray-500">加载中...</div> : projects.length === 0 ? <div className="p-6 text-sm text-gray-500">该用户暂无在线画布</div> : <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">{projects.map((project) => <button key={project.id} type="button" onClick={() => selectProject(project)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/[0.04]"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{project.title || '未命名画布'}</span><span className="block truncate text-xs text-gray-500">更新于 {formatDate(project.content_updated_at ?? project.updated_at)}</span></span><span className="flex shrink-0 flex-col items-end text-xs text-gray-400"><span>{project.image_count ?? 0} 个作品</span><span>{(project.archive_size / 1024 / 1024).toFixed(1)} MB</span></span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" /></button>)}</div>}
               {viewerLoading && <div className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-white/[0.06]">正在读取画布...</div>}
               {selectedProjectId && viewerLoading === false && !viewer && <div className="hidden" />}
             </section>

@@ -57,11 +57,11 @@ func (r *ProjectRepository) SaveTaskRecord(ctx context.Context, userID, id, titl
 	var saved models.OnlineProject
 	err = tx.QueryRowContext(ctx, `
 		UPDATE online_projects
-		SET title = $3, archive = $4, archive_size = $5, archive_sha256 = $6, updated_at = NOW()
+		SET title = $3, archive = $4, archive_size = $5, archive_sha256 = $6, updated_at = NOW(), content_updated_at = NOW()
 		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at`,
+		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at, content_updated_at`,
 		id, userID, title, archive, len(archive), hex.EncodeToString(digest[:]),
-	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt)
+	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt, &saved.ContentUpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("save project task record: %w", err)
 	}
@@ -96,11 +96,11 @@ func (r *ProjectRepository) SaveCanvas(ctx context.Context, userID, id string, c
 	var saved models.OnlineProject
 	err = tx.QueryRowContext(ctx, `
 		UPDATE online_projects
-		SET archive = $3, archive_size = $4, archive_sha256 = $5, updated_at = NOW()
+		SET archive = $3, archive_size = $4, archive_sha256 = $5, updated_at = NOW(), content_updated_at = NOW()
 		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at`,
+		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at, content_updated_at`,
 		id, userID, archive, len(archive), hex.EncodeToString(digest[:]),
-	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt)
+	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt, &saved.ContentUpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("save project canvas: %w", err)
 	}
@@ -137,9 +137,9 @@ func (r *ProjectRepository) SaveCanvasViewport(ctx context.Context, userID, id s
 		UPDATE online_projects
 		SET archive = $3, archive_size = $4, archive_sha256 = $5, updated_at = NOW()
 		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at`,
+		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at, content_updated_at`,
 		id, userID, archive, len(archive), hex.EncodeToString(digest[:]),
-	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt)
+	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt, &saved.ContentUpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("save project canvas viewport: %w", err)
 	}
@@ -174,11 +174,11 @@ func (r *ProjectRepository) DeleteTaskRecord(ctx context.Context, userID, id, ta
 	var saved models.OnlineProject
 	err = tx.QueryRowContext(ctx, `
 		UPDATE online_projects
-		SET archive = $3, archive_size = $4, archive_sha256 = $5, updated_at = NOW()
+		SET archive = $3, archive_size = $4, archive_sha256 = $5, updated_at = NOW(), content_updated_at = NOW()
 		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at`,
+		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at, content_updated_at`,
 		id, userID, archive, len(archive), hex.EncodeToString(digest[:]),
-	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt)
+	).Scan(&saved.ID, &saved.UserID, &saved.Title, &saved.ArchiveSize, &saved.ArchiveSHA256, &saved.CreatedAt, &saved.UpdatedAt, &saved.ContentUpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("delete project task record: %w", err)
 	}
@@ -222,9 +222,10 @@ func (r *ProjectRepository) Save(ctx context.Context, userID, id, title string, 
 			archive = EXCLUDED.archive,
 			archive_size = EXCLUDED.archive_size,
 			archive_sha256 = EXCLUDED.archive_sha256,
-			updated_at = NOW()
+			updated_at = NOW(),
+			content_updated_at = NOW()
 		WHERE online_projects.user_id = EXCLUDED.user_id AND online_projects.deleted_at IS NULL
-		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at`
+		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at, content_updated_at`
 	var project models.OnlineProject
 	err := r.db.QueryRowContext(ctx, q, id, userID, title, archive, len(archive), sha256).Scan(
 		&project.ID,
@@ -234,6 +235,7 @@ func (r *ProjectRepository) Save(ctx context.Context, userID, id, title string, 
 		&project.ArchiveSHA256,
 		&project.CreatedAt,
 		&project.UpdatedAt,
+		&project.ContentUpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrProjectForbidden
@@ -247,11 +249,11 @@ func (r *ProjectRepository) Save(ctx context.Context, userID, id, title string, 
 // List 返回用户的项目元数据，不读取归档字段。
 func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.OnlineProject, error) {
 	const q = `
-		SELECT p.id, p.user_id, p.title, p.archive_size, p.archive_sha256, p.created_at, p.updated_at,
+		SELECT p.id, p.user_id, p.title, p.archive_size, p.archive_sha256, p.created_at, p.updated_at, p.content_updated_at,
 		       (SELECT COUNT(*) FROM project_images i WHERE i.project_id = p.id)
 		FROM online_projects p
 		WHERE p.user_id = $1 AND p.deleted_at IS NULL
-		ORDER BY p.updated_at DESC`
+		ORDER BY p.content_updated_at DESC`
 	rows, err := r.db.QueryContext(ctx, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list online projects: %w", err)
@@ -269,6 +271,7 @@ func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.O
 			&project.ArchiveSHA256,
 			&project.CreatedAt,
 			&project.UpdatedAt,
+			&project.ContentUpdatedAt,
 			&project.ImageCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan online project: %w", err)
@@ -284,7 +287,7 @@ func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.O
 // Get 返回当前用户的项目元数据和归档。
 func (r *ProjectRepository) Get(ctx context.Context, userID, id string) (*models.OnlineProject, []byte, error) {
 	const q = `
-		SELECT id, user_id, title, archive_size, archive_sha256, created_at, updated_at, archive
+		SELECT id, user_id, title, archive_size, archive_sha256, created_at, updated_at, content_updated_at, archive
 		FROM online_projects
 		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`
 	var project models.OnlineProject
@@ -297,6 +300,7 @@ func (r *ProjectRepository) Get(ctx context.Context, userID, id string) (*models
 		&project.ArchiveSHA256,
 		&project.CreatedAt,
 		&project.UpdatedAt,
+		&project.ContentUpdatedAt,
 		&archive,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -325,9 +329,9 @@ func (r *ProjectRepository) GetCanvas(ctx context.Context, userID, id string) (*
 func (r *ProjectRepository) Rename(ctx context.Context, userID, id, title string) (*models.OnlineProject, error) {
 	const q = `
 		UPDATE online_projects
-		SET title = $3, updated_at = NOW()
+		SET title = $3, updated_at = NOW(), content_updated_at = NOW()
 		WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at`
+		RETURNING id, user_id, title, archive_size, archive_sha256, created_at, updated_at, content_updated_at`
 	var project models.OnlineProject
 	err := r.db.QueryRowContext(ctx, q, id, userID, title).Scan(
 		&project.ID,
@@ -337,6 +341,7 @@ func (r *ProjectRepository) Rename(ctx context.Context, userID, id, title string
 		&project.ArchiveSHA256,
 		&project.CreatedAt,
 		&project.UpdatedAt,
+		&project.ContentUpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrProjectForbidden
