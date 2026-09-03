@@ -135,10 +135,11 @@ file_api:
   timeout_seconds: 600
 
 redis:
-  addr: redis:6379
+  host: redis
+  port: 6379
   password: ""
   db: 0
-  key_prefix: gpt-image-playground:oauth:state:
+  key_prefix: gpt-image-playground:
 ```
 
 对应的内部 API App 必须允许调用 `GetBalance`；使用素材库时还需授予 `materials:write` 权限。`inner_api_rpc` 未配置或当前用户没有 `account_id` 时，余额接口返回 `{"available":false}`，不会影响其它功能。`app_token` 与 `developer_key` 都只保存在后台配置中，不会返回前端。`developer_key` 必须填写创建时一次性展示的完整密钥，不能填写 `key_prefix`。

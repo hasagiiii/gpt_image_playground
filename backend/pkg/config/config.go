@@ -3,9 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/goccy/go-yaml"
@@ -189,14 +191,22 @@ type DatabaseConfig struct {
 
 // RedisConfig 配置跨实例共享的短期状态存储（OAuth state 等）。
 type RedisConfig struct {
-	Addr      string `yaml:"addr"`
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
 	Password  string `yaml:"password"`
 	DB        int    `yaml:"db"`
 	KeyPrefix string `yaml:"key_prefix"`
 }
 
 func (c RedisConfig) Enabled() bool {
-	return strings.TrimSpace(c.Addr) != ""
+	return strings.TrimSpace(c.Host) != "" && c.Port > 0
+}
+
+func (c RedisConfig) Address() string {
+	if !c.Enabled() {
+		return ""
+	}
+	return net.JoinHostPort(strings.TrimSpace(c.Host), strconv.Itoa(c.Port))
 }
 
 // JWTConfig JWT配置
@@ -326,6 +336,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Database.Port == 0 {
 		c.Database.Port = 5432
+	}
+	if c.Redis.Port == 0 {
+		c.Redis.Port = 6379
+	}
+	if strings.TrimSpace(c.Redis.KeyPrefix) == "" {
+		c.Redis.KeyPrefix = "gpt-image-playground:"
 	}
 	if c.Database.SSLMode == "" {
 		c.Database.SSLMode = "disable"

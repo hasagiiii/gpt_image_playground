@@ -29,10 +29,11 @@ database:
 # 多实例部署必须配置 Redis，用于共享 OAuth state 和 PKCE verifier。
 # 留空时仅适用于单实例本地开发。
 redis:
-  addr: localhost:6379
+  host: localhost
+  port: 6379
   password: ""
   db: 0
-  key_prefix: gpt-image-playground:oauth:state:
+  key_prefix: gpt-image-playground:
 
 jwt:
   secret_key: change-me-to-a-long-random-secret

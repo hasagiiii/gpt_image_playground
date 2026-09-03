@@ -316,6 +316,16 @@ type StateStore struct {
 	prefix string
 }
 
+const oauthStateKeyPrefix = "oauth:state:"
+
+func buildOAuthStateKeyPrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix != "" && !strings.HasSuffix(prefix, ":") {
+		prefix += ":"
+	}
+	return prefix + oauthStateKeyPrefix
+}
+
 type stateEntry struct {
 	verifier  string
 	provider  string
@@ -335,7 +345,7 @@ func NewRedisStateStore(client *redis.Client, prefix string, ttl time.Duration) 
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
-	return &StateStore{redis: client, prefix: prefix, ttl: ttl}
+	return &StateStore{redis: client, prefix: buildOAuthStateKeyPrefix(prefix), ttl: ttl}
 }
 
 type redisStateEntry struct {

@@ -117,7 +117,7 @@ func main() {
 	stateStore := auth.NewStateStore(oauthStateTTL)
 	if cfg.Redis.Enabled() {
 		redisClient = redis.NewClient(&redis.Options{
-			Addr:     cfg.Redis.Addr,
+			Addr:     cfg.Redis.Address(),
 			Password: cfg.Redis.Password,
 			DB:       cfg.Redis.DB,
 		})
@@ -126,17 +126,14 @@ func main() {
 		redisCancel()
 		if redisErr != nil {
 			redisClient.Close()
-			log.Fatal().Err(redisErr).Str("addr", cfg.Redis.Addr).Msg("connect redis failed")
+			log.Fatal().Err(redisErr).Str("addr", cfg.Redis.Address()).Msg("connect redis failed")
 		}
 		prefix := cfg.Redis.KeyPrefix
-		if prefix == "" {
-			prefix = "gpt-image-playground:oauth:state:"
-		}
 		stateStore = auth.NewRedisStateStore(redisClient, prefix, oauthStateTTL)
 		defer redisClient.Close()
-		log.Info().Str("addr", cfg.Redis.Addr).Str("key_prefix", prefix).Msg("oauth state store uses redis")
+		log.Info().Str("addr", cfg.Redis.Address()).Str("key_prefix", prefix).Msg("oauth state store uses redis")
 	} else {
-		log.Warn().Msg("redis.addr 未配置，OAuth state 使用进程内存；多实例部署请配置 Redis")
+		log.Warn().Msg("redis.host 未配置，OAuth state 使用进程内存；多实例部署请配置 Redis")
 	}
 	authSvc := services.NewAuthServiceWithStateStore(registry, userRepo, jwtMgr, cfg.Admin, stateStore)
 

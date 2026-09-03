@@ -71,3 +71,9 @@ func TestStateStoreExpired(t *testing.T) {
 		t.Fatal("expired state should not be consumable")
 	}
 }
+
+func TestRedisStateStoreAppendsOAuthFeaturePrefix(t *testing.T) {
+	if got := NewRedisStateStore(nil, "gpt-image-playground", time.Minute).prefix; got != "gpt-image-playground:oauth:state:" {
+		t.Fatalf("unexpected redis state key prefix: %q", got)
+	}
+}

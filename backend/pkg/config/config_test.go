@@ -29,6 +29,24 @@ func TestApplyDefaultsNormalizesModelWhitelist(t *testing.T) {
 	}
 }
 
+func TestRedisConfigUsesHostAndPort(t *testing.T) {
+	cfg := RedisConfig{Host: "::1", Port: 6379}
+	if !cfg.Enabled() {
+		t.Fatal("expected redis config to be enabled")
+	}
+	if cfg.Address() != "[::1]:6379" {
+		t.Fatalf("unexpected redis address: %q", cfg.Address())
+	}
+}
+
+func TestApplyDefaultsSetsRedisDefaults(t *testing.T) {
+	cfg := Config{}
+	cfg.applyDefaults()
+	if cfg.Redis.Port != 6379 || cfg.Redis.KeyPrefix != "gpt-image-playground:" {
+		t.Fatalf("unexpected redis defaults: %#v", cfg.Redis)
+	}
+}
+
 func TestValidateRejectsInvalidLogRotation(t *testing.T) {
 	cfg := Config{
 		Database: DatabaseConfig{Host: "localhost", User: "postgres", Name: "app"},
