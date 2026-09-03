@@ -2377,6 +2377,20 @@ async function flushAgentConversationsToIndexedDB() {
       lastStoredAgentConversations = conversations
       const currentState = useStore.getState()
       const affectedProjectIds = getChangedAgentConversationProjectIds(previousConversations, conversations, currentState.tasks)
+      console.warn('[同步诊断] 会话持久化触发同步检查', {
+        上次基准会话数: previousConversations.length,
+        当前会话数: conversations.length,
+        判定受影响项目: [...affectedProjectIds],
+        引用变化的会话: conversations
+          .filter((item) => !previousConversations.includes(item))
+          .map((item) => ({
+            id: item.id,
+            title: item.title,
+            updatedAt: item.updatedAt,
+            上次基准中存在: previousConversations.some((prev) => prev.id === item.id),
+          })),
+        调用栈: new Error().stack,
+      })
       if (onlineProjectCacheReady) {
         for (const projectId of affectedProjectIds) scheduleOnlineProjectSync(projectId)
       }
@@ -2655,9 +2669,8 @@ function syncOnlineProject(projectId: string) {
       判定为同步期间又变更: changedWhileSyncing,
       新syncPending: changedWhileSyncing,
       归档大小: archive.size,
-      服务端sha: response.archive_sha256,
-      本地记录sha: current.remoteArchiveSha256,
-      sha是否一致: response.archive_sha256 === current.remoteArchiveSha256,
+      本次上传后服务端sha: response.archive_sha256,
+      上传前本地记录sha: current.remoteArchiveSha256,
     })
     const updated: Project = {
       ...current,
