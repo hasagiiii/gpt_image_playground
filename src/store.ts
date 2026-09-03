@@ -4559,9 +4559,17 @@ async function initializeStore() {
   for (const projectId of projectsToSync) scheduleOnlineProjectSync(projectId, 0)
   const recoveredAgentConversations = recoverAgentConversationsForImageStatus(useStore.getState().agentConversations, tasks)
   if (recoveredAgentConversations !== useStore.getState().agentConversations) {
+    const before = useStore.getState().agentConversations
+    console.warn('[同步诊断] recoverAgentConversationsForImageStatus 改写了会话', {
+      变化的会话: recoveredAgentConversations
+        .filter((item, idx) => item !== before[idx])
+        .map((item) => ({ id: item.id, title: item.title, 旧updatedAt: before.find((p) => p.id === item.id)?.updatedAt, 新updatedAt: item.updatedAt })),
+    })
     useStore.setState({ agentConversations: recoveredAgentConversations })
   }
+  console.warn('[同步诊断] 即将执行 syncAgentConversationsFromTerminalImageStatusTasks')
   syncAgentConversationsFromTerminalImageStatusTasks(tasks)
+  console.warn('[同步诊断] syncAgentConversationsFromTerminalImageStatusTasks 执行完毕')
   showSupportPromptForExistingLocalData(tasks)
   const agentRoundRequestIds = new Set(
     useStore.getState().agentConversations.flatMap((conversation) =>
@@ -4903,9 +4911,42 @@ function getActiveAgentConversation(): AgentConversation {
 
 function updateAgentConversation(conversationId: string, updater: (conversation: AgentConversation) => AgentConversation) {
   useStore.setState((state) => ({
-    agentConversations: state.agentConversations.map((conversation) =>
-      conversation.id === conversationId ? updater(conversation) : conversation,
-    ),
+    agentConversations: state.agentConversations.map((conversation) => {
+      if (conversation.id !== conversationId) return conversation
+      const next = updater(conversation)
+      if (next !== conversation) {
+        const changedRounds = next.rounds.filter((round, idx) => round !== conversation.rounds[idx]).map((round) => {
+          const prev = conversation.rounds.find((item) => item.id === round.id)
+          const diff: Record<string, unknown> = {}
+          for (const key of Object.keys(round) as (keyof typeof round)[]) {
+            const a = prev?.[key]
+            const b = round[key]
+            const same = Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((v, i) => v === b[i]) : a === b
+            if (!same) diff[key as string] = { 旧: a, 新: b }
+          }
+          return { roundId: round.id, 差异: diff }
+        })
+        const changedMessages = next.messages.filter((message, idx) => message !== conversation.messages[idx]).map((message) => {
+          const prev = conversation.messages.find((item) => item.id === message.id)
+          return {
+            messageId: message.id,
+            内容是否变化: prev?.content !== message.content,
+            旧内容长度: prev?.content?.length,
+            新内容长度: message.content?.length,
+            outputTaskIds是否变化: JSON.stringify(prev?.outputTaskIds) !== JSON.stringify(message.outputTaskIds),
+          }
+        })
+        console.warn('[同步诊断] 会话被改写', {
+          conversationId,
+          旧updatedAt: conversation.updatedAt,
+          新updatedAt: next.updatedAt,
+          变化的rounds: changedRounds,
+          变化的messages: changedMessages,
+          调用栈: new Error().stack,
+        })
+      }
+      return next
+    }),
   }))
 }
 
