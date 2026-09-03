@@ -431,6 +431,11 @@ export interface AgentConversation {
 export interface StoredImage {
   id: string
   dataUrl: string
+  /**
+   * 图片的 CDN 直链。展示场景优先用它以省流量；
+   * Responses 的 input_image 只接受 data URL，那些场景必须回落到 dataUrl。
+   */
+  remoteUrl?: string
   /** 按 Composite API Key 哈希缓存的 File API URL */
   compositeFileUrls?: Record<string, string>
   /** 图片首次存储时间（ms） */

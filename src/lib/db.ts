@@ -354,6 +354,8 @@ export async function storeImageReference(id: string, url: string, source: NonNu
       ...(existing ?? {}),
       id,
       dataUrl: url,
+      // 同时记在 remoteUrl 上：Agent 场景会把 dataUrl 换成真实字节，那时仍需保留直链。
+      remoteUrl: url,
       createdAt: existing?.createdAt ?? Date.now(),
       source,
     })

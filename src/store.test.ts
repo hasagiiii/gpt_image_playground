@@ -4277,6 +4277,53 @@ describe('agent batch reference resolution', () => {
     expect(batchArgs.referenceImageDataUrls).toEqual([imageA.dataUrl])
     expect(batchArgs.referenceIds).toEqual(['round-3-reference-1'])
   })
+
+  // Responses 的 input_image 只接受 data URL；历史数据里可能把 CDN 直链存成了 dataUrl，
+  // 必须拉回字节并写回本地，避免每次引用都重新请求 CDN
+  it('converts remote reference urls to data urls and caches them locally', async () => {
+    const remoteImage = { id: 'image-remote', dataUrl: 'https://cdn.example/remote.png' }
+    await putImage({ id: remoteImage.id, dataUrl: remoteImage.dataUrl, source: 'upload' })
+    useStore.setState({ inputImages: [remoteImage] })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(new Blob([new Uint8Array([9, 9, 9])], { type: 'image/png' }), { status: 200 }),
+    )
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({
+        text: '',
+        images: [],
+        outputItems: [{
+          type: 'function_call',
+          name: 'generate_image_batch',
+          call_id: 'batch-call',
+          arguments: JSON.stringify({
+            images: [{ id: 'variant-image', prompt: '参考 <ref id="round-3-reference-1" /> 生成变体' }],
+          }),
+        }],
+        responseId: 'response-1',
+      })
+      .mockResolvedValueOnce({
+        text: '完成',
+        images: [],
+        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '完成' }] }],
+        responseId: 'response-2',
+      })
+
+    try {
+      await submitAgentMessage()
+
+      for (let i = 0; i < 5 && vi.mocked(callBatchImageSingle).mock.calls.length === 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      const batchArgs = vi.mocked(callBatchImageSingle).mock.calls[0][0]
+      expect(batchArgs.referenceImageDataUrls[0]?.startsWith('data:image/png;base64,')).toBe(true)
+      // 直链保留在 remoteUrl，dataUrl 换成真实字节，后续引用不再打 CDN
+      const stored = await getImage(remoteImage.id)
+      expect(stored?.dataUrl.startsWith('data:image/png;base64,')).toBe(true)
+      expect(stored?.remoteUrl).toBe(remoteImage.dataUrl)
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
 })
 
 describe('agent assistant regeneration', () => {

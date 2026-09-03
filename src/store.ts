@@ -5502,10 +5502,28 @@ async function persistTaskStreamPartialImage(taskId: string, dataUrl: string) {
   }
 }
 
+// Responses 的 input_image 只接受 data URL。历史数据里可能把 CDN 直链存成了
+// StoredImage.dataUrl，这里拉回真实字节并写回本地，避免每次引用都重新请求 CDN。
+async function readAgentImageDataUrl(id: string) {
+  const cached = await ensureImageCached(id)
+  if (!cached || !/^https?:\/\//i.test(cached)) return cached
+  try {
+    const dataUrl = await fetchImageUrlAsDataUrl(cached, 'image/png')
+    const existing = await getImage(id)
+    // 直链移到 remoteUrl 保留，展示场景仍可省流量；compositeFileUrls 不受影响。
+    await putImage({ ...(existing ?? { id }), id, dataUrl, remoteUrl: existing?.remoteUrl ?? cached })
+    cacheImage(id, dataUrl)
+    return dataUrl
+  } catch (err) {
+    console.warn(`[Agent] 参考图 ${id} 直链转 data URL 失败：`, err)
+    return undefined
+  }
+}
+
 async function readAgentImageDataUrls(ids: string[]) {
   const dataUrls: string[] = []
   for (const id of ids) {
-    const dataUrl = await ensureImageCached(id)
+    const dataUrl = await readAgentImageDataUrl(id)
     if (dataUrl) dataUrls.push(dataUrl)
   }
   return dataUrls
@@ -6159,7 +6177,7 @@ async function executeAgentRound(
         rounds: current.rounds.map((item) => item.id === roundId ? { ...item, requestId } : item),
       }))
     }
-    const maskDataUrl = round.maskImageId ? await ensureImageCached(round.maskImageId) : undefined
+    const maskDataUrl = round.maskImageId ? await readAgentImageDataUrl(round.maskImageId) : undefined
     if (round.maskImageId && !maskDataUrl) throw new Error('遮罩图片已不存在')
 
     const apiInput = await buildAgentApiInput(conversation, round, latestState.tasks)
@@ -6323,7 +6341,7 @@ async function executeAgentRound(
             const currentRefId = getAgentCurrentReferenceId(r, imgIdx)
             if (currentRefId === refId) {
               const imageId = r.inputImageIds[imgIdx]
-              const dataUrl = await ensureImageCached(imageId)
+              const dataUrl = await readAgentImageDataUrl(imageId)
               if (dataUrl) dataUrls.push(dataUrl)
               imageIds.push(imageId)
             }
@@ -6334,7 +6352,7 @@ async function executeAgentRound(
             if (generatedRefId === refId) {
               const imageId = outputImages[imgIdx]
               if (!imageId) continue
-              const dataUrl = await ensureImageCached(imageId)
+              const dataUrl = await readAgentImageDataUrl(imageId)
               if (dataUrl) dataUrls.push(dataUrl)
               imageIds.push(imageId)
             }
@@ -7034,12 +7052,14 @@ async function executeTask(taskId: string) {
       ? await hashDataUrl(task.apiOverride?.apiKey ?? '')
       : ''
     const compositeInputFileUrls = isCompositeRequest
-      ? await Promise.all(task.inputImageIds.map(async (imageId) => (
-          (await getImage(imageId))?.compositeFileUrls?.[compositeFileCacheKey]
-        )))
+      ? await Promise.all(task.inputImageIds.map(async (imageId) => {
+          const image = await getImage(imageId)
+          // remoteUrl 兜底：dataUrl 可能已被 Agent 场景换成真实字节，直链仍可免去上传。
+          return image?.compositeFileUrls?.[compositeFileCacheKey] ?? image?.remoteUrl
+        }))
       : []
     const compositeMaskFileUrl = isCompositeRequest && task.maskImageId
-      ? (await getImage(task.maskImageId))?.compositeFileUrls?.[compositeFileCacheKey]
+      ? await getImage(task.maskImageId).then((image) => image?.compositeFileUrls?.[compositeFileCacheKey] ?? image?.remoteUrl)
       : undefined
 
     const requestPrompt = task.transparentOutput && task.transparentPrompt

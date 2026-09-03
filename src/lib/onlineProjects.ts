@@ -4,6 +4,7 @@ import { dataUrlToBlob } from './canvasImage'
 import { blobToDataUrl } from './dataUrl'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './exportZip'
 import { getAgentConversationProjectId } from './agentConversationScope'
+import { fetchImageUrlAsDataUrl } from './imageApiShared'
 import { normalizeProjectCanvas } from './projectCanvas'
 import { getPersistableAgentConversations, getPersistableTask } from './persistablePayload'
 
@@ -278,10 +279,27 @@ export async function listOnlineProjectImages(projectId: string): Promise<Online
 }
 
 export async function downloadOnlineProjectImage(projectId: string, image: OnlineProjectImageResponse, options: { forceDataUrl?: boolean } = {}): Promise<StoredImage> {
-  if (image.image_url) {
+  // forceDataUrl 的调用方要把结果当作本地图片存下来，后续会被直接塞进
+  // Responses 请求的 input_image.image_url，那里只接受 data URL；
+  // 因此有直链也必须拉回真实字节。直链本身记在 remoteUrl 上供展示场景复用。
+  if (image.image_url && !options.forceDataUrl) {
     return {
       id: image.image_id,
       dataUrl: image.image_url,
+      remoteUrl: image.image_url,
+      source: image.source,
+      width: image.width,
+      height: image.height,
+      createdAt: Date.parse(image.created_at) || undefined,
+    }
+  }
+
+  if (image.image_url) {
+    const dataUrl = await fetchImageUrlAsDataUrl(image.image_url, image.mime_type)
+    return {
+      id: image.image_id,
+      dataUrl,
+      remoteUrl: image.image_url,
       source: image.source,
       width: image.width,
       height: image.height,
@@ -299,6 +317,7 @@ export async function downloadOnlineProjectImage(projectId: string, image: Onlin
     return {
       id: image.image_id,
       dataUrl: migratedURL,
+      remoteUrl: migratedURL,
       source: image.source,
       width: image.width,
       height: image.height,
@@ -309,6 +328,7 @@ export async function downloadOnlineProjectImage(projectId: string, image: Onlin
   return {
     id: image.image_id,
     dataUrl: options.forceDataUrl ? dataUrl : migratedURL || dataUrl,
+    ...(migratedURL ? { remoteUrl: migratedURL } : {}),
     source: image.source,
     width: image.width,
     height: image.height,

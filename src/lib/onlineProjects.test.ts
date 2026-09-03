@@ -226,7 +226,7 @@ describe('onlineProjects', () => {
       height: 768,
     }
 
-    const result = await downloadOnlineProjectImage('project-a', image, { forceDataUrl: true })
+    const result = await downloadOnlineProjectImage('project-a', image)
 
     expect(result).toMatchObject({
       id: 'image-a',
@@ -237,6 +237,33 @@ describe('onlineProjects', () => {
       createdAt: Date.parse('2026-08-16T00:00:00Z'),
     })
     expect(authFetch).not.toHaveBeenCalled()
+  })
+
+  // forceDataUrl 的结果会被当作本地图片存下来，并直接用于 Responses 的 input_image，
+  // 那里只接受 data URL，因此有直链也必须拉回真实字节
+  it('fetches real bytes for a direct image URL when forceDataUrl is set', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }), { status: 200 }),
+    )
+    try {
+      const result = await downloadOnlineProjectImage('project-a', {
+        project_id: 'project-a',
+        image_id: 'image-a',
+        image_url: 'https://cdn.example/image-a.png',
+        mime_type: 'image/png',
+        image_size: 3,
+        image_sha256: 'sha256',
+        created_at: '2026-08-16T00:00:00Z',
+        updated_at: '2026-08-16T00:00:00Z',
+        source: 'generated',
+      }, { forceDataUrl: true })
+
+      expect(result.dataUrl.startsWith('data:image/png;base64,')).toBe(true)
+      expect(fetchMock).toHaveBeenCalledWith('https://cdn.example/image-a.png', expect.anything())
+      expect(authFetch).not.toHaveBeenCalled()
+    } finally {
+      fetchMock.mockRestore()
+    }
   })
 
   it('saves and deletes one task without uploading a project archive', async () => {
