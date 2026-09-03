@@ -3716,6 +3716,22 @@ function updateAgentRoundFromImageStatus(task: TaskRecord, records: ImageStatusR
     const textContent = texts.join('\n\n').trim()
     const finalContent = textContent || existingContent || (hasRunningTask ? '' : hasRecoveredOutput ? '图像已生成。' : `请求失败：${error ?? roundTasks.find((item) => item.error)?.error ?? '图片状态恢复失败'}`)
     const outputTaskIds = uniqueIds([...(existingAssistantMessage?.outputTaskIds ?? []), ...roundTaskIds])
+    const roundStatus = hasRunningTask ? 'running' : hasRecoveredOutput ? 'done' : 'error'
+    const roundError = hasRunningTask || hasRecoveredOutput ? null : error ?? roundTasks.find((task) => task.error)?.error ?? '图片状态恢复失败'
+    // 启动时会对所有终态任务重放一次，终态不会再变化，因此必须在无实质变化时
+    // 返回原对象。否则每次启动都会重写会话并推进 updatedAt，触发一次空同步。
+    const messageUnchanged = existingAssistantMessage
+      ? existingAssistantMessage.content === finalContent && arraysEqual(existingAssistantMessage.outputTaskIds ?? [], outputTaskIds)
+      : false
+    const roundUnchanged =
+      round.assistantMessageId === assistantMessageId &&
+      arraysEqual(round.outputTaskIds, roundTaskIds) &&
+      round.status === roundStatus &&
+      (round.error ?? null) === roundError &&
+      Boolean(round.imageStatusRecoverable) === hasRunningTask &&
+      (hasRunningTask ? round.finishedAt == null : round.finishedAt != null)
+    if (messageUnchanged && roundUnchanged) return current
+
     const messages = existingAssistantMessage
       ? current.messages.map((message) => message.id === assistantMessageId ? { ...message, content: finalContent, outputTaskIds } : message)
       : [
@@ -3739,8 +3755,8 @@ function updateAgentRoundFromImageStatus(task: TaskRecord, records: ImageStatusR
               ...item,
               assistantMessageId,
               outputTaskIds: roundTaskIds,
-              status: hasRunningTask ? 'running' : hasRecoveredOutput ? 'done' : 'error',
-              error: hasRunningTask || hasRecoveredOutput ? null : error ?? roundTasks.find((task) => task.error)?.error ?? '图片状态恢复失败',
+              status: roundStatus,
+              error: roundError,
               imageStatusRecoverable: hasRunningTask,
               finishedAt: hasRunningTask ? null : now,
             }
