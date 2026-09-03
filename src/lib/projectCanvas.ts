@@ -7,6 +7,7 @@ export const MIN_CANVAS_SCALE = 0.01
 export const MAX_CANVAS_SCALE = 10
 
 const ITEM_GAP = 32
+export const CANVAS_PLACEHOLDER_GAP = 96
 const DEFAULT_COLUMNS = 4
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -22,6 +22,7 @@ import {
   useStore,
 } from '../store'
 import {
+  CANVAS_PLACEHOLDER_GAP,
   DEFAULT_CANVAS_ITEM_WIDTH,
   clampCanvasScale,
   ensureProjectCanvas,
@@ -1408,7 +1409,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         const height = dimensions.height
         const position = projectImageIds.length === 0 && Object.keys(items).length === 0
           ? { x: -width / 2, y: -height / 2 }
-          : findAvailableCanvasItemPosition(occupied, canvas.viewport, containerSize, { width, height })
+          : findAvailableCanvasItemPosition(occupied, canvas.viewport, containerSize, { width, height }, CANVAS_PLACEHOLDER_GAP)
         const next = { ...fallback, ...position, width, name: node.placeholderName }
         items[node.key] = next
         occupied[node.key] = { ...next, height }

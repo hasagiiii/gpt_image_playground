@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CANVAS_PLACEHOLDER_GAP,
   DEFAULT_CANVAS_ITEM_WIDTH,
   ensureProjectCanvas,
   findAvailableCanvasItemPosition,
@@ -129,6 +130,18 @@ describe('project canvas helpers', () => {
     )
 
     expect(position).toEqual({ x: -120, y: -392 })
+  })
+
+  it('keeps generating placeholders farther from existing images', () => {
+    const position = findAvailableCanvasItemPosition(
+      { existing: { x: -120, y: -120, width: 240 } },
+      { x: 400, y: 300, scale: 1 },
+      { width: 800, height: 600 },
+      { width: 240, height: 240 },
+      CANVAS_PLACEHOLDER_GAP,
+    )
+
+    expect(position).toEqual({ x: -120, y: -456 })
   })
 
   it('removes one collection without changing sibling image favorites', () => {
