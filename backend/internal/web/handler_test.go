@@ -15,6 +15,7 @@ func testFS() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":           &fstest.MapFile{Data: []byte("<!doctype html><html><head><title>t</title></head><body><div id=\"root\"></div><script type=\"module\" src=\"./assets/app.js\"></script></body></html>")},
 		"manifest.webmanifest": &fstest.MapFile{Data: []byte(`{"name":"test-app"}`)},
+		"sw.js":                &fstest.MapFile{Data: []byte("self.addEventListener('install', () => {})")},
 		"assets/app.js":        &fstest.MapFile{Data: []byte("console.log('app')")},
 		"assets/app.css":       &fstest.MapFile{Data: []byte("body { color: red; }")},
 		"assets/index-app.js":  &fstest.MapFile{Data: []byte("export default true")},
@@ -87,6 +88,19 @@ func TestStaticAssetLongCache(t *testing.T) {
 	}
 	if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=31536000") {
 		t.Fatalf("静态资源应带长缓存，实际 Cache-Control=%q", cc)
+	}
+}
+
+// 根级固定文件名不能带长缓存，否则 Service Worker 会被钉在旧版本无法更新
+func TestRootLevelFilesNotLongCached(t *testing.T) {
+	for _, path := range []string{"/sw.js", "/manifest.webmanifest"} {
+		w := doRequest(NewHandler(testFS()), http.MethodGet, path)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s 应返回 200，实际 %d", path, w.Code)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("%s Cache-Control 期望 no-cache，实际 %q", path, got)
+		}
 	}
 }
 

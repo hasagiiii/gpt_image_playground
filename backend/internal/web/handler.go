@@ -56,7 +56,7 @@ func serve(c *gin.Context, dist fs.FS) {
 			if err != nil {
 				continue
 			}
-			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+			c.Header("Cache-Control", cacheControl(staticPath))
 			c.Data(http.StatusOK, contentType(staticPath, data), data)
 			return
 		}
@@ -70,6 +70,16 @@ func serve(c *gin.Context, dist fs.FS) {
 	}
 	c.Header("Cache-Control", "no-cache")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", injectConfig(html))
+}
+
+// cacheControl 只对 Vite 产出的带 hash 文件名（assets/）启用长缓存。
+// sw.js、manifest.webmanifest、logo.png 等根级文件名固定，长缓存会导致新版本无法下发：
+// immutable 让浏览器在有效期内连重验证都不发起，Service Worker 会被永久钉在旧版本。
+func cacheControl(staticPath string) string {
+	if strings.HasPrefix(staticPath, "assets/") {
+		return "public, max-age=31536000, immutable"
+	}
+	return "no-cache"
 }
 
 func staticPaths(reqPath string) []string {
