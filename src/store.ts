@@ -730,6 +730,7 @@ function normalizeProjects(value: unknown): Project[] {
       contentUpdatedAt: typeof item.contentUpdatedAt === 'number'
         ? item.contentUpdatedAt
         : (typeof item.updatedAt === 'number' ? item.updatedAt : createdAt),
+      ...(typeof item.contentVersion === 'number' ? { contentVersion: item.contentVersion } : {}),
     })
   }
   return projects
@@ -1429,6 +1430,7 @@ export const useStore = create<AppState>()(
           createdAt: now,
           updatedAt: now,
           contentUpdatedAt: now,
+          contentVersion: 1,
         }
         get().setAppMode('gallery')
         set((state) => ({
@@ -1454,6 +1456,7 @@ export const useStore = create<AppState>()(
           title: createProjectTitle(normalizedTitle),
           updatedAt: now,
           contentUpdatedAt: now,
+          contentVersion: nextContentVersion(project),
         }
         set((state) => ({
           projects: [updated, ...state.projects.filter((item) => item.id !== id)],
@@ -1468,7 +1471,7 @@ export const useStore = create<AppState>()(
           const current = get().projects.find((item) => item.id === id)
           if (current?.title === updated.title) {
             const now = Date.now()
-            const restored = { ...project, updatedAt: now, contentUpdatedAt: now }
+            const restored = { ...project, updatedAt: now, contentUpdatedAt: now, contentVersion: nextContentVersion(project) }
             set((state) => ({
               projects: [restored, ...state.projects.filter((item) => item.id !== id)],
             }))
@@ -1498,7 +1501,7 @@ export const useStore = create<AppState>()(
               canvas,
               ...(project.storage === 'online' ? { syncPending: true } : {}),
               updatedAt: now,
-              ...(hasCanvasContentChange ? { contentUpdatedAt: now } : {}),
+              ...(hasCanvasContentChange ? { contentUpdatedAt: now, contentVersion: nextContentVersion(project) } : {}),
             }
           : id === LOCAL_PROJECT_ID
             ? {
@@ -1510,6 +1513,7 @@ export const useStore = create<AppState>()(
                 createdAt: now,
                 updatedAt: now,
                 contentUpdatedAt: now,
+                contentVersion: 1,
               }
           : null
         if (!updated) return
@@ -1541,6 +1545,7 @@ export const useStore = create<AppState>()(
                 createdAt: now,
                 updatedAt: now,
                 contentUpdatedAt: now,
+                contentVersion: 1,
               }
             : null
         if (!updated) return
@@ -1570,7 +1575,7 @@ export const useStore = create<AppState>()(
           canvas,
           ...(project.storage === 'online' ? { syncPending: true } : {}),
           updatedAt: now,
-          ...(hasCanvasContentChange ? { contentUpdatedAt: now } : {}),
+          ...(hasCanvasContentChange ? { contentUpdatedAt: now, contentVersion: nextContentVersion(project) } : {}),
         }
         set((state) => ({
           projectCanvasCache: { ...state.projectCanvasCache, [id]: canvas },
@@ -2495,6 +2500,12 @@ function getActiveTaskProjectId() {
   return id && id !== ALL_PROJECTS_ID && id !== LOCAL_PROJECT_ID ? id : undefined
 }
 
+// 内容版本号只由本地变更推进，用于判断同步期间是否又发生改动。
+// 不能用 updatedAt 承担这个职责：它会被服务端时间覆盖，两个时钟比对必然误判。
+function nextContentVersion(project: Project) {
+  return (project.contentVersion ?? 0) + 1
+}
+
 function queueProjectSave(project: Project) {
   const previous = projectPersistenceQueues.get(project.id)
   const saving = (previous ? previous.catch(() => undefined) : Promise.resolve())
@@ -2512,7 +2523,7 @@ function queueOnlineProjectCanvasSync(project: Project) {
   const syncing = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async () => {
     const latest = useStore.getState().projects.find((item) => item.id === project.id)
     if (latest?.storage !== 'online' || !latest.remoteId || !latest.canvas) return
-    const version = latest.updatedAt
+    const version = latest.contentVersion ?? 0
     const response = await saveOnlineProjectCanvas(latest, latest.canvas)
     const current = useStore.getState().projects.find((item) => item.id === latest.id)
     if (!current) return
@@ -2520,7 +2531,9 @@ function queueOnlineProjectCanvasSync(project: Project) {
     const updated = {
       ...current,
       remoteArchiveSha256: response.archive_sha256,
-      syncPending: hasArchiveSync || current.updatedAt !== version,
+      syncPending: hasArchiveSync || (current.contentVersion ?? 0) !== version,
+      updatedAt: Date.parse(response.updated_at) || current.updatedAt,
+      contentUpdatedAt: Date.parse(response.content_updated_at ?? response.updated_at) || current.contentUpdatedAt,
     }
     useStore.setState((state) => ({
       projects: state.projects.map((item) => item.id === current.id ? updated : item),
@@ -2546,17 +2559,17 @@ function queueOnlineProjectViewportSync(project: Project) {
   const syncing = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async () => {
     const latest = useStore.getState().projects.find((item) => item.id === project.id)
     if (latest?.storage !== 'online' || !latest.remoteId || !latest.canvas) return
-    const version = latest.updatedAt
+    const version = latest.contentVersion ?? 0
     const response = await saveOnlineProjectViewport(latest, latest.canvas.viewport)
     const current = useStore.getState().projects.find((item) => item.id === latest.id)
     if (!current) return
     const hasArchiveSync = onlineProjectSyncTimers.has(current.id) || onlineProjectSyncQueues.has(current.id)
-    const changedWhileSyncing = current.updatedAt !== version
     const updated = {
       ...current,
       remoteArchiveSha256: response.archive_sha256,
-      syncPending: hasArchiveSync || current.updatedAt !== version,
-      updatedAt: changedWhileSyncing ? current.updatedAt : Date.parse(response.updated_at) || current.updatedAt,
+      syncPending: hasArchiveSync || (current.contentVersion ?? 0) !== version,
+      // 视口不是内容变更，只推进 updatedAt，contentUpdatedAt 保持不动。
+      updatedAt: Date.parse(response.updated_at) || current.updatedAt,
     }
     useStore.setState((state) => ({
       projects: state.projects.map((item) => item.id === current.id ? updated : item),
@@ -2605,18 +2618,19 @@ function syncOnlineProject(projectId: string) {
     const snapshot = useStore.getState()
     const project = snapshot.projects.find((item) => item.id === projectId)
     if (project?.storage !== 'online' || !project.remoteId) return
-    const version = project.updatedAt
+    const version = project.contentVersion ?? 0
     const archive = await buildOnlineProjectArchive(snapshot, projectId)
     const response = await uploadOnlineProject(project.remoteId, project.title, archive)
     await syncOnlineProjectImages(projectId)
     const current = useStore.getState().projects.find((item) => item.id === projectId)
     if (!current) return
-    const changedWhileSyncing = current.updatedAt !== version
+    const changedWhileSyncing = (current.contentVersion ?? 0) !== version
     const updated: Project = {
       ...current,
       remoteArchiveSha256: response.archive_sha256,
       syncPending: changedWhileSyncing,
-      updatedAt: changedWhileSyncing ? current.updatedAt : Date.parse(response.updated_at) || current.updatedAt,
+      updatedAt: Date.parse(response.updated_at) || current.updatedAt,
+      contentUpdatedAt: Date.parse(response.content_updated_at ?? response.updated_at) || current.contentUpdatedAt,
     }
     useStore.setState((state) => ({
       projects: [updated, ...state.projects.filter((item) => item.id !== projectId)],
@@ -2699,6 +2713,7 @@ function touchProject(id?: string, syncArchive = true) {
     ...(project.storage === 'online' && syncArchive ? { syncPending: true } : {}),
     updatedAt: now,
     contentUpdatedAt: now,
+    contentVersion: nextContentVersion(project),
   }
   useStore.setState((state) => ({
     projects: [updated, ...state.projects.filter((item) => item.id !== id)],
@@ -4144,6 +4159,8 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
       ...remote,
       initialPrompt: cached?.initialPrompt ?? '',
       contentUpdatedAt: cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
+      // 版本号是本地概念，服务端不返回，必须从缓存延续，否则同步后会被判为“又变了”。
+      ...(cached?.contentVersion !== undefined ? { contentVersion: cached.contentVersion } : {}),
       ...(cached?.canvas ? { canvas: cached.canvas } : {}),
       ...(!shouldLoadContents ? { remoteArchiveSha256: cached?.remoteArchiveSha256 } : {}),
     }
@@ -4185,6 +4202,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
             ...remote,
             initialPrompt: archivedProject?.initialPrompt ?? cached?.initialPrompt ?? '',
             contentUpdatedAt: archivedProject?.contentUpdatedAt ?? cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
+            ...(cached?.contentVersion !== undefined ? { contentVersion: cached.contentVersion } : {}),
             defaultFavoriteCollectionId,
             ...(remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas
               ? { canvas: remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas }

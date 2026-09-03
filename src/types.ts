@@ -364,6 +364,11 @@ export interface Project {
   updatedAt: number
   /** 项目内容最后修改时间，不包含画布视口变化 */
   contentUpdatedAt?: number
+  /**
+   * 本地内容版本号，每次本地变更自增。
+   * 仅用于判断同步期间是否又发生了改动，不表示时间，也不接受服务端赋值。
+   */
+  contentVersion?: number
 }
 
 // ===== Agent 模式 =====
