@@ -60,6 +60,7 @@ import {
 import { createRequestId, getAccessToken, isAuthEnabled } from './auth/api'
 import { buildLegacyProjectArchive, buildOnlineProjectArchive, clearLegacyProjectUploadId, createOnlineProject, deleteOnlineProject, deleteOnlineProjectImage, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getLegacyProjectUploadId, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
 import { getPersistableAgentConversation, getPersistableAgentConversations, getPersistableResponseOutputItem, getPersistableTask, stripPersistedAgentConversations } from './lib/persistablePayload'
+import type { OnlineProjectResponse } from './lib/onlineProjects'
 import { callImageApi } from './lib/api'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
@@ -4174,7 +4175,20 @@ async function recoverImageStatusTask(taskId: string) {
   }
 }
 
-async function loadOnlineProjectCache(localProjects: Project[], localTasks: TaskRecord[], localConversations: AgentConversation[], localImageIds: string[], activeProjectId: string | null) {
+// 单个在线项目的加载结果。各项目彼此独立，便于并发拉取并在完成时逐个发布。
+interface OnlineProjectLoadResult {
+  project: Project
+  tasks: TaskRecord[]
+  agentConversations: AgentConversation[]
+  images: StoredImage[]
+  thumbnails: StoredImageThumbnail[]
+  favoriteCollections: FavoriteCollection[]
+  oversized: boolean
+  /** 该项目是否重写过归档内容，未重写时不必参与整体落盘 */
+  contentLoaded: boolean
+}
+
+async function loadOnlineProjectCache(localProjects: Project[], localTasks: TaskRecord[], localConversations: AgentConversation[], localImageIds: string[], activeProjectId: string | null, onProjectLoaded?: (result: OnlineProjectLoadResult) => void) {
   const responses = await listOnlineProjects()
   console.info('[项目画布] 在线项目列表', {
     activeProjectId,
@@ -4194,165 +4208,197 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
   })
   const images: StoredImage[] = []
   const thumbnails: StoredImageThumbnail[] = []
-  const availableImageIds = new Set(localImageIds)
   const favoriteCollections: FavoriteCollection[] = []
   // 历史归档把响应里的 base64 一起打包了，体积可达几十 MB，加载后顺带重新同步一次瘦身。
   const oversizedProjectIds: string[] = []
 
-  for (const response of responses) {
-    const cached = localProjects.find((project) => project.id === response.id || project.remoteId === response.id)
-    const remote = createOnlineProject(response)
-    const shouldLoadContents = activeProjectId === null || activeProjectId === ALL_PROJECTS_ID || activeProjectId === response.id || cached?.id === activeProjectId
-    if (shouldLoadContents && response.archive_size > OVERSIZED_ARCHIVE_BYTES) oversizedProjectIds.push(response.id)
-    // 归档 SHA 相同时也可能只同步了画布，先检查本地任务是否能支撑画布中的 item。
-    const cachedCanvasItemIds = Object.keys(cached?.canvas?.items ?? {})
-    const localProjectTasks = localTasks.filter((task) => task.projectId === response.id)
-    const localProjectTaskIds = new Set(localProjectTasks.map((task) => task.id))
-    const localProjectImageIds = new Set(localProjectTasks.flatMap((task) => task.outputImages))
-    const hasUnmatchedCanvasItems = cachedCanvasItemIds.some((itemId) => {
-      if (localProjectImageIds.has(itemId)) return false
-      const separator = itemId.indexOf(':')
-      return separator < 1 || !localProjectTaskIds.has(itemId.slice(0, separator))
-    })
-    const shouldRefreshArchive = shouldLoadContents && cached?.remoteArchiveSha256 !== response.archive_sha256
-    const shouldRefreshArchiveForCanvas = shouldLoadContents && hasUnmatchedCanvasItems
-    const shouldRefreshCanvas = shouldRefreshArchive && activeProjectId !== null && activeProjectId !== ALL_PROJECTS_ID
-    console.info('[项目画布] 本地缓存信息', {
-      projectId: response.id,
-      localArchiveSha256: cached?.remoteArchiveSha256 ?? null,
-      remoteArchiveSha256: response.archive_sha256,
-      canvas: cached?.canvas ?? null,
-      shouldRefreshArchive,
-      shouldRefreshArchiveForCanvas,
-    })
-    let project: Project = {
-      ...remote,
-      initialPrompt: cached?.initialPrompt ?? '',
-      contentUpdatedAt: cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
-      // 版本号是本地概念，服务端不返回，必须从缓存延续，否则同步后会被判为“又变了”。
-      ...(cached?.contentVersion !== undefined ? { contentVersion: cached.contentVersion } : {}),
-      ...(cached?.canvas ? { canvas: cached.canvas } : {}),
-      ...(!shouldLoadContents ? { remoteArchiveSha256: cached?.remoteArchiveSha256 } : {}),
+  // 各项目并发加载：慢项目不再阻塞其他项目的首屏展示。
+  const results = await Promise.all(responses.map(async (response) => {
+    try {
+      const result = await loadOnlineProject(response, localProjects, localTasks, localImageIds, activeProjectId)
+      onProjectLoaded?.(result)
+      return result
+    } catch (err) {
+      console.warn(`在线项目 ${response.id} 加载失败：`, err)
+      return null
     }
-    let remoteCanvas: ProjectCanvasState | null = null
-    let canvasMigrationNeeded = false
-    let shouldLoadArchiveContents = shouldRefreshArchive || shouldRefreshArchiveForCanvas
-    if (cached?.syncPending) {
-      project = {
-        ...cached,
-        storage: 'online',
-        remoteId: response.id,
-        syncPending: true,
-      }
-    } else {
-      if (shouldRefreshCanvas) {
-        try {
-          remoteCanvas = await getOnlineProjectCanvas(response.id)
-          canvasMigrationNeeded = !remoteCanvas
-          shouldLoadArchiveContents = (shouldRefreshArchive && (!cached || !remoteCanvas)) || shouldRefreshArchiveForCanvas
-          if (remoteCanvas) project = { ...project, canvas: remoteCanvas }
-        } catch (err) {
-          canvasMigrationNeeded = true
-          shouldLoadArchiveContents = shouldRefreshArchive
-          console.warn(`在线项目 ${response.id} 画布读取失败，将使用图片列表恢复：`, err)
-        }
-      }
-      if (shouldLoadArchiveContents) {
-        try {
-          const parsed = readOnlineProjectArchive(await downloadOnlineProject(response.id))
-          const archivedProject = normalizeProjects(parsed.project ? [parsed.project] : [])[0]
-          if (archivedProject?.canvas) canvasMigrationNeeded = false
-          const projectFavoriteCollections = normalizeFavoriteCollections(parsed.favoriteCollections)
-            .map((collection) => ({ ...collection, projectId: remote.id }))
-          const defaultFavoriteCollectionId = resolveDefaultFavoriteCollectionId(
-            projectFavoriteCollections,
-            parsed.defaultFavoriteCollectionId,
-          )
-          project = {
-            ...remote,
-            initialPrompt: archivedProject?.initialPrompt ?? cached?.initialPrompt ?? '',
-            contentUpdatedAt: archivedProject?.contentUpdatedAt ?? cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
-            ...(cached?.contentVersion !== undefined ? { contentVersion: cached.contentVersion } : {}),
-            defaultFavoriteCollectionId,
-            ...(remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas
-              ? { canvas: remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas }
-              : {}),
-          }
-          tasks = [
-            ...tasks.filter((task) => task.projectId !== project.id),
-            ...parsed.tasks.map((task) => ({ ...task, projectId: project.id })),
-          ]
-          agentConversations = mergeAgentConversationsForStorage(
-            agentConversations.filter((conversation) => conversation.projectId !== project.id),
-            normalizeAgentConversations(parsed.agentConversations).map((conversation) => ({ ...conversation, projectId: project.id })),
-          )
-          images.push(...parsed.images)
-          for (const image of parsed.images) availableImageIds.add(image.id)
-          thumbnails.push(...parsed.thumbnails)
-          favoriteCollections.push(...projectFavoriteCollections)
-        } catch (err) {
-          console.warn(`在线项目 ${response.id} 内容加载失败：`, err)
-          project = {
-            ...project,
-            remoteArchiveSha256: cached?.remoteArchiveSha256,
-          }
-        }
-      }
+  }))
+
+  for (const result of results) {
+    if (!result) continue
+    if (result.oversized) oversizedProjectIds.push(result.project.id)
+    if (result.contentLoaded) {
+      tasks = tasks.filter((task) => task.projectId !== result.project.id)
+      agentConversations = agentConversations.filter((conversation) => conversation.projectId !== result.project.id)
     }
-    if (shouldLoadContents) {
-      try {
-        const remoteImages = await listOnlineProjectImages(response.id)
-        const projectTasks = tasks.filter((task) => task.projectId === project.id)
-        const coverTask = [...projectTasks].sort((a, b) => b.createdAt - a.createdAt)
-          .find((task) => task.outputImages.length > 0) ?? projectTasks[0]
-        const coverImageId = activeProjectId === null ? coverTask?.outputImages[0] : undefined
-        for (const remoteImage of remoteImages) {
-          if (coverImageId && activeProjectId === null && remoteImage.image_id !== coverImageId) continue
-          try {
-            const hasLocalImage = availableImageIds.has(remoteImage.image_id)
-            if (remoteImage.image_url && hasLocalImage) continue
-            // 本地没有图片时补齐引用；有直链就直接复用，避免再绕后端 fetch。
-            const image = await downloadOnlineProjectImage(response.id, remoteImage, { forceDataUrl: true })
-            if (!hasLocalImage) {
-              images.push(image)
-            }
-            availableImageIds.add(remoteImage.image_id)
-          } catch (err) {
-            console.warn(`在线项目 ${response.id} 图片 ${remoteImage.image_id} 加载失败：`, err)
-          }
-        }
-        if (canvasMigrationNeeded && shouldRefreshCanvas) {
-          const projectTasks = tasks.filter((task) => task.projectId === project.id)
-          const imageIds = Array.from(new Set([
-            ...projectTasks.flatMap((task) => task.outputImages),
-            ...remoteImages.map((image) => image.image_id),
-          ]))
-          const initializedCanvas = ensureProjectCanvas(undefined, imageIds)
-          try {
-            const saved = await saveOnlineProjectCanvas(project, initializedCanvas)
-            project = {
-              ...project,
-              canvas: initializedCanvas,
-              remoteArchiveSha256: saved.archive_sha256,
-              syncPending: false,
-            }
-            canvasMigrationNeeded = false
-          } catch (err) {
-            console.warn(`在线项目 ${response.id} 画布迁移保存失败：`, err)
-          }
-        }
-      } catch (err) {
-        console.warn(`在线项目 ${response.id} 图片加载失败：`, err)
-      }
-    }
-    const index = projects.findIndex((item) => item.id === project.id || item.remoteId === response.id)
+    tasks.push(...result.tasks)
+    agentConversations = mergeAgentConversationsForStorage(agentConversations, result.agentConversations)
+    images.push(...result.images)
+    thumbnails.push(...result.thumbnails)
+    favoriteCollections.push(...result.favoriteCollections)
+    const index = projects.findIndex((item) => item.id === result.project.id || item.remoteId === result.project.remoteId)
     if (index >= 0) projects.splice(index, 1)
-    projects.push(project)
+    projects.push(result.project)
   }
 
   projects.sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt))
   tasks = [...new Map(tasks.map((task) => [task.id, task])).values()]
   return { projects, tasks, agentConversations, images, thumbnails, favoriteCollections, oversizedProjectIds }
+}
+
+async function loadOnlineProject(
+  response: OnlineProjectResponse,
+  localProjects: Project[],
+  localTasks: TaskRecord[],
+  localImageIds: string[],
+  activeProjectId: string | null,
+): Promise<OnlineProjectLoadResult> {
+  const cached = localProjects.find((item) => item.id === response.id || item.remoteId === response.id)
+  const remote = createOnlineProject(response)
+  const availableImageIds = new Set(localImageIds)
+  let tasks: TaskRecord[] = localTasks.filter((task) => task.projectId === response.id)
+  let agentConversations: AgentConversation[] = []
+  const images: StoredImage[] = []
+  const thumbnails: StoredImageThumbnail[] = []
+  let favoriteCollections: FavoriteCollection[] = []
+  let contentLoaded = false
+  const shouldLoadContents = activeProjectId === null || activeProjectId === ALL_PROJECTS_ID || activeProjectId === response.id || cached?.id === activeProjectId
+  const oversized = shouldLoadContents && response.archive_size > OVERSIZED_ARCHIVE_BYTES
+  // 归档 SHA 相同时也可能只同步了画布，先检查本地任务是否能支撑画布中的 item。
+  const cachedCanvasItemIds = Object.keys(cached?.canvas?.items ?? {})
+  const localProjectTaskIds = new Set(tasks.map((task) => task.id))
+  const localProjectImageIds = new Set(tasks.flatMap((task) => task.outputImages))
+  const hasUnmatchedCanvasItems = cachedCanvasItemIds.some((itemId) => {
+    if (localProjectImageIds.has(itemId)) return false
+    const separator = itemId.indexOf(':')
+    return separator < 1 || !localProjectTaskIds.has(itemId.slice(0, separator))
+  })
+  const shouldRefreshArchive = shouldLoadContents && cached?.remoteArchiveSha256 !== response.archive_sha256
+  const shouldRefreshArchiveForCanvas = shouldLoadContents && hasUnmatchedCanvasItems
+  const shouldRefreshCanvas = shouldRefreshArchive && activeProjectId !== null && activeProjectId !== ALL_PROJECTS_ID
+  console.info('[项目画布] 本地缓存信息', {
+    projectId: response.id,
+    localArchiveSha256: cached?.remoteArchiveSha256 ?? null,
+    remoteArchiveSha256: response.archive_sha256,
+    canvas: cached?.canvas ?? null,
+    shouldRefreshArchive,
+    shouldRefreshArchiveForCanvas,
+  })
+  let project: Project = {
+    ...remote,
+    initialPrompt: cached?.initialPrompt ?? '',
+    contentUpdatedAt: cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
+    // 版本号是本地概念，服务端不返回，必须从缓存延续，否则同步后会被判为“又变了”。
+    ...(cached?.contentVersion !== undefined ? { contentVersion: cached.contentVersion } : {}),
+    ...(cached?.canvas ? { canvas: cached.canvas } : {}),
+    ...(!shouldLoadContents ? { remoteArchiveSha256: cached?.remoteArchiveSha256 } : {}),
+  }
+  let remoteCanvas: ProjectCanvasState | null = null
+  let canvasMigrationNeeded = false
+  let shouldLoadArchiveContents = shouldRefreshArchive || shouldRefreshArchiveForCanvas
+  if (cached?.syncPending) {
+    project = {
+      ...cached,
+      storage: 'online',
+      remoteId: response.id,
+      syncPending: true,
+    }
+  } else {
+    if (shouldRefreshCanvas) {
+      try {
+        remoteCanvas = await getOnlineProjectCanvas(response.id)
+        canvasMigrationNeeded = !remoteCanvas
+        shouldLoadArchiveContents = (shouldRefreshArchive && (!cached || !remoteCanvas)) || shouldRefreshArchiveForCanvas
+        if (remoteCanvas) project = { ...project, canvas: remoteCanvas }
+      } catch (err) {
+        canvasMigrationNeeded = true
+        shouldLoadArchiveContents = shouldRefreshArchive
+        console.warn(`在线项目 ${response.id} 画布读取失败，将使用图片列表恢复：`, err)
+      }
+    }
+    if (shouldLoadArchiveContents) {
+      try {
+        const parsed = readOnlineProjectArchive(await downloadOnlineProject(response.id))
+        const archivedProject = normalizeProjects(parsed.project ? [parsed.project] : [])[0]
+        if (archivedProject?.canvas) canvasMigrationNeeded = false
+        const projectFavoriteCollections = normalizeFavoriteCollections(parsed.favoriteCollections)
+          .map((collection) => ({ ...collection, projectId: remote.id }))
+        const defaultFavoriteCollectionId = resolveDefaultFavoriteCollectionId(
+          projectFavoriteCollections,
+          parsed.defaultFavoriteCollectionId,
+        )
+        project = {
+          ...remote,
+          initialPrompt: archivedProject?.initialPrompt ?? cached?.initialPrompt ?? '',
+          contentUpdatedAt: archivedProject?.contentUpdatedAt ?? cached?.contentUpdatedAt ?? remote.contentUpdatedAt,
+          ...(cached?.contentVersion !== undefined ? { contentVersion: cached.contentVersion } : {}),
+          defaultFavoriteCollectionId,
+          ...(remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas
+            ? { canvas: remoteCanvas ?? cached?.canvas ?? archivedProject?.canvas }
+            : {}),
+        }
+        // 归档是该项目内容的全量快照，覆盖本地缓存的同项目任务与会话。
+        contentLoaded = true
+        tasks = parsed.tasks.map((task) => ({ ...task, projectId: project.id }))
+        agentConversations = normalizeAgentConversations(parsed.agentConversations).map((conversation) => ({ ...conversation, projectId: project.id }))
+        images.push(...parsed.images)
+        for (const image of parsed.images) availableImageIds.add(image.id)
+        thumbnails.push(...parsed.thumbnails)
+        favoriteCollections = projectFavoriteCollections
+      } catch (err) {
+        console.warn(`在线项目 ${response.id} 内容加载失败：`, err)
+        project = {
+          ...project,
+          remoteArchiveSha256: cached?.remoteArchiveSha256,
+        }
+      }
+    }
+  }
+  if (shouldLoadContents) {
+    try {
+      const remoteImages = await listOnlineProjectImages(response.id)
+      const coverTask = [...tasks].sort((a, b) => b.createdAt - a.createdAt)
+        .find((task) => task.outputImages.length > 0) ?? tasks[0]
+      const coverImageId = activeProjectId === null ? coverTask?.outputImages[0] : undefined
+      for (const remoteImage of remoteImages) {
+        if (coverImageId && activeProjectId === null && remoteImage.image_id !== coverImageId) continue
+        try {
+          const hasLocalImage = availableImageIds.has(remoteImage.image_id)
+          if (remoteImage.image_url && hasLocalImage) continue
+          // 本地没有图片时补齐引用；有直链就直接复用，避免再绕后端 fetch。
+          const image = await downloadOnlineProjectImage(response.id, remoteImage, { forceDataUrl: true })
+          if (!hasLocalImage) {
+            images.push(image)
+          }
+          availableImageIds.add(remoteImage.image_id)
+        } catch (err) {
+          console.warn(`在线项目 ${response.id} 图片 ${remoteImage.image_id} 加载失败：`, err)
+        }
+      }
+      if (canvasMigrationNeeded && shouldRefreshCanvas) {
+        const imageIds = Array.from(new Set([
+          ...tasks.flatMap((task) => task.outputImages),
+          ...remoteImages.map((image) => image.image_id),
+        ]))
+        const initializedCanvas = ensureProjectCanvas(undefined, imageIds)
+        try {
+          const saved = await saveOnlineProjectCanvas(project, initializedCanvas)
+          project = {
+            ...project,
+            canvas: initializedCanvas,
+            remoteArchiveSha256: saved.archive_sha256,
+            syncPending: false,
+          }
+          canvasMigrationNeeded = false
+        } catch (err) {
+          console.warn(`在线项目 ${response.id} 画布迁移保存失败：`, err)
+        }
+      }
+    } catch (err) {
+      console.warn(`在线项目 ${response.id} 图片加载失败：`, err)
+    }
+  }
+  return { project, tasks, agentConversations, images, thumbnails, favoriteCollections, oversized, contentLoaded }
 }
 
 let initStoreInFlight: Promise<void> | null = null
@@ -4400,13 +4446,36 @@ async function initializeStore() {
   let onlineListLoaded = false
   let oversizedProjectIds: string[] = []
   useStore.setState({ projects, projectsLoaded: true })
-  const publishedProjectState = useStore.getState().projects
+  let publishedProjectState = useStore.getState().projects
+  // 在线加载采用增量发布，这两个基准会在加载完成后前移到发布后的状态，
+  // 使后续兜底合并只捕获真正来自外部（用户操作等）的变更。
+  let incrementalTaskState = initialTaskState
   const authEnabled = isAuthEnabled()
   const hasAccessToken = Boolean(getAccessToken())
   console.info('[项目画布] 在线同步条件', { authEnabled, hasAccessToken })
   if (authEnabled && hasAccessToken) {
     try {
-      const online = await loadOnlineProjectCache(projects, storedTasks, storedAgentConversations, storedImageIds, useStore.getState().activeProjectId)
+      const online = await loadOnlineProjectCache(projects, storedTasks, storedAgentConversations, storedImageIds, useStore.getState().activeProjectId, (result) => {
+        // 每个项目加载完就立即上屏，慢项目不再拖住整个列表。
+        for (const image of result.images) cacheImage(image.id, image.dataUrl)
+        for (const thumbnail of result.thumbnails) {
+          cacheThumbnail(thumbnail.id, {
+            dataUrl: thumbnail.thumbnailDataUrl,
+            width: thumbnail.width,
+            height: thumbnail.height,
+            thumbnailVersion: thumbnail.thumbnailVersion,
+          })
+        }
+        useStore.setState((state) => ({
+          projects: normalizeProjects([result.project, ...state.projects])
+            .sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt)),
+          // 归档是全量快照，重写过内容时先丢弃该项目的旧任务，避免已删除的任务复活。
+          tasks: [...new Map([
+            ...(result.contentLoaded ? state.tasks.filter((task) => task.projectId !== result.project.id) : state.tasks),
+            ...result.tasks,
+          ].map((task) => [task.id, task])).values()],
+        }))
+      })
       projects = online.projects
       storedTasks = online.tasks
       storedAgentConversations = online.agentConversations
@@ -4415,6 +4484,10 @@ async function initializeStore() {
       importedThumbnails = online.thumbnails
       oversizedProjectIds = online.oversizedProjectIds
       onlineListLoaded = true
+      // 增量发布已经把结果写进 state，此处记录基准，避免下面的兜底合并把
+      // 归档中已删除的任务从 state 里回灌进来。
+      publishedProjectState = useStore.getState().projects
+      incrementalTaskState = useStore.getState().tasks
       for (const image of importedImages) cacheImage(image.id, image.dataUrl)
       for (const thumbnail of importedThumbnails) {
         cacheThumbnail(thumbnail.id, {
@@ -4431,7 +4504,7 @@ async function initializeStore() {
   if (useStore.getState().projects !== publishedProjectState) {
     projects = normalizeProjects([...useStore.getState().projects, ...projects]).sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt))
   }
-  if (useStore.getState().tasks !== initialTaskState) {
+  if (useStore.getState().tasks !== incrementalTaskState) {
     storedTasks = [...new Map([...storedTasks, ...useStore.getState().tasks].map((task) => [task.id, task])).values()]
   }
   storedAgentConversations = mergeAgentConversationsForStorage(storedAgentConversations, normalizeAgentConversations(useStore.getState().agentConversations))
