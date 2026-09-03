@@ -59,6 +59,7 @@ import {
 } from './lib/db'
 import { createRequestId, getAccessToken, isAuthEnabled } from './auth/api'
 import { buildLegacyProjectArchive, buildOnlineProjectArchive, clearLegacyProjectUploadId, createOnlineProject, deleteOnlineProject, deleteOnlineProjectImage, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getLegacyProjectUploadId, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
+import { getPersistableAgentConversation, getPersistableAgentConversations, getPersistableResponseOutputItem, getPersistableTask, stripPersistedAgentConversations } from './lib/persistablePayload'
 import { callImageApi } from './lib/api'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
@@ -593,7 +594,7 @@ function normalizeAgentRound(value: unknown, fallbackIndex: number): AgentRound 
     ...(round.imageStatusRecoverable === true ? { imageStatusRecoverable: true } : {}),
     ...(typeof round.imageStatusApiProfileId === 'string' ? { imageStatusApiProfileId: round.imageStatusApiProfileId } : {}),
     ...(typeof round.responseId === 'string' ? { responseId: round.responseId } : {}),
-    ...(Array.isArray(round.responseOutput) ? { responseOutput: round.responseOutput } : {}),
+    ...(Array.isArray(round.responseOutput) ? { responseOutput: (round.responseOutput as ResponsesOutputItem[]).map(getPersistableResponseOutputItem) } : {}),
     status,
     error: status === 'error'
       ? typeof round.error === 'string' ? round.error : '上次请求已中断'
@@ -686,56 +687,6 @@ function mergeAgentConversationsForStorage(stored: AgentConversation[], legacy: 
     }
   }
   return [...merged.values()].sort((a, b) => a.createdAt - b.createdAt)
-}
-
-function getPersistableResponseOutputItem(item: ResponsesOutputItem): ResponsesOutputItem {
-  if (item.type !== 'image_generation_call' || item.result == null) return item
-
-  if (typeof item.result === 'string') {
-    const { result: _result, ...rest } = item
-    return rest
-  }
-
-  if (!isRecord(item.result)) return item
-  const { b64_json: _b64Json, base64: _base64, image: _image, data: _data, ...restResult } = item.result
-  if (Object.keys(restResult).length === 0) {
-    const { result: _result, ...rest } = item
-    return rest
-  }
-
-  return { ...item, result: restResult }
-}
-
-function getPersistableAgentConversations(conversations: AgentConversation[]): AgentConversation[] {
-  return conversations.map((conversation) => ({
-    ...conversation,
-    rounds: conversation.rounds.map((round) => round.responseOutput?.length
-      ? {
-          ...round,
-          responseOutput: round.responseOutput.map(getPersistableResponseOutputItem),
-        }
-      : round,
-    ),
-  }))
-}
-
-function stripPersistedAgentConversations(value: unknown): unknown {
-  if (!Array.isArray(value)) return value
-  return value.map((conversation) => {
-    if (!isRecord(conversation) || !Array.isArray(conversation.rounds)) return conversation
-    return {
-      ...conversation,
-      rounds: conversation.rounds.map((round) => {
-        if (!isRecord(round) || !Array.isArray(round.responseOutput)) return round
-        return {
-          ...round,
-          responseOutput: round.responseOutput.map((item) =>
-            isRecord(item) ? getPersistableResponseOutputItem(item as ResponsesOutputItem) : item,
-          ),
-        }
-      }),
-    }
-  })
 }
 
 export function migratePersistedState(persistedState: unknown): unknown {
@@ -975,10 +926,6 @@ export function getPersistedState(state: AppState) {
 
 async function replaceStoredAgentConversations(conversations: AgentConversation[]) {
   await replaceAgentConversations(conversations.map(getPersistableAgentConversation))
-}
-
-function getPersistableAgentConversation(conversation: AgentConversation): AgentConversation {
-  return getPersistableAgentConversations([conversation])[0]!
 }
 
 function mergePersistedState(persistedState: unknown, currentState: AppState): AppState {
@@ -2450,25 +2397,6 @@ function genId(): string {
   return Date.now().toString(36) + (++uid).toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
-function getPersistableRawResponsePayload(rawResponsePayload?: string) {
-  if (!rawResponsePayload) return rawResponsePayload
-  try {
-    const payload = JSON.parse(rawResponsePayload) as { output?: unknown }
-    if (!Array.isArray(payload.output)) return rawResponsePayload
-    const output = payload.output.map((item) =>
-      isRecord(item) ? getPersistableResponseOutputItem(item as ResponsesOutputItem) : item,
-    )
-    return JSON.stringify({ ...payload, output }, null, 2)
-  } catch {
-    return rawResponsePayload
-  }
-}
-
-function getPersistableTask(task: TaskRecord): TaskRecord {
-  const rawResponsePayload = getPersistableRawResponsePayload(task.rawResponsePayload)
-  return rawResponsePayload === task.rawResponsePayload ? task : { ...task, rawResponsePayload }
-}
-
 function isBackendManagedGenerationTask(task: TaskRecord, project = task.projectId
   ? useStore.getState().projects.find((item) => item.id === task.projectId)
   : undefined) {
@@ -2648,6 +2576,9 @@ function queueOnlineProjectViewportSync(project: Project) {
       if (onlineProjectCanvasSyncQueues.get(project.id) === syncing) onlineProjectCanvasSyncQueues.delete(project.id)
     })
 }
+
+// 剥离 base64 后的归档只有几十 KB，超过该阈值说明是旧格式，需要重新打包瘦身。
+const OVERSIZED_ARCHIVE_BYTES = 2 * 1024 * 1024
 
 function scheduleOnlineProjectSync(projectId: string, delay = 1200) {
   if (!onlineProjectCacheReady) return
@@ -4180,11 +4111,14 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
   const thumbnails: StoredImageThumbnail[] = []
   const availableImageIds = new Set(localImageIds)
   const favoriteCollections: FavoriteCollection[] = []
+  // 历史归档把响应里的 base64 一起打包了，体积可达几十 MB，加载后顺带重新同步一次瘦身。
+  const oversizedProjectIds: string[] = []
 
   for (const response of responses) {
     const cached = localProjects.find((project) => project.id === response.id || project.remoteId === response.id)
     const remote = createOnlineProject(response)
     const shouldLoadContents = activeProjectId === null || activeProjectId === ALL_PROJECTS_ID || activeProjectId === response.id || cached?.id === activeProjectId
+    if (shouldLoadContents && response.archive_size > OVERSIZED_ARCHIVE_BYTES) oversizedProjectIds.push(response.id)
     // 归档 SHA 相同时也可能只同步了画布，先检查本地任务是否能支撑画布中的 item。
     const cachedCanvasItemIds = Object.keys(cached?.canvas?.items ?? {})
     const localProjectTasks = localTasks.filter((task) => task.projectId === response.id)
@@ -4330,7 +4264,7 @@ async function loadOnlineProjectCache(localProjects: Project[], localTasks: Task
 
   projects.sort((a, b) => (b.contentUpdatedAt ?? b.updatedAt) - (a.contentUpdatedAt ?? a.updatedAt))
   tasks = [...new Map(tasks.map((task) => [task.id, task])).values()]
-  return { projects, tasks, agentConversations, images, thumbnails, favoriteCollections }
+  return { projects, tasks, agentConversations, images, thumbnails, favoriteCollections, oversizedProjectIds }
 }
 
 let initStoreInFlight: Promise<void> | null = null
@@ -4376,6 +4310,7 @@ async function initializeStore() {
   let importedImages: StoredImage[] = []
   let importedThumbnails: StoredImageThumbnail[] = []
   let onlineListLoaded = false
+  let oversizedProjectIds: string[] = []
   useStore.setState({ projects, projectsLoaded: true })
   const publishedProjectState = useStore.getState().projects
   const authEnabled = isAuthEnabled()
@@ -4390,6 +4325,7 @@ async function initializeStore() {
       importedFavoriteCollections = online.favoriteCollections
       importedImages = online.images
       importedThumbnails = online.thumbnails
+      oversizedProjectIds = online.oversizedProjectIds
       onlineListLoaded = true
       for (const image of importedImages) cacheImage(image.id, image.dataUrl)
       for (const thumbnail of importedThumbnails) {
@@ -4508,6 +4444,8 @@ async function initializeStore() {
   const projectsToSync = new Set([
     ...projects.filter((project) => project.syncPending && isActiveProjectRecord(project.id)).map((project) => project.id),
     ...interruptedTasks.filter((task) => isActiveProjectRecord(task.projectId)).map((task) => task.projectId).filter((id): id is string => Boolean(id)),
+    // 内容已完整载入内存才能重新打包，否则会把归档写空。
+    ...oversizedProjectIds.filter((projectId) => isActiveProjectRecord(projectId) && projects.some((project) => project.id === projectId)),
   ])
   for (const projectId of projectsToSync) scheduleOnlineProjectSync(projectId, 0)
   const recoveredAgentConversations = recoverAgentConversationsForImageStatus(useStore.getState().agentConversations, tasks)
@@ -5591,7 +5529,8 @@ function sanitizeResponseOutputForInput(output: ResponsesOutputItem[], options: 
 
 function mergeResponseOutputItems(previous: ResponsesOutputItem[], next: ResponsesOutputItem[]) {
   const merged = [...previous]
-  for (const item of next) {
+  // 图片本体已由 extractImages 落地成 task，响应里内联的 base64 无人消费，写进内存前就剥掉。
+  for (const item of next.map(getPersistableResponseOutputItem)) {
     const index = item.id ? merged.findIndex((existing) => existing.id === item.id) : -1
     if (index >= 0) merged[index] = item
     else merged.push(item)

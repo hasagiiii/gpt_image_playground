@@ -1,6 +1,7 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { authFetch, REQUEST_ID_HEADER } from '../auth/api'
 import { appendStreamingFormatHint, createImageStatusRequestId, maybeAppendStreamingHint, getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
+import { stringifyPersistableResponsePayload } from './persistablePayload'
 
 export interface AgentApiResultImage {
   toolCallId?: string
@@ -695,7 +696,7 @@ async function parseAgentStreamResponse(
     text,
     images: extractImages(payload, mime),
     outputItems: payload.output ?? [],
-    rawResponsePayload: JSON.stringify(payload, null, 2),
+    rawResponsePayload: stringifyPersistableResponsePayload(payload),
   }
 }
 
@@ -762,7 +763,7 @@ export async function callAgentResponsesApi(opts: {
       text: extractText(payload),
       images: extractImages(payload, mime),
       outputItems: payload.output,
-      rawResponsePayload: JSON.stringify(payload, null, 2),
+      rawResponsePayload: stringifyPersistableResponsePayload(payload),
     }
   } finally {
     clearTimeout(timeoutId)
@@ -955,7 +956,7 @@ export async function callBatchImageSingle(opts: {
 
         if (type === 'response.completed' || isRecordValue(event.response)) {
           const payload = getStreamResponsePayload(event)
-          if (payload) rawPayload = JSON.stringify(payload, null, 2)
+          if (payload) rawPayload = stringifyPersistableResponsePayload(payload)
           if (!completedImage && payload) {
             const images = extractImages(payload, mime)
             if (images.length > 0) {

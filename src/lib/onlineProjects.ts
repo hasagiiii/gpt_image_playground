@@ -5,6 +5,7 @@ import { blobToDataUrl } from './dataUrl'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './exportZip'
 import { getAgentConversationProjectId } from './agentConversationScope'
 import { normalizeProjectCanvas } from './projectCanvas'
+import { getPersistableAgentConversations, getPersistableTask } from './persistablePayload'
 
 const LEGACY_PROJECT_UPLOAD_ID_KEY = 'gpt-image-playground:legacy-project-upload-id'
 
@@ -20,6 +21,8 @@ export interface OnlineProjectResponse {
 	archive_sha256: string
 	created_at: string
 	updated_at: string
+	// 仅在内容真正变化时更新，视口保存不会刷新它。
+	content_updated_at?: string
 	image_count?: number
 }
 
@@ -105,13 +108,14 @@ async function buildProjectArchive(state: ProjectArchiveState, project: Project 
     options: { exportConfig: false, exportTasks: true },
     exportedAt: Date.now(),
     settings: state.settings,
-    tasks,
+    // 内存中的 task / 会话仍带响应内联的 base64，必须剥离后再打包，否则归档会膨胀到几十 MB。
+    tasks: tasks.map(getPersistableTask),
     projects,
     images: [],
     thumbnailsByImageId: new Map(),
     favoriteCollections: state.favoriteCollections,
     defaultFavoriteCollectionId: state.defaultFavoriteCollectionId,
-    agentConversations,
+    agentConversations: getPersistableAgentConversations(agentConversations),
   })
   return new Blob([bytes.buffer as ArrayBuffer], { type: 'application/zip' })
 }
