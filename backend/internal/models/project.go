@@ -9,7 +9,7 @@ type OnlineProject struct {
 	Title            string    `json:"title"`
 	ArchiveSize      int64     `json:"archive_size"`
 	ArchiveSHA256    string    `json:"archive_sha256"`
-	ImageCount       int64     `json:"image_count"`
+	ImageCount       int64     `json:"image_count"` // 去重后的最终输出图片数，不含参考图或失败占位图。
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	ContentUpdatedAt time.Time `json:"content_updated_at"`

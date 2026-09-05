@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect } from 'react'
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { ALL_FAVORITES_COLLECTION_ID, ALL_PROJECTS_ID, LOCAL_PROJECT_ID, deleteFavoriteCollection, getFavoriteCollectionsForProject, getFavoriteScopeProjectId, getImageFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { useAuth } from '../auth/AuthContext'
@@ -15,6 +15,7 @@ import { getSafeBoundingClientRect } from '../lib/domRect'
 import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
 import { useHintTooltip } from '../hooks/useHintTooltip'
 import { useTooltip } from '../hooks/useTooltip'
+import { useInputBarClearance } from '../hooks/useInputBarClearance'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageZipEntries } from '../lib/downloadImages'
 import Select from './Select'
 import ViewportTooltip from './ViewportTooltip'
@@ -1001,37 +1002,7 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
     return () => window.removeEventListener('gpt-image-playground:expand-input-bar', expandInputBar)
   }, [inputMode])
 
-  const updateInputBarClearance = useCallback(() => {
-    const bar = cardRef.current?.closest<HTMLElement>('[data-input-bar]')
-    if (!bar) return
-
-    const rect = bar.getBoundingClientRect()
-    const clearance = Math.max(0, window.innerHeight - rect.top)
-    document.documentElement.style.setProperty('--input-bar-clearance', `${Math.ceil(clearance)}px`)
-  }, [])
-
-  useLayoutEffect(() => {
-    const bar = cardRef.current?.closest<HTMLElement>('[data-input-bar]')
-    if (!bar) return
-
-    const frame = window.requestAnimationFrame(updateInputBarClearance)
-    const observer = new ResizeObserver(updateInputBarClearance)
-    observer.observe(bar)
-
-    const visualViewport = window.visualViewport
-    window.addEventListener('resize', updateInputBarClearance)
-    visualViewport?.addEventListener('resize', updateInputBarClearance)
-    visualViewport?.addEventListener('scroll', updateInputBarClearance)
-
-    return () => {
-      window.cancelAnimationFrame(frame)
-      observer.disconnect()
-      window.removeEventListener('resize', updateInputBarClearance)
-      visualViewport?.removeEventListener('resize', updateInputBarClearance)
-      visualViewport?.removeEventListener('scroll', updateInputBarClearance)
-      document.documentElement.style.removeProperty('--input-bar-clearance')
-    }
-  }, [updateInputBarClearance])
+  useInputBarClearance(cardRef, inputMode === 'agent' ? 'agent' : 'params')
   const imageHintTimerRef = useRef<number | null>(null)
   const [outputCompressionInput, setOutputCompressionInput] = useState(
     params.output_compression == null ? '' : String(params.output_compression),

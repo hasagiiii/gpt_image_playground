@@ -181,7 +181,7 @@ func main() {
 		}
 		return authSvc.IsAdmin(user), nil
 	}).Register(api)
-	handlers.NewAdminHandler(userRepo, projectRepo, func(ctx context.Context, userID string) (bool, error) {
+	handlers.NewAdminHandler(userRepo, projectRepo, materialService, func(ctx context.Context, userID string) (bool, error) {
 		user, err := userRepo.FindByID(ctx, userID)
 		if err != nil {
 			return false, err

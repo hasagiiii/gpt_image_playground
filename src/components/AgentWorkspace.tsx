@@ -1127,7 +1127,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
         <div 
           ref={scrollContainerRef}
           data-agent-scroll-container
-          className={`min-h-0 flex-1 space-y-4 ${embedded ? 'overflow-y-auto overscroll-contain' : 'overflow-visible'} pb-[calc(var(--input-bar-clearance,12rem)+1.5rem)] px-1 lg:pt-14 lg:px-4`}
+          className={`min-h-0 flex-1 space-y-4 ${embedded ? 'overflow-y-auto overscroll-contain' : 'overflow-visible'} pb-[calc(var(--agent-input-bar-clearance,12rem)+1.5rem)] px-1 lg:pt-14 lg:px-4`}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
@@ -1427,7 +1427,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
 
         <button
           onClick={() => scrollToAgentBottom()}
-          className={`fixed bottom-[calc(var(--input-bar-clearance,12rem)+1.5rem)] left-1/2 -translate-x-1/2 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 backdrop-blur shadow-[0_2px_12px_rgba(0,0,0,0.1)] border border-gray-200/50 text-gray-500 transition-all duration-300 hover:bg-gray-50 hover:text-gray-800 dark:border-white/[0.08] dark:bg-gray-800/90 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200 ${
+          className={`fixed bottom-[calc(var(--agent-input-bar-clearance,12rem)+1.5rem)] left-1/2 -translate-x-1/2 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 backdrop-blur shadow-[0_2px_12px_rgba(0,0,0,0.1)] border border-gray-200/50 text-gray-500 transition-all duration-300 hover:bg-gray-50 hover:text-gray-800 dark:border-white/[0.08] dark:bg-gray-800/90 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200 ${
             !isScrolledToBottom && activeMessages.length > 0 ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
           }`}
           aria-label="滚动到底部"

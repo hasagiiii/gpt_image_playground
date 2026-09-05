@@ -99,7 +99,8 @@ export default function CanvasControls({
 }) {
   const controlsRef = useRef<HTMLDivElement>(null)
   const zoomInputRef = useRef<HTMLInputElement>(null)
-  const minimapDragRef = useRef<{ pointerId: number; start: { x: number; y: number }; viewport: ProjectCanvasViewport; width: number; height: number } | null>(null)
+  const minimapDragRef = useRef<{ pointerId: number; start: { x: number; y: number }; viewport: ProjectCanvasViewport; width: number; height: number; moved: boolean; startedOnLayer: boolean } | null>(null)
+  const minimapSuppressLayerClickRef = useRef(false)
   const [zoomPresetOpen, setZoomPresetOpen] = useState(false)
   const [zoomHelpOpen, setZoomHelpOpen] = useState(false)
   const [layersOpen, setLayersOpen] = useState(false)
@@ -172,17 +173,18 @@ export default function CanvasControls({
   }, [zoomEditing])
 
   useEffect(() => {
-    if (!zoomPresetOpen && !zoomHelpOpen && !layersOpen) return
+    if (!zoomPresetOpen && !zoomHelpOpen && !layersOpen && !minimapOpen) return
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target
       if (target instanceof Node && controlsRef.current?.contains(target)) return
       setZoomPresetOpen(false)
       setZoomHelpOpen(false)
       setLayersOpen(false)
+      setMinimapOpen(false)
     }
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [layersOpen, zoomHelpOpen, zoomPresetOpen])
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true)
+  }, [layersOpen, minimapOpen, zoomHelpOpen, zoomPresetOpen])
 
   const setZoomPercent = (percent: number) => {
     if (!Number.isFinite(percent)) return
@@ -200,16 +202,21 @@ export default function CanvasControls({
 
   const handleMinimapDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!minimap) return
-    const rect = event.currentTarget.parentElement?.getBoundingClientRect()
-    if (!rect) return
+    const rect = event.currentTarget.getBoundingClientRect()
     event.stopPropagation()
-    event.currentTarget.setPointerCapture(event.pointerId)
+    const button = event.target instanceof Element ? event.target.closest('button') : null
+    // 保留图片按钮作为点击目标，拖拽事件仍会冒泡到小地图。
+    const captureTarget = button ?? event.currentTarget
+    captureTarget.setPointerCapture(event.pointerId)
+    minimapSuppressLayerClickRef.current = false
     minimapDragRef.current = {
       pointerId: event.pointerId,
       start: { x: event.clientX, y: event.clientY },
       viewport,
       width: rect.width,
       height: rect.height,
+      moved: false,
+      startedOnLayer: Boolean(button),
     }
   }
 
@@ -219,6 +226,7 @@ export default function CanvasControls({
     event.stopPropagation()
     const dx = (event.clientX - drag.start.x) / Math.max(1, drag.width) * minimap.bounds.width
     const dy = (event.clientY - drag.start.y) / Math.max(1, drag.height) * minimap.bounds.height
+    drag.moved = drag.moved || Math.hypot(event.clientX - drag.start.x, event.clientY - drag.start.y) > 3
     onViewportChange({
       ...drag.viewport,
       x: drag.viewport.x - dx * drag.viewport.scale,
@@ -227,8 +235,22 @@ export default function CanvasControls({
   }
 
   const handleMinimapDragEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (minimapDragRef.current?.pointerId !== event.pointerId) return
+    const drag = minimapDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId || !minimap) return
     event.stopPropagation()
+    if (drag.moved) {
+      minimapSuppressLayerClickRef.current = true
+      window.setTimeout(() => { minimapSuppressLayerClickRef.current = false }, 0)
+    } else if (!drag.startedOnLayer && event.type !== 'pointercancel') {
+      const rect = event.currentTarget.getBoundingClientRect()
+      const worldX = minimap.bounds.minX + (event.clientX - rect.left) / Math.max(1, rect.width) * minimap.bounds.width
+      const worldY = minimap.bounds.minY + (event.clientY - rect.top) / Math.max(1, rect.height) * minimap.bounds.height
+      onViewportChange({
+        ...viewport,
+        x: containerSize.width / 2 - worldX * viewport.scale,
+        y: containerSize.height / 2 - worldY * viewport.scale,
+      })
+    }
     minimapDragRef.current = null
   }
 
@@ -256,7 +278,9 @@ export default function CanvasControls({
         >
           <div className="mb-1.5 font-medium text-gray-800 dark:text-gray-100">图层</div>
           <div data-canvas-scrollable className="max-h-96 overflow-y-auto overscroll-contain">
-            {[...layers].sort((a, b) => b.z - a.z).map((layer) => (
+            {[...layers].sort((a, b) =>
+              (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY) || b.z - a.z,
+            ).map((layer) => (
               <div key={layer.id} className={`flex w-full items-center gap-2 rounded px-2 py-1.5 transition ${layer.id === selectedLayerId ? 'bg-[#3f78c5]/12 text-[#3f78c5]' : 'text-gray-700 dark:text-gray-200'}`}>
                 {editingLayerId === layer.id && !readOnly && onRenameLayer ? (
                   <input
@@ -313,14 +337,17 @@ export default function CanvasControls({
       )}
       {!collapsed && minimapOpen && minimap && (
         <div className="absolute bottom-full left-0 mb-2 w-60 text-xs shadow-lg" onPointerDown={(event) => event.stopPropagation()}>
-          <div className="relative h-36 overflow-hidden rounded border border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800">
+          <div
+            data-canvas-minimap
+            className="relative h-36 cursor-move touch-none overflow-hidden rounded border border-gray-200 bg-gray-100 dark:border-white/[0.1] dark:bg-gray-800"
+            onPointerDown={handleMinimapDragStart}
+            onPointerMove={handleMinimapDragMove}
+            onPointerUp={handleMinimapDragEnd}
+            onPointerCancel={handleMinimapDragEnd}
+          >
             <div
               className="absolute z-20 cursor-move border border-[#3f78c5] bg-[#3f78c5]/10"
               style={{ left: `${Math.max(0, Math.min(100, minimap.viewport.left))}%`, top: `${Math.max(0, Math.min(100, minimap.viewport.top))}%`, width: `${Math.max(2, Math.min(100, minimap.viewport.width))}%`, height: `${Math.max(2, Math.min(100, minimap.viewport.height))}%` }}
-              onPointerDown={handleMinimapDragStart}
-              onPointerMove={handleMinimapDragMove}
-              onPointerUp={handleMinimapDragEnd}
-              onPointerCancel={handleMinimapDragEnd}
             />
             {layers.map((layer) => (
               <button
@@ -330,7 +357,10 @@ export default function CanvasControls({
                 title={layer.label}
                 className={`absolute z-30 min-h-1 min-w-1 rounded-sm ${layer.id === selectedLayerId ? 'bg-[#3f78c5] ring-2 ring-[#3f78c5]/40' : layer.status === 'error' ? 'bg-red-500/80' : 'bg-[#3f78c5]/65 hover:bg-[#3f78c5]'}`}
                 style={{ left: `${(layer.x - minimap.bounds.minX) / minimap.bounds.width * 100}%`, top: `${(layer.y - minimap.bounds.minY) / minimap.bounds.height * 100}%`, width: `${Math.max(1.5, layer.width / minimap.bounds.width * 100)}%`, height: `${Math.max(1.5, layer.height / minimap.bounds.height * 100)}%` }}
-                onClick={() => onFocusLayer(layer.id)}
+                onClick={() => {
+                  if (minimapSuppressLayerClickRef.current) return
+                  onFocusLayer(layer.id)
+                }}
               />
             ))}
           </div>

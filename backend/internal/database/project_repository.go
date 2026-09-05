@@ -246,11 +246,12 @@ func (r *ProjectRepository) Save(ctx context.Context, userID, id, title string, 
 	return &project, nil
 }
 
-// List 返回用户的项目元数据，不读取归档字段。
+// List 返回用户的项目元数据，仅在输出数量缓存失效时读取归档。
 func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.OnlineProject, error) {
 	const q = `
 		SELECT p.id, p.user_id, p.title, p.archive_size, p.archive_sha256, p.created_at, p.updated_at, p.content_updated_at,
-		       (SELECT COUNT(*) FROM project_images i WHERE i.project_id = p.id)
+		       CASE WHEN p.output_image_count_sha256 = p.archive_sha256 THEN p.output_image_count END,
+		       CASE WHEN p.output_image_count_sha256 IS DISTINCT FROM p.archive_sha256 OR p.output_image_count IS NULL THEN p.archive END
 		FROM online_projects p
 		WHERE p.user_id = $1 AND p.deleted_at IS NULL
 		ORDER BY p.content_updated_at DESC`
@@ -261,8 +262,11 @@ func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.O
 	defer rows.Close()
 
 	projects := make([]models.OnlineProject, 0)
+	var uncached []int
 	for rows.Next() {
 		var project models.OnlineProject
+		var count sql.NullInt64
+		var archive []byte
 		if err := rows.Scan(
 			&project.ID,
 			&project.UserID,
@@ -272,14 +276,38 @@ func (r *ProjectRepository) List(ctx context.Context, userID string) ([]models.O
 			&project.CreatedAt,
 			&project.UpdatedAt,
 			&project.ContentUpdatedAt,
-			&project.ImageCount,
+			&count,
+			&archive,
 		); err != nil {
 			return nil, fmt.Errorf("scan online project: %w", err)
+		}
+		project.ImageCount = count.Int64
+		if !count.Valid {
+			project.ImageCount, err = countProjectOutputImages(archive)
+			if err != nil {
+				return nil, fmt.Errorf("count project %s outputs: %w", project.ID, err)
+			}
+			uncached = append(uncached, len(projects))
 		}
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list online projects: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close online projects: %w", err)
+	}
+	// 先释放查询连接；摘要条件防止并发保存归档时写回过期数量。
+	for _, index := range uncached {
+		project := projects[index]
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE online_projects
+			SET output_image_count = $3, output_image_count_sha256 = $4
+			WHERE id = $1 AND user_id = $2 AND archive_sha256 = $4 AND deleted_at IS NULL`,
+			project.ID, userID, project.ImageCount, project.ArchiveSHA256,
+		); err != nil {
+			return nil, fmt.Errorf("cache project output count: %w", err)
+		}
 	}
 	return projects, nil
 }

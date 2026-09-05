@@ -63,6 +63,7 @@ import {
   FavoriteIcon,
   FlipHorizontalIcon,
   FlipVerticalIcon,
+  HandIcon,
   ImageIcon,
   InfoIcon,
   RefreshIcon,
@@ -943,6 +944,8 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const [toolbarSize, setToolbarSize] = useState({ width: 0, height: 0 })
   const [cropImageId, setCropImageId] = useState<string | null>(null)
+  const [panMode, setPanMode] = useState(false)
+  const [verticalToolbarCollapsed, setVerticalToolbarCollapsed] = useState(false)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [exportMenuPosition, setExportMenuPosition] = useState<{ left: number; top: number } | null>(null)
   const [canvasHeaderCollapsed, setCanvasHeaderCollapsed] = useState(() => {
@@ -1755,10 +1758,11 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
 
   const handleCanvasPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement
-    if (target.closest('[data-canvas-node], [data-canvas-toolbar], button')) return
+    if (target.closest('[data-canvas-toolbar], button')) return
+    if (!panMode && target.closest('[data-canvas-node]')) return
     setTransformPanelKey(null)
     const modifier = event.ctrlKey || event.metaKey
-    if (modifier) {
+    if (!panMode && modifier) {
       const rect = event.currentTarget.getBoundingClientRect()
       const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
       event.currentTarget.setPointerCapture(event.pointerId)
@@ -1860,6 +1864,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   }
 
   const handleNodePointerDown = (node: CanvasNode, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (panMode) return
     if ((event.target as HTMLElement).closest('button')) return
     event.stopPropagation()
     setTransformPanelKey(null)
@@ -2388,7 +2393,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       ref={containerRef}
       data-project-canvas
       data-no-drag-select
-      className="relative h-full min-h-[320px] w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 sm:min-h-[420px] dark:border-white/[0.08] dark:bg-gray-950"
+      className={`relative h-full min-h-[320px] w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 sm:min-h-[420px] dark:border-white/[0.08] dark:bg-gray-950 ${panMode ? 'cursor-grab active:cursor-grabbing' : ''}`}
       style={{ touchAction: 'none' }}
       onPointerDown={handleCanvasPointerDown}
       onPointerMove={handleCanvasPointerMove}
@@ -2397,7 +2402,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     >
       <CanvasReferenceConnections connections={canvasConnections} />
       <div
-        className="absolute left-0 top-0 z-10 origin-top-left"
+        className={`absolute left-0 top-0 z-10 origin-top-left ${panMode ? 'pointer-events-none' : ''}`}
         style={{
           transform: `translate(${canvas.viewport.x}px, ${canvas.viewport.y}px) scale(${canvas.viewport.scale})`,
           transition: viewportAnimating ? 'transform 560ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
@@ -2469,6 +2474,49 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             searchQuery={searchQuery}
           />
         ))}
+      </div>
+
+      <div data-canvas-toolbar className="pointer-events-none absolute left-3 top-1/2 z-40 h-[86px] w-[46px] -translate-y-1/2">
+        <div className={`pointer-events-auto flex w-full flex-col overflow-hidden rounded border border-gray-200 bg-white/90 p-1 shadow-sm backdrop-blur transition-[max-height] duration-200 ease-out dark:border-white/[0.1] dark:bg-gray-900/90 ${verticalToolbarCollapsed ? 'max-h-[46px]' : 'max-h-[86px]'}`}>
+          <div
+            data-canvas-vertical-toolbar-content
+            aria-hidden={verticalToolbarCollapsed}
+            className={`shrink-0 overflow-hidden transition-[max-height,margin,opacity,transform] duration-200 ease-out ${verticalToolbarCollapsed ? 'pointer-events-none mb-0 max-h-0 -translate-y-1 opacity-0' : 'mb-1 max-h-9 translate-y-0 opacity-100'}`}
+          >
+            <button
+              type="button"
+              aria-label="移动模式"
+              aria-pressed={panMode}
+              title="移动模式"
+              tabIndex={verticalToolbarCollapsed ? -1 : undefined}
+              className={`flex h-9 w-9 items-center justify-center rounded transition ${panMode ? 'bg-[#3f78c5] text-white shadow-sm' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.08] dark:hover:text-white'}`}
+              onClick={() => {
+                if (!panMode) {
+                  setSelectedKey(null)
+                  setMultiSelectedKeys([])
+                  setInteractionKeys([])
+                  setTransformPanelKey(null)
+                  setCropImageId(null)
+                  setMarquee(null)
+                  marqueeRef.current = null
+                }
+                setPanMode(!panMode)
+              }}
+            >
+              <HandIcon className="h-5 w-5" />
+            </button>
+          </div>
+          <button
+            type="button"
+            aria-label={verticalToolbarCollapsed ? '展开竖直工具栏' : '收起竖直工具栏'}
+            title={verticalToolbarCollapsed ? '展开竖直工具栏' : '收起竖直工具栏'}
+            aria-expanded={!verticalToolbarCollapsed}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.08] dark:hover:text-white"
+            onClick={() => setVerticalToolbarCollapsed((collapsed) => !collapsed)}
+          >
+            <ChevronDownIcon className={`h-4 w-4 transition-transform duration-200 ${verticalToolbarCollapsed ? '' : 'rotate-180'}`} />
+          </button>
+        </div>
       </div>
 
       <div data-canvas-toolbar className="pointer-events-none absolute inset-x-0 top-4 z-50 flex justify-center px-3 sm:top-5 sm:px-6">

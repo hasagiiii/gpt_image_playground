@@ -47,7 +47,7 @@ export default function AppSidebar({ view, collapsed, onChange, onCollapsedChang
             </button>
             <button type="button" onClick={() => onChange('admin-users')} className={`flex h-10 w-full items-center rounded-lg text-sm font-medium transition ${collapsed ? 'justify-center px-0' : 'gap-3 px-3 text-left'} ${view === 'admin-users' ? 'bg-gray-100 text-gray-900 dark:bg-white/[0.08] dark:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.05] dark:hover:text-white'}`} title={collapsed ? '用户管理' : undefined} aria-label="用户管理">
               <UsersIcon className="h-[18px] w-[18px] shrink-0" />
-              <span className={`overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-in-out ${collapsed ? 'pointer-events-none max-w-32 opacity-0' : 'max-w-32 opacity-100 delay-75'}`}>用户管理</span>
+              <span className={`overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-in-out ${collapsed ? 'pointer-events-none max-w-0 opacity-0' : 'max-w-32 opacity-100 delay-75'}`}>用户管理</span>
             </button>
           </>}
         </nav>

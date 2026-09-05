@@ -142,6 +142,10 @@ export function MapIcon(props: SVGProps<SVGSVGElement>) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3-6-3Z" /><path d="M9 3v15M15 6v15" /></svg>
 }
 
+export function HandIcon(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M18 11V7a2 2 0 0 0-4 0v3-5a2 2 0 0 0-4 0v5-3a2 2 0 0 0-4 0v7l-1.4-1.4a2 2 0 0 0-2.8 2.8l4.8 4.8A6 6 0 0 0 10.8 22H16a6 6 0 0 0 6-6v-5a2 2 0 0 0-4 0Z" /></svg>
+}
+
 export function ChevronLeftIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" {...props}>

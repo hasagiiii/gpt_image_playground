@@ -123,6 +123,31 @@ describe('callAgentResponsesApi', () => {
     expect(result.rawResponsePayload).toContain('resp_1')
   })
 
+  it('reports the nested response error from a failed Agent stream', async () => {
+    const streamBody = [
+      'data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"server_error","message":"upstream unavailable"}}}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(streamBody, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      streamImages: true,
+    })
+
+    await expect(callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'prompt' }] }],
+    })).rejects.toThrow('upstream unavailable')
+  })
+
   it('passes mask data to the Agent image tool', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output: [{

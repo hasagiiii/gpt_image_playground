@@ -6,7 +6,8 @@ import { readOnlineProjectArchive, type OnlineProjectResponse } from '../lib/onl
 import { getAdminUsersSelectionFromUrl, updateAdminUsersUrl } from '../lib/projectRoute'
 import { useStore } from '../store'
 import AdminCanvasViewer from './AdminCanvasViewer'
-import { ArrowDownIcon, ChevronLeftIcon, UsersIcon } from './icons'
+import AdminMaterialLibrary from './AdminMaterialLibrary'
+import { ArrowDownIcon, ChevronLeftIcon, CollectionManageIcon, ImageIcon, UsersIcon } from './icons'
 
 type ViewerState = { project: Project; tasks: TaskRecord[]; agentConversations: AgentConversation[]; images: Record<string, StoredImage> }
 
@@ -65,6 +66,7 @@ export default function AdminUsers() {
   const [viewerLoading, setViewerLoading] = useState(Boolean(initialSelection.projectId))
   const [viewerError, setViewerError] = useState<string | null>(null)
   const [projectsError, setProjectsError] = useState<string | null>(null)
+  const [contentView, setContentView] = useState<'projects' | 'materials'>('projects')
   const selectedUser = useMemo(() => users.find((item) => item.id === selectedUserId), [selectedUserId, users])
 
   useEffect(() => {
@@ -81,6 +83,7 @@ export default function AdminUsers() {
       const selection = getAdminUsersSelectionFromUrl()
       setSelectedUserId(selection.userId)
       setSelectedProjectId(selection.projectId)
+      setContentView('projects')
       setViewerError(null)
       setViewerLoading(Boolean(selection.projectId))
     }
@@ -221,6 +224,7 @@ export default function AdminUsers() {
     setViewer(null)
     setViewerError(null)
     setViewerLoading(false)
+    setContentView('projects')
   }
 
   const selectProject = (project: OnlineProjectResponse) => {
@@ -240,6 +244,7 @@ export default function AdminUsers() {
     setViewer(null)
     setViewerError(null)
     setViewerLoading(false)
+    setContentView('projects')
   }
 
   const showUserProjects = () => {
@@ -275,10 +280,16 @@ export default function AdminUsers() {
               {selectedUser && <dl className="mt-5 space-y-2 text-xs"><div className="flex justify-between gap-2"><dt className="text-gray-400">登录来源</dt><dd className="truncate text-gray-600 dark:text-gray-300">{selectedUser.oidc_provider}</dd></div><div className="flex justify-between gap-2"><dt className="text-gray-400">注册时间</dt><dd className="text-right text-gray-600 dark:text-gray-300">{formatDate(selectedUser.created_at)}</dd></div></dl>}
             </section>
             <section className="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-white/[0.08] dark:bg-gray-900">
-              <div className="border-b border-gray-200 px-4 py-3 text-sm text-gray-500 dark:border-white/[0.08]">用户画布 · {projects.length} 个项目</div>
-              {projectsLoading ? <div className="p-6 text-sm text-gray-500">加载中...</div> : projects.length === 0 ? <div className="p-6 text-sm text-gray-500">该用户暂无在线画布</div> : <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">{projects.map((project) => <button key={project.id} type="button" onClick={() => selectProject(project)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/[0.04]"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{project.title || '未命名画布'}</span><span className="block truncate text-xs text-gray-500">更新于 {formatDate(project.content_updated_at ?? project.updated_at)}</span></span><span className="flex shrink-0 flex-col items-end text-xs text-gray-400"><span>{project.image_count ?? 0} 个作品</span><span>{(project.archive_size / 1024 / 1024).toFixed(1)} MB</span></span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" /></button>)}</div>}
-              {viewerLoading && <div className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-white/[0.06]">正在读取画布...</div>}
-              {selectedProjectId && viewerLoading === false && !viewer && <div className="hidden" />}
+              <div className="flex items-center gap-1 border-b border-gray-200 px-3 py-2 dark:border-white/[0.08]" role="tablist" aria-label="用户内容">
+                <button type="button" role="tab" aria-selected={contentView === 'projects'} onClick={() => setContentView('projects')} className={`flex h-8 items-center gap-1.5 rounded px-3 text-sm font-medium transition ${contentView === 'projects' ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.06] dark:hover:text-white'}`}><ImageIcon className="h-4 w-4" />画布</button>
+                <button type="button" role="tab" aria-selected={contentView === 'materials'} onClick={() => setContentView('materials')} className={`flex h-8 items-center gap-1.5 rounded px-3 text-sm font-medium transition ${contentView === 'materials' ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.06] dark:hover:text-white'}`}><CollectionManageIcon className="h-4 w-4" />素材</button>
+              </div>
+              {contentView === 'materials' ? <AdminMaterialLibrary key={selectedUserId} userId={selectedUserId} /> : <>
+                <div className="border-b border-gray-200 px-4 py-3 text-sm text-gray-500 dark:border-white/[0.08]">用户画布 · {projects.length} 个项目</div>
+                {projectsLoading ? <div className="p-6 text-sm text-gray-500">加载中...</div> : projects.length === 0 ? <div className="p-6 text-sm text-gray-500">该用户暂无在线画布</div> : <div className="divide-y divide-gray-100 dark:divide-white/[0.06]">{projects.map((project) => <button key={project.id} type="button" onClick={() => selectProject(project)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/[0.04]"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{project.title || '未命名画布'}</span><span className="block truncate text-xs text-gray-500">更新于 {formatDate(project.content_updated_at ?? project.updated_at)}</span></span><span className="flex shrink-0 flex-col items-end text-xs text-gray-400"><span>{project.image_count ?? 0} 个作品</span><span>{(project.archive_size / 1024 / 1024).toFixed(1)} MB</span></span><ArrowDownIcon className="h-4 w-4 -rotate-90 text-gray-400" /></button>)}</div>}
+                {viewerLoading && <div className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-white/[0.06]">正在读取画布...</div>}
+                {selectedProjectId && viewerLoading === false && !viewer && <div className="hidden" />}
+              </>}
             </section>
           </div>
         )}

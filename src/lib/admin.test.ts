@@ -6,7 +6,7 @@ const authFetch = vi.hoisted(() => vi.fn())
 
 vi.mock('../auth/api', () => ({ authFetch }))
 
-import { downloadAdminUserProjectImage } from './admin'
+import { downloadAdminUserProjectImage, listAdminUserMaterials } from './admin'
 
 describe('admin', () => {
   beforeEach(() => {
@@ -39,5 +39,14 @@ describe('admin', () => {
       createdAt: Date.parse('2026-08-16T00:00:00Z'),
     })
     expect(authFetch).not.toHaveBeenCalled()
+  })
+
+  it('lists another user materials through the admin read-only endpoint', async () => {
+    const response = { items: [], total: 0, page: 2, page_size: 12 }
+    authFetch.mockResolvedValueOnce(new Response(JSON.stringify(response), { status: 200 }))
+
+    await expect(listAdminUserMaterials('user/a', { page: 2, pageSize: 12, kind: 'image', keyword: ' 参考 ' })).resolves.toEqual(response)
+
+    expect(authFetch).toHaveBeenCalledWith('/api/v1/admin/users/user%2Fa/materials?page=2&page_size=12&kind=image&keyword=%E5%8F%82%E8%80%83', { cache: 'no-store' })
   })
 })

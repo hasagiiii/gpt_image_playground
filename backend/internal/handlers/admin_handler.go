@@ -11,6 +11,7 @@ import (
 	"gpt-image-backend/internal/database"
 	"gpt-image-backend/internal/middleware"
 	"gpt-image-backend/internal/models"
+	"gpt-image-backend/internal/services"
 )
 
 type adminUserStore interface {
@@ -24,22 +25,58 @@ type adminProjectStore interface {
 	GetImage(context.Context, string, string, string) (*models.ProjectImage, []byte, error)
 }
 
-type AdminHandler struct {
-	users    adminUserStore
-	projects adminProjectStore
-	isAdmin  func(context.Context, string) (bool, error)
+type adminMaterialStore interface {
+	List(context.Context, string, string, string, int32, int32) (*services.MaterialList, error)
 }
 
-func NewAdminHandler(users adminUserStore, projects adminProjectStore, isAdmin func(context.Context, string) (bool, error)) *AdminHandler {
-	return &AdminHandler{users: users, projects: projects, isAdmin: isAdmin}
+type AdminHandler struct {
+	users     adminUserStore
+	projects  adminProjectStore
+	materials adminMaterialStore
+	isAdmin   func(context.Context, string) (bool, error)
+}
+
+func NewAdminHandler(users adminUserStore, projects adminProjectStore, materials adminMaterialStore, isAdmin func(context.Context, string) (bool, error)) *AdminHandler {
+	return &AdminHandler{users: users, projects: projects, materials: materials, isAdmin: isAdmin}
 }
 
 func (h *AdminHandler) Register(api *gin.RouterGroup) {
 	api.GET("/admin/users", h.ListUsers)
+	api.GET("/admin/users/:userId/materials", h.ListUserMaterials)
 	api.GET("/admin/users/:userId/projects", h.ListUserProjects)
 	api.GET("/admin/users/:userId/projects/:projectId", h.GetUserProject)
 	api.GET("/admin/users/:userId/projects/:projectId/images", h.ListUserProjectImages)
 	api.GET("/admin/users/:userId/projects/:projectId/images/:imageId", h.GetUserProjectImage)
+}
+
+func (h *AdminHandler) ListUserMaterials(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
+	userID := strings.TrimSpace(c.Param("userId"))
+	if !projectUUIDPattern.MatchString(userID) {
+		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "valid user id required"})
+		return
+	}
+	page, pageSize, err := materialPageQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": err.Error()})
+		return
+	}
+	result, err := h.materials.List(c.Request.Context(), userID, strings.TrimSpace(c.Query("kind")), strings.TrimSpace(c.Query("keyword")), page, pageSize)
+	if errors.Is(err, services.ErrMaterialUploadNotConfigured) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "message": err.Error()})
+		return
+	}
+	if errors.Is(err, services.ErrMaterialAccountIDMissing) {
+		c.JSON(http.StatusConflict, gin.H{"code": "account_id_required", "message": err.Error()})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"code": http.StatusBadGateway, "message": "素材接口失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *AdminHandler) ListUsers(c *gin.Context) {

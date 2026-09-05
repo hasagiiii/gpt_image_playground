@@ -7,7 +7,7 @@ import { getTaskIds } from '../lib/taskIds'
 import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
 import { redownloadTaskImage, retryImage, retryTaskInPlace, useStore } from '../store'
 import { TooltipButton } from './TooltipButton'
-import { AngleIcon, ChevronLeftIcon, CopyIcon, DownloadIcon, ImageIcon, InfoIcon, RefreshIcon, ScaleIcon, WarningIcon } from './icons'
+import { AngleIcon, ChevronDownIcon, ChevronLeftIcon, CopyIcon, DownloadIcon, HandIcon, ImageIcon, InfoIcon, RefreshIcon, ScaleIcon, WarningIcon } from './icons'
 import CanvasReferenceConnections from './CanvasReferenceConnections'
 import CanvasControls, { type CanvasControlLayer } from './CanvasControls'
 import DetailModal from './DetailModal'
@@ -147,6 +147,8 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   const canvasWheelMode = useStore((state) => state.settings?.canvasWheelMode ?? 'pan')
   const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ pointerId: number; x: number; y: number; viewport: ProjectCanvasState['viewport'] } | null>(null)
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>())
+  const pinchRef = useRef<{ distance: number; screenCenter: { x: number; y: number }; canvasCenter: { x: number; y: number }; viewport: ProjectCanvasState['viewport'] } | null>(null)
   const [viewport, setViewport] = useState(project.canvas?.viewport ?? { x: 0, y: 0, scale: 1 })
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
@@ -154,11 +156,20 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   const [agentDetailTask, setAgentDetailTask] = useState<TaskRecord | null>(null)
   const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(false)
   const [editingMode, setEditingMode] = useState(false)
+  const [showCoordinates, setShowCoordinates] = useState(false)
+  const [panMode, setPanMode] = useState(false)
+  const [verticalToolbarCollapsed, setVerticalToolbarCollapsed] = useState(false)
   const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(() => new Set())
 
   useEffect(() => {
-    setViewport(project.canvas?.viewport ?? { x: 0, y: 0, scale: 1 })
-  }, [project.canvas?.viewport.x, project.canvas?.viewport.y, project.canvas?.viewport.scale])
+    const initialViewport = project.canvas?.viewport ?? { x: 0, y: 0, scale: 1 }
+    console.info('[只读画布] 初始化视口', {
+      projectId: project.id,
+      source: project.canvas?.viewport ? 'project.canvas.viewport' : 'fallback',
+      viewport: initialViewport,
+    })
+    setViewport(initialViewport)
+  }, [project.id, project.canvas?.viewport.x, project.canvas?.viewport.y, project.canvas?.viewport.scale])
 
   useEffect(() => {
     const el = containerRef.current
@@ -317,20 +328,65 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     const target = event.target as Element | null
-    if (target?.closest('[data-canvas-node], [data-canvas-toolbar], button, input, textarea, select, [contenteditable="true"]')) return
+    const touch = event.pointerType === 'touch'
+    if (target?.closest('[data-canvas-toolbar], button, input, textarea, select, [contenteditable="true"]')) return
+    if (!panMode && !touch && target?.closest('[data-canvas-node]')) return
     setSelectedImageId(null)
     setInfoImageId(null)
     event.currentTarget.setPointerCapture(event.pointerId)
+
+    if (touch) {
+      pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      if (pointersRef.current.size === 1) {
+        dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, viewport }
+        return
+      }
+
+      const points = [...pointersRef.current.values()]
+      const screenCenter = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }
+      const rect = event.currentTarget.getBoundingClientRect()
+      pinchRef.current = {
+        distance: Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y),
+        screenCenter,
+        canvasCenter: { x: screenCenter.x - rect.left, y: screenCenter.y - rect.top },
+        viewport,
+      }
+      dragRef.current = null
+      return
+    }
+
     dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, viewport }
   }
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (pointersRef.current.has(event.pointerId)) {
+      pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      const points = [...pointersRef.current.values()]
+      if (points.length >= 2 && pinchRef.current) {
+        const screenCenter = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }
+        const distance = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)
+        const centered = zoomCanvasViewport(pinchRef.current.viewport, pinchRef.current.canvasCenter, pinchRef.current.viewport.scale * distance / Math.max(1, pinchRef.current.distance))
+        setViewport({
+          ...centered,
+          x: centered.x + screenCenter.x - pinchRef.current.screenCenter.x,
+          y: centered.y + screenCenter.y - pinchRef.current.screenCenter.y,
+        })
+        return
+      }
+    }
+
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     setViewport({ ...drag.viewport, x: drag.viewport.x + event.clientX - drag.x, y: drag.viewport.y + event.clientY - drag.y })
   }
 
   const handlePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (pointersRef.current.delete(event.pointerId)) {
+      pinchRef.current = null
+      dragRef.current = null
+      event.currentTarget.releasePointerCapture(event.pointerId)
+      return
+    }
     if (dragRef.current?.pointerId !== event.pointerId) return
     dragRef.current = null
     event.currentTarget.releasePointerCapture(event.pointerId)
@@ -464,7 +520,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
         ref={containerRef}
         data-project-canvas
         data-no-drag-select
-        className="relative h-full min-h-0 w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 dark:border-white/[0.08] dark:bg-gray-950"
+        className={`relative h-full min-h-0 w-full overscroll-none overflow-hidden border border-gray-200 bg-gray-100 dark:border-white/[0.08] dark:bg-gray-950 ${panMode ? 'cursor-grab active:cursor-grabbing' : ''}`}
         style={{ touchAction: 'none' }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -476,6 +532,11 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
           className="pointer-events-none absolute right-3 top-3 z-40 flex items-center gap-2"
           onPointerDown={(event) => event.stopPropagation()}
         >
+          <label className="pointer-events-auto inline-flex shrink-0 cursor-pointer items-center gap-2 rounded border border-gray-200 bg-white/90 px-2 py-1 text-xs text-gray-500 shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/90 dark:text-gray-400" title="显示画布坐标">
+            <span>坐标</span>
+            <input type="checkbox" aria-label="显示坐标" className="peer sr-only" checked={showCoordinates} onChange={(event) => setShowCoordinates(event.target.checked)} />
+            <span aria-hidden="true" className="relative h-5 w-9 rounded-full bg-gray-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-[#3f78c5] peer-checked:after:translate-x-4 dark:bg-gray-700" />
+          </label>
           <label className="pointer-events-auto inline-flex shrink-0 cursor-pointer items-center gap-2 rounded border border-gray-200 bg-white/90 px-2 py-1 text-xs text-gray-500 shadow-sm backdrop-blur dark:border-white/[0.1] dark:bg-gray-900/90 dark:text-gray-400" title="允许管理员操作失败图片">
             <span>编辑模式</span>
             <input type="checkbox" className="peer sr-only" checked={editingMode} onChange={(event) => setEditingMode(event.target.checked)} />
@@ -483,8 +544,79 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
           </label>
           <span className={`rounded border bg-white/90 px-2 py-1 text-xs font-medium shadow-sm backdrop-blur dark:bg-gray-900/90 ${editingMode ? 'border-emerald-200 text-emerald-700 dark:border-emerald-900/60 dark:text-emerald-300' : 'border-amber-200 text-amber-700 dark:border-amber-900/60 dark:text-amber-300'}`}>{editingMode ? '可操作' : '只读'}</span>
         </div>
+        <div data-canvas-toolbar className="pointer-events-none absolute left-3 top-1/2 z-40 h-[86px] w-[46px] -translate-y-1/2">
+          <div className={`pointer-events-auto flex w-full flex-col overflow-hidden rounded border border-gray-200 bg-white/90 p-1 shadow-sm backdrop-blur transition-[max-height] duration-200 ease-out dark:border-white/[0.1] dark:bg-gray-900/90 ${verticalToolbarCollapsed ? 'max-h-[46px]' : 'max-h-[86px]'}`}>
+            <div
+              data-canvas-vertical-toolbar-content
+              aria-hidden={verticalToolbarCollapsed}
+              className={`shrink-0 overflow-hidden transition-[max-height,margin,opacity,transform] duration-200 ease-out ${verticalToolbarCollapsed ? 'pointer-events-none mb-0 max-h-0 -translate-y-1 opacity-0' : 'mb-1 max-h-9 translate-y-0 opacity-100'}`}
+            >
+              <button
+                type="button"
+                aria-label="移动模式"
+                aria-pressed={panMode}
+                title="移动模式"
+                tabIndex={verticalToolbarCollapsed ? -1 : undefined}
+                className={`flex h-9 w-9 items-center justify-center rounded transition ${panMode ? 'bg-[#3f78c5] text-white shadow-sm' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.08] dark:hover:text-white'}`}
+                onClick={() => {
+                  if (!panMode) {
+                    setSelectedImageId(null)
+                    setInfoImageId(null)
+                  }
+                  setPanMode(!panMode)
+                }}
+              >
+                <HandIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <button
+              type="button"
+              aria-label={verticalToolbarCollapsed ? '展开竖直工具栏' : '收起竖直工具栏'}
+              title={verticalToolbarCollapsed ? '展开竖直工具栏' : '收起竖直工具栏'}
+              aria-expanded={!verticalToolbarCollapsed}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.08] dark:hover:text-white"
+              onClick={() => setVerticalToolbarCollapsed((collapsed) => !collapsed)}
+            >
+              <ChevronDownIcon className={`h-4 w-4 transition-transform duration-200 ${verticalToolbarCollapsed ? '' : 'rotate-180'}`} />
+            </button>
+          </div>
+        </div>
         <CanvasReferenceConnections connections={canvasConnections} markerId="admin-canvas-reference-arrow" />
-        <div className="absolute left-0 top-0 z-10 origin-top-left" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
+        <div className={`absolute left-0 top-0 z-10 origin-top-left ${panMode ? 'pointer-events-none' : ''}`} style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
+          {showCoordinates && (
+            <div
+              data-admin-canvas-origin
+              className="pointer-events-none absolute z-[2000]"
+              style={{
+                left: 0,
+                top: 0,
+                width: 1,
+                height: 1,
+                transform: `scale(${1 / Math.max(viewport.scale, 0.01)})`,
+                transformOrigin: 'center center',
+              }}
+            >
+              <span className="absolute left-2 top-2 whitespace-nowrap font-mono text-[10px] font-semibold leading-3 text-[#3f78c5]" style={{ textShadow: '0 0 2px rgba(255, 255, 255, 0.9)' }}>0, 0</span>
+              <span className="absolute -left-3 top-0 h-px w-6 bg-[#3f78c5]" />
+              <span className="absolute left-0 -top-3 h-6 w-px bg-[#3f78c5]" />
+            </div>
+          )}
+          {showCoordinates && visibleNodes.map((node) => (
+            <span
+              key={`coordinate:${node.id}`}
+              data-admin-canvas-node-coordinate={node.id}
+              className="pointer-events-none absolute z-[2000] whitespace-nowrap px-0.5 font-mono text-[10px] font-semibold leading-3 text-[#3f78c5]"
+              style={{
+                left: node.item.x,
+                top: node.item.y,
+                transform: `translate(3px, 3px) scale(${1 / Math.max(viewport.scale, 0.01)})`,
+                transformOrigin: 'left top',
+                textShadow: '0 0 2px rgba(255, 255, 255, 0.9)',
+              }}
+            >
+              x: {Math.round(node.item.x)}, y: {Math.round(node.item.y)}
+            </span>
+          ))}
           {visibleNodes.map((node) => {
             const ratio = Math.max(0.01, node.ratio)
             const frameHeight = getCanvasItemHeight(node.item, ratio)
@@ -524,8 +656,12 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                   zIndex: selected ? Math.max(node.item.z, 1000) : node.item.z,
                   touchAction: 'none',
                 }}
-                onPointerDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => {
+                  if (panMode) return
+                  if (event.pointerType !== 'touch') event.stopPropagation()
+                }}
                 onClick={() => {
+                  if (panMode) return
                   setSelectedImageId(node.id)
                   setInfoImageId(null)
                 }}
@@ -638,6 +774,18 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
             )
           })}
         </div>
+        {showCoordinates && containerSize.width > 0 && containerSize.height > 0 && (
+          <div
+            data-admin-canvas-center-coordinate
+            className="pointer-events-none absolute left-1/2 top-1/2 z-30 h-px w-px font-mono text-[#3f78c5]"
+          >
+            <span className="absolute -left-3 top-0 h-px w-6 bg-[#3f78c5]" />
+            <span className="absolute left-0 -top-3 h-6 w-px bg-[#3f78c5]" />
+            <span className="absolute left-2 top-2 whitespace-nowrap rounded-sm bg-white/85 px-1 py-0.5 text-[10px] font-semibold leading-3 shadow-sm dark:bg-gray-900/85" style={{ textShadow: '0 0 2px rgba(255, 255, 255, 0.9)' }}>
+              中心 x: {Math.round((containerSize.width / 2 - viewport.x) / Math.max(viewport.scale, 0.01))}, y: {Math.round((containerSize.height / 2 - viewport.y) / Math.max(viewport.scale, 0.01))}
+            </span>
+          </div>
+        )}
         {nodes.map((node) => (
           <CanvasEdgeIndicator
             key={`edge:${node.id}`}

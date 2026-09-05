@@ -169,14 +169,14 @@ export default function App() {
       ) : (
         <div className={`pt-11 transition-[padding] duration-200 lg:pt-0 ${sidebarCollapsed ? 'lg:pl-16' : 'lg:pl-56'}`}>
           {activeProjectId === null ? <ProjectHome /> : (
-        <div data-project-workspace data-drag-select-surface className="relative h-[calc(100dvh-2.75rem)] w-full overflow-hidden lg:h-[100dvh]">
-          <div className={`mx-auto grid w-full max-w-none transition-[grid-template-columns,gap] duration-300 ease-in-out ${agentPanelCollapsed ? 'xl:grid-cols-1' : 'xl:grid-cols-[minmax(0,1fr)_420px]'}`}>
+        <div data-project-workspace data-drag-select-surface className="relative h-[calc(100dvh-6.75rem)] w-full overflow-hidden sm:h-[calc(100dvh-6.25rem)] lg:h-[calc(100dvh-3.5rem)]">
+          <div className={`mx-auto grid h-full w-full max-w-none transition-[grid-template-columns,gap] duration-300 ease-in-out ${agentPanelCollapsed ? 'xl:grid-cols-1' : 'xl:grid-cols-[minmax(0,1fr)_420px]'}`}>
             <main
               data-home-main
               data-drag-select-surface
               className={`${appMode === 'agent' ? 'hidden xl:block' : ''} relative min-h-0 min-w-0`}
             >
-              <div className="relative h-[calc(100dvh-2.75rem)] min-h-[320px] w-full lg:h-[100dvh]">
+              <div className="relative h-full min-h-[320px] w-full">
                 {activeProjectId === LOCAL_PROJECT_ID && (
                   <div className="pointer-events-none absolute inset-x-3 top-20 z-40 flex justify-center sm:inset-x-6 sm:top-24">
                     <div className="pointer-events-auto w-full max-w-3xl">

@@ -157,6 +157,54 @@ describe('ProjectCanvas interactions', () => {
     expect(host.querySelector('[aria-label="收藏"]')).toBeNull()
   })
 
+  it('uses the left toolbar to toggle pure canvas movement', () => {
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const world = node.parentElement!
+    const moveButton = host.querySelector<HTMLButtonElement>('[aria-label="移动模式"]')!
+
+    expect(moveButton.getAttribute('aria-pressed')).toBe('false')
+    act(() => node.dispatchEvent(pointerEvent('pointerdown', 1, 80, 80)))
+    expect(host.querySelector('[aria-label="收藏"]')).not.toBeNull()
+
+    act(() => moveButton.click())
+    expect(moveButton.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('[aria-label="收藏"]')).toBeNull()
+    expect(world.classList.contains('pointer-events-none')).toBe(true)
+    mocks.updateProjectCanvas.mockClear()
+
+    act(() => {
+      node.dispatchEvent(pointerEvent('pointerdown', 2, 80, 80))
+      node.dispatchEvent(pointerEvent('pointermove', 2, 120, 100))
+      node.dispatchEvent(pointerEvent('pointerup', 2, 120, 100))
+    })
+
+    expect(node.style.left).toBe('0px')
+    expect(node.style.top).toBe('0px')
+    expect(world.style.transform).toContain('translate(72px, 52px)')
+    expect(host.querySelector('[aria-label="收藏"]')).toBeNull()
+    expect(mocks.updateProjectCanvas).not.toHaveBeenCalled()
+  })
+
+  it('从底向上收起并展开竖直工具栏', () => {
+    const content = host.querySelector<HTMLElement>('[data-canvas-vertical-toolbar-content]')!
+    const collapseButton = host.querySelector<HTMLButtonElement>('[aria-label="收起竖直工具栏"]')!
+    const moveButton = host.querySelector<HTMLButtonElement>('[aria-label="移动模式"]')!
+
+    expect(content.nextElementSibling).toBe(collapseButton)
+    expect(content.classList.contains('max-h-9')).toBe(true)
+    expect(collapseButton.getAttribute('aria-expanded')).toBe('true')
+
+    act(() => collapseButton.click())
+    expect(content.classList.contains('max-h-0')).toBe(true)
+    expect(content.getAttribute('aria-hidden')).toBe('true')
+    expect(moveButton.tabIndex).toBe(-1)
+
+    const expandButton = host.querySelector<HTMLButtonElement>('[aria-label="展开竖直工具栏"]')!
+    act(() => expandButton.click())
+    expect(content.classList.contains('max-h-9')).toBe(true)
+    expect(content.getAttribute('aria-hidden')).toBe('false')
+  })
+
   it('shows development origin and image world coordinates', () => {
     expect(host.querySelector('[data-canvas-origin]')).not.toBeNull()
     const position = host.querySelector<HTMLElement>('[data-canvas-debug-position]')

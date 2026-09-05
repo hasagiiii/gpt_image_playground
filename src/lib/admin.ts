@@ -1,6 +1,7 @@
 import type { Project, StoredImage } from '../types'
 import { authFetch } from '../auth/api'
 import { blobToDataUrl } from './dataUrl'
+import type { MaterialList } from './materialApi'
 import type { OnlineProjectImageResponse, OnlineProjectResponse } from './onlineProjects'
 
 export interface AdminUser {
@@ -32,6 +33,18 @@ export async function listAdminUserProjects(userId: string): Promise<OnlineProje
   if (!resp.ok) throw new Error(await readError(resp, '用户画布列表加载失败'))
   const data = await resp.json() as { projects?: unknown }
   return Array.isArray(data.projects) ? data.projects as OnlineProjectResponse[] : []
+}
+
+export async function listAdminUserMaterials(userId: string, options: { page?: number; pageSize?: number; kind?: string; keyword?: string } = {}): Promise<MaterialList> {
+  const query = new URLSearchParams({
+    page: String(options.page ?? 1),
+    page_size: String(options.pageSize ?? 24),
+  })
+  if (options.kind) query.set('kind', options.kind)
+  if (options.keyword?.trim()) query.set('keyword', options.keyword.trim())
+  const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/materials?${query.toString()}`, { cache: 'no-store' })
+  if (!resp.ok) throw new Error(await readError(resp, '用户素材列表加载失败'))
+  return await resp.json() as MaterialList
 }
 
 export async function downloadAdminUserProject(userId: string, projectId: string): Promise<Uint8Array> {

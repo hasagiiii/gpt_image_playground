@@ -183,6 +183,8 @@ describe('AgentWorkspace read-only data', () => {
     const scrollContainer = host.querySelector<HTMLElement>('[data-agent-scroll-container]')
     expect(workspace?.className).toContain('overscroll-contain')
     expect(scrollContainer?.className).toContain('overscroll-contain')
+    expect(scrollContainer?.className).toContain('var(--agent-input-bar-clearance,12rem)')
+    expect(host.querySelector('[aria-label="滚动到底部"]')?.className).toContain('var(--agent-input-bar-clearance,12rem)')
     await act(async () => scrollContainer?.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 })))
     expect(onWheel).not.toHaveBeenCalled()
   })

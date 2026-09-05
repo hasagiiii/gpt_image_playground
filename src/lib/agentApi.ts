@@ -304,12 +304,14 @@ function applyUrlCitations(text: string, annotations: ResponseTextAnnotation[] |
 }
 
 function getStreamEventErrorMessage(event: Record<string, unknown>): string | null {
-  const error = event.error
-  if (isRecordValue(error)) {
-    const message = getStringValue(error, 'message')
-    if (message) return message
+  const error = getErrorMessageFromValue(event.error)
+  if (error) return error
+
+  const response = event.response
+  if (isRecordValue(response)) {
+    const responseError = getErrorMessageFromValue(response.error)
+    if (responseError) return responseError
   }
-  if (typeof error === 'string' && error.trim()) return error
 
   const type = getStringValue(event, 'type')
   if (type?.endsWith('.failed')) return getStringValue(event, 'message') ?? 'Agent 流式请求失败'

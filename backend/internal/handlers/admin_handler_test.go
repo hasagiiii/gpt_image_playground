@@ -12,6 +12,7 @@ import (
 	"gpt-image-backend/internal/database"
 	"gpt-image-backend/internal/middleware"
 	"gpt-image-backend/internal/models"
+	"gpt-image-backend/internal/services"
 )
 
 type adminUserStoreStub struct {
@@ -26,6 +27,26 @@ type adminProjectStoreStub struct {
 	projects []models.OnlineProject
 	archive  []byte
 	images   []models.ProjectImage
+}
+
+type adminMaterialStoreStub struct {
+	userID   string
+	kind     string
+	keyword  string
+	page     int32
+	pageSize int32
+}
+
+func (s *adminMaterialStoreStub) List(_ context.Context, userID, kind, keyword string, page, pageSize int32) (*services.MaterialList, error) {
+	s.userID = userID
+	s.kind = kind
+	s.keyword = keyword
+	s.page = page
+	s.pageSize = pageSize
+	return &services.MaterialList{
+		Items: []*services.MaterialItem{{ID: "material-a", FileName: "参考图.png", Kind: "image"}},
+		Total: 1, Page: page, PageSize: pageSize,
+	}, nil
 }
 
 func (s *adminProjectStoreStub) List(_ context.Context, userID string) ([]models.OnlineProject, error) {
@@ -56,7 +77,7 @@ func (s *adminProjectStoreStub) GetImage(_ context.Context, userID, projectID, i
 	return &s.images[0], []byte("image-data"), nil
 }
 
-func newAdminRouter(isAdmin bool) *gin.Engine {
+func newAdminRouterWithMaterials(isAdmin bool) (*gin.Engine, *adminMaterialStoreStub) {
 	gin.SetMode(gin.TestMode)
 	lastProjectUpdatedAt := time.Unix(2, 0)
 	userStore := &adminUserStoreStub{users: []models.User{{ID: "a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", OIDCProvider: "oidc", OIDCSub: "private-sub", Email: "user@example.com", CreatedAt: time.Unix(1, 0), LastProjectUpdatedAt: &lastProjectUpdatedAt}}}
@@ -65,12 +86,18 @@ func newAdminRouter(isAdmin bool) *gin.Engine {
 		archive:  []byte("PK archive"),
 		images:   []models.ProjectImage{{ProjectID: "86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", ImageID: "image-a", MIMEType: "image/png"}},
 	}
+	materialStore := &adminMaterialStoreStub{}
 	r := gin.New()
 	api := r.Group("/api/v1", func(c *gin.Context) {
 		c.Set(middleware.ContextKeyUserID, "admin-1")
 		c.Next()
 	})
-	NewAdminHandler(userStore, projectStore, func(context.Context, string) (bool, error) { return isAdmin, nil }).Register(api)
+	NewAdminHandler(userStore, projectStore, materialStore, func(context.Context, string) (bool, error) { return isAdmin, nil }).Register(api)
+	return r, materialStore
+}
+
+func newAdminRouter(isAdmin bool) *gin.Engine {
+	r, _ := newAdminRouterWithMaterials(isAdmin)
 	return r
 }
 
@@ -95,6 +122,21 @@ func TestAdminHandlerListsProjectImageCount(t *testing.T) {
 	}
 	if !containsString(w.Body.String(), `"image_count":3`) {
 		t.Fatalf("response should include project image count: %s", w.Body.String())
+	}
+}
+
+func TestAdminHandlerListsUserMaterialsReadOnly(t *testing.T) {
+	r, materials := newAdminRouterWithMaterials(true)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8/materials?kind=image&keyword=%E5%8F%82%E8%80%83&page=2&page_size=12", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if materials.userID != "a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8" || materials.kind != "image" || materials.keyword != "参考" || materials.page != 2 || materials.pageSize != 12 {
+		t.Fatalf("unexpected material query: %#v", materials)
+	}
+	if !containsString(w.Body.String(), `"file_name":"参考图.png"`) || !containsString(w.Body.String(), `"total":1`) {
+		t.Fatalf("unexpected response: %s", w.Body.String())
 	}
 }
 

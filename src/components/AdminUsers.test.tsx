@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   showToast: vi.fn(),
   listAdminUsers: vi.fn(),
   listAdminUserProjects: vi.fn(),
+  listAdminUserMaterials: vi.fn(),
   downloadAdminUserProject: vi.fn(),
   listAdminUserProjectImages: vi.fn(),
   downloadAdminUserProjectImage: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('../lib/admin', () => ({
   createAdminProject: vi.fn(),
   listAdminUsers: mocks.listAdminUsers,
   listAdminUserProjects: mocks.listAdminUserProjects,
+  listAdminUserMaterials: mocks.listAdminUserMaterials,
   downloadAdminUserProject: mocks.downloadAdminUserProject,
   listAdminUserProjectImages: mocks.listAdminUserProjectImages,
   downloadAdminUserProjectImage: mocks.downloadAdminUserProjectImage,
@@ -62,6 +64,7 @@ describe('AdminUsers', () => {
     mocks.selection = { userId: null, projectId: null }
     mocks.listAdminUsers.mockResolvedValue([])
     mocks.listAdminUserProjects.mockResolvedValue([])
+    mocks.listAdminUserMaterials.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 24 })
     host = document.createElement('div')
     document.body.appendChild(host)
     root = createRoot(host)
@@ -88,6 +91,26 @@ describe('AdminUsers', () => {
     expect(names[2]).toContain('无项目用户')
     expect(host.textContent).toContain('23:05:06')
     expect(host.textContent).not.toContain('最后登录')
+  })
+
+  it('画布列表展示服务端最终输出数量，不通过存储图片列表计数', async () => {
+    mocks.selection = { userId: 'user-a', projectId: null }
+    mocks.listAdminUserProjects.mockResolvedValue([{
+      id: 'project-a',
+      title: '画布 A',
+      archive_size: 100,
+      archive_sha256: 'sha',
+      image_count: 3,
+      created_at: '2026-09-01T00:00:00+08:00',
+      updated_at: '2026-09-03T12:00:00+08:00',
+    }])
+
+    await act(async () => root.render(<AdminUsers />))
+    await flushEffects()
+
+    expect(host.textContent).toContain('3 个作品')
+    expect(mocks.listAdminUserProjectImages).not.toHaveBeenCalled()
+    expect(mocks.downloadAdminUserProject).not.toHaveBeenCalled()
   })
 
   it('项目归档就绪后立即进入画布，再加载图片', async () => {
@@ -145,5 +168,46 @@ describe('AdminUsers', () => {
     await flushEffects()
 
     expect(host.querySelector('[data-image-count]')?.textContent).toBe('1 张图片')
+  })
+
+  it('可以只读查看指定用户的素材列表', async () => {
+    mocks.selection = { userId: 'user-a', projectId: null }
+    mocks.listAdminUsers.mockResolvedValue([{
+      id: 'user-a',
+      oidc_provider: 'oidc',
+      name: '素材用户',
+      created_at: '2026-09-01T00:00:00+08:00',
+      updated_at: '2026-09-01T00:00:00+08:00',
+    }])
+    mocks.listAdminUserMaterials.mockResolvedValue({
+      items: [{
+        id: 'material-a',
+        account_id: 'account-a',
+        file_name: '参考图片.png',
+        url: 'https://materials.example/reference.png',
+        content_type: 'image/png',
+        size_bytes: 2048,
+        kind: 'image',
+        source: 'upload',
+        created_at: '2026-09-03T00:00:00+08:00',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 24,
+    })
+
+    await act(async () => root.render(<AdminUsers />))
+    await flushEffects()
+    const materialTab = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((button) => button.textContent?.includes('素材'))!
+    act(() => materialTab.click())
+    await flushEffects()
+
+    expect(mocks.listAdminUserMaterials).toHaveBeenCalledWith('user-a', { page: 1, pageSize: 24, kind: '', keyword: '' })
+    expect(host.querySelector('[data-admin-material-library]')).not.toBeNull()
+    expect(host.querySelector<HTMLImageElement>('img[alt="参考图片.png"]')?.src).toBe('https://materials.example/reference.png')
+    expect(host.textContent).toContain('只读 · 1 个素材')
+    expect(host.querySelector('[aria-label^="删除"]')).toBeNull()
+    expect(host.querySelector('[aria-label^="重命名"]')).toBeNull()
+    expect(host.textContent).not.toContain('上传素材')
   })
 })
