@@ -126,6 +126,10 @@ describe('AdminCanvasViewer coordinates', () => {
     expect(host.querySelector('[data-admin-canvas-origin]')).toBeNull()
     expect(host.querySelector('[data-admin-canvas-node-coordinate]')).toBeNull()
     expect(host.querySelector('[data-admin-canvas-center-coordinate]')).toBeNull()
+    const frame = host.querySelector('[data-canvas-node]')!.firstElementChild!
+    expect(frame.classList.contains('bg-transparent')).toBe(true)
+    expect(frame.classList.contains('bg-white')).toBe(false)
+    expect(frame.classList.contains('dark:bg-gray-900')).toBe(false)
 
     act(() => host.querySelector<HTMLInputElement>('[aria-label="显示坐标"]')!.click())
 

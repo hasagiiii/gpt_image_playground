@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS, type Project, type TaskRecord } from '../types'
+import { DEFAULT_SETTINGS } from '../lib/apiProfiles'
 
 const mocks = vi.hoisted(() => ({
   state: { current: {} as Record<string, unknown> },
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   setSelectedTaskIds: vi.fn(),
   setConfirmDialog: vi.fn(),
   showToast: vi.fn(),
+  decomposeImage: vi.fn(async () => undefined),
 }))
 
 vi.mock('../store', () => ({
@@ -32,6 +34,7 @@ vi.mock('../store', () => ({
     return projects.find((project) => project.id === task.projectId)?.canvas?.items[imageId]?.favoriteCollectionIds ?? []
   },
   editOutputImage: vi.fn(),
+  decomposeImage: mocks.decomposeImage,
   removeOutputImage: vi.fn(),
   removeMultipleOutputImages: vi.fn(),
   reuseImageConfig: vi.fn(),
@@ -110,6 +113,7 @@ describe('ProjectCanvas interactions', () => {
     vi.clearAllMocks()
     mocks.state.current = {
       tasks: [createTask()],
+      settings: DEFAULT_SETTINGS,
       projects: [createProject()],
       activeProjectId: 'project-a',
       projectsLoaded: true,
@@ -157,6 +161,47 @@ describe('ProjectCanvas interactions', () => {
     expect(host.querySelector('[aria-label="收藏"]')).toBeNull()
   })
 
+  it('图片外框不填充底色，保留透明区域和下层图片', () => {
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const frame = node.firstElementChild!
+    expect(frame.classList.contains('bg-transparent')).toBe(true)
+    expect(frame.classList.contains('bg-white')).toBe(false)
+    expect(frame.classList.contains('dark:bg-gray-900')).toBe(false)
+    act(() => node.dispatchEvent(pointerEvent('pointerdown', 1, 80, 80)))
+    expect(frame.classList.contains('bg-transparent')).toBe(true)
+  })
+
+  it('旧分层任务按 absolute 拼合，选择基准图时不遮盖上层', async () => {
+    const task = { ...createTask(), outputImages: ['image-a', 'image-b'], layerDecomposition: true, imageLayers: [
+      { url: 'https://files.test/a.png', size: '2000x2240', z_index: 0 },
+      { url: 'https://files.test/b.png', size: '1534x1732', z_index: 1, bounding_box: { absolute: [45, 1453, 728, 2223] } },
+    ] }
+    mocks.state.current = { ...mocks.state.current, tasks: [task] }
+    await act(async () => root.render(<ProjectCanvas />))
+    const base = host.querySelector<HTMLElement>('[data-node-key="image-a"]')!
+    const layer = host.querySelector<HTMLElement>('[data-node-key="image-b"]')!
+    expect(parseFloat(layer.style.left)).toBeCloseTo(45 * 240 / 2000)
+    expect(parseFloat(layer.style.top)).toBeCloseTo(1453 * 240 / 2000)
+    expect(parseFloat(layer.style.width)).toBeCloseTo(683 * 240 / 2000)
+    expect(parseFloat((layer.firstElementChild as HTMLElement).style.height)).toBeCloseTo(770 * 240 / 2000)
+    act(() => base.dispatchEvent(pointerEvent('pointerdown', 1, 80, 80)))
+    expect(Number(base.style.zIndex)).toBeLessThan(Number(layer.style.zIndex))
+    expect(mocks.updateProjectCanvas).toHaveBeenCalledWith('project-a', expect.objectContaining({ items: expect.objectContaining({ 'image-b': expect.objectContaining({ operator: expect.objectContaining({ aspectRatio: 683 / 770 }) }) }) }))
+  })
+
+  it('在裁剪右侧显示分层菜单，展开后可提交当前图片', async () => {
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    act(() => node.dispatchEvent(pointerEvent('pointerdown', 1, 80, 80)))
+    const crop = host.querySelector<HTMLButtonElement>('[aria-label="裁剪图片"]')!
+    const layer = host.querySelector<HTMLButtonElement>('[aria-label="分层"]')!
+    expect(crop.compareDocumentPosition(layer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await act(async () => layer.click())
+    expect(mocks.decomposeImage).not.toHaveBeenCalled()
+    const auto = document.querySelector<HTMLButtonElement>('[role="menuitem"]')!
+    await act(async () => auto.click())
+    expect(mocks.decomposeImage).toHaveBeenCalledWith(createTask(), 'image-a')
+  })
+
   it('uses the left toolbar to toggle pure canvas movement', () => {
     const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
     const world = node.parentElement!
@@ -183,6 +228,14 @@ describe('ProjectCanvas interactions', () => {
     expect(world.style.transform).toContain('translate(72px, 52px)')
     expect(host.querySelector('[aria-label="收藏"]')).toBeNull()
     expect(mocks.updateProjectCanvas).not.toHaveBeenCalled()
+  })
+
+  it('使用配置的快捷键切换移动模式', () => {
+    const moveButton = host.querySelector<HTMLButtonElement>('[aria-label="移动模式"]')!
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', bubbles: true })))
+    expect(moveButton.getAttribute('aria-pressed')).toBe('true')
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'M', bubbles: true })))
+    expect(moveButton.getAttribute('aria-pressed')).toBe('false')
   })
 
   it('从底向上收起并展开竖直工具栏', () => {

@@ -47,13 +47,15 @@ function normalizeCanvasItemName(value: unknown) {
 function normalizeOperator(value: unknown): ProjectCanvasOperator | undefined {
   if (!isRecord(value)) return undefined
   const originalWidth = finiteNumber(value.originalWidth, 0)
+  const aspectRatio = finiteNumber(value.aspectRatio, 0)
   const scale = finiteNumber(value.scale, 0)
   const rotation = normalizeRotation(value.rotation)
   const flipX = value.flipX === true
   const flipY = value.flipY === true
   const crop = normalizeCrop(value.crop)
-  if (originalWidth <= 0 && scale <= 0 && rotation === undefined && !flipX && !flipY && !crop) return undefined
+  if (originalWidth <= 0 && scale <= 0 && aspectRatio <= 0 && rotation === undefined && !flipX && !flipY && !crop) return undefined
   return {
+    ...(aspectRatio > 0 ? { aspectRatio } : {}),
     ...(originalWidth > 0 ? { originalWidth } : {}),
     ...(scale > 0 ? { scale } : {}),
     ...(rotation !== undefined ? { rotation } : {}),
@@ -75,10 +77,10 @@ export function normalizeProjectCanvas(value: unknown): ProjectCanvasState | und
 
   for (const [imageId, rawItem] of Object.entries(rawItems)) {
     if (!imageId || !isRecord(rawItem)) continue
-    const width = Math.max(80, finiteNumber(rawItem.width, DEFAULT_CANVAS_ITEM_WIDTH))
     const rotation = normalizeRotation(rawItem.rotation)
     const name = normalizeCanvasItemName(rawItem.name)
     const operator = normalizeOperator(rawItem.operator)
+    const width = Math.max(operator?.aspectRatio ? 0.01 : 80, finiteNumber(rawItem.width, DEFAULT_CANVAS_ITEM_WIDTH))
     const effectiveRotation = rotation ?? operator?.rotation
     items[imageId] = {
       ...(name ? { name } : {}),
@@ -200,7 +202,7 @@ export function ensureProjectCanvas(
     items[imageId] = {
       ...(existing ?? getDefaultCanvasItem(index, ids.length)),
       name,
-      ...(Number.isFinite(zByImage[imageId]) ? { z: zByImage[imageId] } : {}),
+      ...(Number.isFinite(zByImage[imageId]) && !existing?.operator?.aspectRatio ? { z: zByImage[imageId] } : {}),
       ...(favoriteCollectionIds !== undefined ? { favoriteCollectionIds } : {}),
     }
   }

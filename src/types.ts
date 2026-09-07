@@ -120,6 +120,7 @@ export interface AppSettings {
   enterSubmit: boolean
   referenceImageEditAction: ReferenceImageEditAction
   canvasWheelMode: CanvasWheelMode
+  canvasPanModeShortcut: string
   zipDownloadRoutes: ZipDownloadRoute[]
   agentScrollToBottomAfterSubmit: boolean
   agentMaxToolRounds: number
@@ -188,6 +189,16 @@ export interface TaskOutputError {
   rawImageUrls?: string[]
 }
 
+export interface ImageLayer {
+  url: string
+  name?: string
+  description?: string
+  output_format?: string
+  size?: string
+  z_index?: number
+  bounding_box?: { absolute?: number[]; normalized?: number[] }
+}
+
 export interface TaskRecord {
   id: string
   /** 前端生成的请求链路 ID，通过 X-Request-ID 传递 */
@@ -229,6 +240,10 @@ export interface TaskRecord {
   compositeStatusUrl?: string
   /** Composite 任务连接断开后是否等待自动恢复 */
   compositeRecoverable?: boolean
+  /** Seedream 图层拆分任务及按输出顺序保存的图层信息 */
+  layerDecomposition?: boolean
+  imageLayers?: ImageLayer[]
+  layerUsage?: Record<string, number>
   /** 上游状态接口返回的实际费用（美元） */
   actualCost?: number
   /** 图片状态查询 request_id 列表，用于重启后继续查询结果 */
@@ -319,6 +334,8 @@ export interface ProjectCanvasCrop {
 }
 
 export interface ProjectCanvasOperator {
+  /** 分层图在基准坐标系中的宽高比，保留边界框要求的非等比缩放。 */
+  aspectRatio?: number
   /** 图片原始宽度，用于计算缩放比例和恢复原分辨率 */
   originalWidth?: number
   /** 相对原始宽度的缩放比例 */

@@ -257,6 +257,11 @@ vi.mock('./lib/backendCompositeImageApi', () => ({
   })),
   queryBackendCompositeImageTask: vi.fn(async () => null),
 }))
+vi.mock('./lib/seedreamLayers', () => ({
+  SEEDREAM_LAYER_MODEL: 'doubao-seedream-5-0-pro-260628',
+  DEFAULT_LAYER_PROMPT: '将参考图片拆分为独立的背景和前景图层，保持各元素的原始外观。',
+  callSeedreamLayers: vi.fn(),
+}))
 vi.mock('./lib/falAiImageApi', () => ({
   getFalErrorMessage: vi.fn((err: unknown) => err instanceof Error ? err.message : String(err)),
   getFalQueuedImageResult: vi.fn(async () => ({
@@ -314,6 +319,8 @@ import { queryImageStatuses } from './lib/imageStatusApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
+import { callSeedreamLayers, SEEDREAM_LAYER_MODEL } from './lib/seedreamLayers'
+import { decomposeImage } from './store'
 import { buildLegacyProjectArchive, clearLegacyProjectUploadId, deleteOnlineProject, downloadOnlineProject, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
 import { LOCAL_PROJECT_ID, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeOutputImage, removeTask, renameFavoriteCollection, reuseConfig, retryTask, retryTaskInPlace, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
@@ -366,6 +373,110 @@ function importFile(data: ExportData): File {
   const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength)
   return { arrayBuffer: async () => buffer } as File
 }
+
+describe('Seedream 分层任务', () => {
+  beforeEach(async () => {
+    vi.mocked(callSeedreamLayers).mockReset()
+    await clearTasks()
+    await clearImages()
+    await putImage({ ...imageA, source: 'generated', createdAt: 1 })
+    useStore.setState({
+      tasks: [task({ outputImages: [imageA.id], projectId: 'source-project' })],
+      projects: [],
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, apiKey: 'profile-key' }),
+      oidcApiOverride: { apiKey: 'selected-key', model: 'other-model' },
+      prompt: '保留输入提示词', inputImages: [imageB], showToast: vi.fn(),
+    })
+  })
+
+  it('使用当前 key 和固定分层模型，保存独立输出及元数据且不更改输入区', async () => {
+    const layers = [{ url: 'https://files.test/layer.png', name: '背景', z_index: 0 }]
+    vi.mocked(callSeedreamLayers).mockImplementationOnce(async (options) => {
+      await options.onRequestCreated?.({ requestId: 'layer-request' })
+      return { images: ['data:image/png;base64,1024x1024'], imageLayers: layers, layerUsage: { generated_images: 1 } }
+    })
+    const source = useStore.getState().tasks[0]
+    await decomposeImage(source, imageA.id)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(callSeedreamLayers).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'selected-key', model: SEEDREAM_LAYER_MODEL, image: imageA.dataUrl }))
+    expect(useStore.getState().tasks[0]).toMatchObject({ projectId: source.projectId, layerDecomposition: true, compositeRequestId: 'layer-request', imageLayers: layers, layerUsage: { generated_images: 1 } })
+    expect(useStore.getState().tasks[1]).toEqual(source)
+    expect(useStore.getState().prompt).toBe('保留输入提示词')
+    expect(useStore.getState().inputImages).toEqual([imageB])
+    expect((await getAllTasks())[0].imageLayers).toEqual(layers)
+  })
+
+  it('重复点击不会重复提交同一张图片', async () => {
+    let finish!: () => void
+    vi.mocked(callSeedreamLayers).mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve({ images: [] }) }))
+    const source = useStore.getState().tasks[0]
+    await Promise.all([decomposeImage(source, imageA.id), decomposeImage(source, imageA.id)])
+    await vi.waitFor(() => expect(callSeedreamLayers).toHaveBeenCalledTimes(1))
+    expect(useStore.getState().tasks).toHaveLength(2)
+    finish()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+
+  it('缺少 Key 时不创建任务', async () => {
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, apiKey: '' }), oidcApiOverride: null })
+    await expect(decomposeImage(useStore.getState().tasks[0], imageA.id)).rejects.toThrow('API Key')
+    expect(useStore.getState().tasks).toHaveLength(1)
+  })
+
+  it('自定义分层指令传到模型请求并保存到任务中', async () => {
+    vi.mocked(callSeedreamLayers).mockResolvedValueOnce({ images: [] })
+    await decomposeImage(useStore.getState().tasks[0], imageA.id, '  将标题文字和背景分别拆成图层  ')
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(callSeedreamLayers).toHaveBeenCalledWith(expect.objectContaining({ prompt: '将标题文字和背景分别拆成图层' }))
+    expect(useStore.getState().tasks[0].prompt).toBe('将标题文字和背景分别拆成图层')
+  })
+
+  it('分层完成时直接持久化拼合坐标，不依赖画布组件处于打开状态', async () => {
+    const project: Project = { id: 'source-project', title: '分层项目', initialPrompt: '', storage: 'local', createdAt: 1, updatedAt: 1 }
+    useStore.setState({ projects: [project], projectCanvasCache: {} })
+    vi.mocked(callSeedreamLayers).mockResolvedValueOnce({
+      images: ['data:image/png;base64,2000x2240', 'data:image/png;base64,1534x1732'],
+      imageLayers: [
+        { url: 'https://files.test/base.png', size: '2000x2240', z_index: 0 },
+        { url: 'https://files.test/left.png', name: '左侧遗迹', size: '1534x1732', z_index: 1, bounding_box: { absolute: [45, 1453, 728, 2223] } },
+      ],
+    })
+    await decomposeImage(useStore.getState().tasks[0], imageA.id)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    const result = useStore.getState().tasks[0]
+    const canvas = useStore.getState().projects[0].canvas!
+    const base = canvas.items[result.outputImages[0]]
+    const layer = canvas.items[result.outputImages[1]]
+    expect(layer.x).toBeCloseTo(base.x + 45 * base.width / 2000)
+    expect(layer.y).toBeCloseTo(base.y + 1453 * base.width / 2000)
+    expect(layer.width).toBeCloseTo(683 * base.width / 2000)
+    expect(layer.operator?.aspectRatio).toBeCloseTo(683 / 770)
+    expect(layer.name).toBe('左侧遗迹')
+    expect(useStore.getState().projectCanvasCache[project.id]).toEqual(canvas)
+  })
+
+  it('拒绝空白自定义指令，不提交请求', async () => {
+    await expect(decomposeImage(useStore.getState().tasks[0], imageA.id, '   ')).rejects.toThrow('请输入分层指令')
+    expect(callSeedreamLayers).not.toHaveBeenCalled()
+  })
+
+  it.each(['status', 'result'] as const)('%s 失败重试仍走分层接口，并区分继续查询与重新提交', async (endpoint) => {
+    vi.mocked(callSeedreamLayers).mockImplementationOnce(async (options) => {
+      await options.onRequestCreated?.({ requestId: 'existing-request' })
+      throw Object.assign(new Error('upstream failure'), { endpoint })
+    }).mockResolvedValue({ images: [] })
+    await decomposeImage(useStore.getState().tasks[0], imageA.id)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('error'))
+    const failed = useStore.getState().tasks[0]
+    await retryTaskInPlace(failed)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(vi.mocked(callSeedreamLayers).mock.calls[1][0]).toMatchObject({
+      model: SEEDREAM_LAYER_MODEL,
+      requestId: endpoint === 'status' ? 'existing-request' : undefined,
+    })
+    expect(useStore.getState().tasks).toHaveLength(2)
+  })
+})
 
 describe('favorite collection deletion', () => {
   const collectionA = { id: 'collection-a', name: '收藏夹 A', createdAt: 1, updatedAt: 1 }

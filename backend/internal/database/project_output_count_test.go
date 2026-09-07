@@ -23,7 +23,7 @@ func TestCountProjectOutputImages(t *testing.T) {
 				{"status":"error","outputImages":[],"outputErrors":[{"requestIndex":0}]}
 			],
 			"agentConversations":[{"rounds":[{"inputImageIds":["agent-ref"]}]}]
-		}`, 2},
+		}`, 3},
 		{"deduplicate across tasks", `{"tasks":[{"outputImages":["a","a","b"]},{"outputImages":["a","c",""]}]}`, 3},
 		{"partial success and running outputs", `{"tasks":[{"status":"error","outputImages":["a"]},{"status":"running","outputImages":["b"]}]}`, 2},
 	} {

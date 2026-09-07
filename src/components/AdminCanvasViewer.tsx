@@ -4,10 +4,11 @@ import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboar
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
 import { getTaskIds } from '../lib/taskIds'
+import { layoutImageLayers } from '../lib/imageLayerLayout'
 import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
 import { redownloadTaskImage, retryImage, retryTaskInPlace, useStore } from '../store'
 import { TooltipButton } from './TooltipButton'
-import { AngleIcon, ChevronDownIcon, ChevronLeftIcon, CopyIcon, DownloadIcon, HandIcon, ImageIcon, InfoIcon, RefreshIcon, ScaleIcon, WarningIcon } from './icons'
+import { AngleIcon, ChevronDownIcon, ChevronLeftIcon, CopyIcon, DownloadIcon, HandIcon, ImageIcon, InfoIcon, PointerIcon, RefreshIcon, ScaleIcon, WarningIcon } from './icons'
 import CanvasReferenceConnections from './CanvasReferenceConnections'
 import CanvasControls, { type CanvasControlLayer } from './CanvasControls'
 import DetailModal from './DetailModal'
@@ -158,6 +159,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   const [editingMode, setEditingMode] = useState(false)
   const [showCoordinates, setShowCoordinates] = useState(false)
   const [panMode, setPanMode] = useState(false)
+  const panModeShortcut = useStore((state) => state.settings?.canvasPanModeShortcut ?? 'm')
   const [verticalToolbarCollapsed, setVerticalToolbarCollapsed] = useState(false)
   const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(() => new Set())
 
@@ -197,14 +199,14 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   }, [tasks])
   const errorNodeIds = useMemo(() => Array.from(errorNodeById.keys()), [errorNodeById])
   const canvas = useMemo(() => {
-    const ensured = ensureProjectCanvas(project.canvas, [...outputImageIds, ...errorNodeIds], {}, {}, Object.keys(project.canvas?.items ?? {}))
+    const ensured = layoutImageLayers(ensureProjectCanvas(project.canvas, [...outputImageIds, ...errorNodeIds], {}, {}, Object.keys(project.canvas?.items ?? {})), tasks)
     const items = Object.fromEntries(Object.entries(ensured.items).map(([id, item]) => {
       const errorNode = errorNodeById.get(id)
       if (!errorNode || project.canvas?.items?.[id]?.name) return [id, item]
       return [id, { ...item, name: errorNode.placeholderName }]
     }))
     return { ...ensured, items }
-  }, [errorNodeById, errorNodeIds, outputImageIds, project.canvas])
+  }, [errorNodeById, errorNodeIds, outputImageIds, project.canvas, tasks])
   const taskByImageId = useMemo(() => {
     const map = new Map<string, TaskRecord>()
     for (const task of tasks) {
@@ -231,7 +233,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
           placeholderDimensions: errorNode?.dimensions,
           placeholderName: errorNode?.placeholderName,
           outputRequestIndex: errorNode?.requestIndex,
-          ratio: dimensions ? dimensions.width / dimensions.height : 1,
+          ratio: item.operator?.aspectRatio ?? (dimensions ? dimensions.width / dimensions.height : 1),
         }
       })
       .sort((a, b) => a.item.z - b.item.z || a.id.localeCompare(b.id))
@@ -555,7 +557,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                 type="button"
                 aria-label="移动模式"
                 aria-pressed={panMode}
-                title="移动模式"
+                title={`${panMode ? '移动模式' : '选择模式'} (${panModeShortcut.toUpperCase()})`}
                 tabIndex={verticalToolbarCollapsed ? -1 : undefined}
                 className={`flex h-9 w-9 items-center justify-center rounded transition ${panMode ? 'bg-[#3f78c5] text-white shadow-sm' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.08] dark:hover:text-white'}`}
                 onClick={() => {
@@ -566,7 +568,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                   setPanMode(!panMode)
                 }}
               >
-                <HandIcon className="h-5 w-5" />
+                {panMode ? <HandIcon className="h-5 w-5" /> : <PointerIcon className="h-5 w-5" />}
               </button>
             </div>
             <button
@@ -653,7 +655,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                   width: node.item.width,
                   transform: `rotate(${rotation}deg)`,
                   transformOrigin: 'center center',
-                  zIndex: selected ? Math.max(node.item.z, 1000) : node.item.z,
+                  zIndex: selected && !node.item.operator?.aspectRatio ? Math.max(node.item.z, 1000) : node.item.z,
                   touchAction: 'none',
                 }}
                 onPointerDown={(event) => {
@@ -667,7 +669,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                 }}
               >
                 <div
-                  className={`relative overflow-hidden bg-white shadow-sm dark:bg-gray-900 ${selected ? 'ring-0' : 'ring-1 ring-black/10 dark:ring-white/10'}`}
+                  className={`relative overflow-hidden bg-transparent shadow-sm ${selected ? 'ring-0' : 'ring-1 ring-black/10 dark:ring-white/10'}`}
                   style={{
                     height: frameHeight,
                     ...(selected ? { boxShadow: '0 0 0 2px #3f78c5' } : {}),
@@ -677,7 +679,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                     <img
                       src={node.image.dataUrl}
                       alt={label}
-                      className={crop ? 'absolute max-w-none' : 'block h-auto w-full object-contain'}
+                      className={crop ? 'absolute max-w-none' : node.item.operator?.aspectRatio ? 'block h-full w-full object-fill' : 'block h-auto w-full object-contain'}
                       draggable={false}
                       style={crop
                         ? {

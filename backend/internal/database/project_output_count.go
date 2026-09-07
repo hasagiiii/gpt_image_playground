@@ -39,7 +39,9 @@ func countProjectOutputImages(archive []byte) (int64, error) {
 		}
 		var manifest struct {
 			Tasks []struct {
-				OutputImages []string `json:"outputImages"`
+				Status       string            `json:"status"`
+				OutputImages []string          `json:"outputImages"`
+				OutputErrors []json.RawMessage `json:"outputErrors"`
 			} `json:"tasks"`
 		}
 		if err := json.Unmarshal(data, &manifest); err != nil {
@@ -51,6 +53,12 @@ func countProjectOutputImages(archive []byte) (int64, error) {
 				if id != "" {
 					ids[id] = struct{}{}
 				}
+			}
+			if task.Status == "error" && len(task.OutputImages) == 0 && len(task.OutputErrors) == 0 {
+				ids[fmt.Sprintf("failure:%d", len(ids))] = struct{}{}
+			}
+			for range task.OutputErrors {
+				ids[fmt.Sprintf("failure:%d", len(ids))] = struct{}{}
 			}
 		}
 		return int64(len(ids)), nil

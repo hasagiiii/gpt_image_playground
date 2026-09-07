@@ -31,6 +31,7 @@ export function removeTaskOutputImage(task: TaskRecord, imageId: string) {
     task: {
       ...task,
       outputImages,
+      ...(task.imageLayers ? { imageLayers: task.imageLayers.filter((_, index) => index !== outputIndex) } : {}),
       outputImageSlots,
       transparentOriginalImages: transparentOriginalImages?.length ? transparentOriginalImages : undefined,
       actualParamsByImage: actualParamsByImage && Object.keys(actualParamsByImage).length ? actualParamsByImage : undefined,

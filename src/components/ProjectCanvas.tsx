@@ -38,9 +38,12 @@ import { downloadImageIds, exportImage, type ImageExportFormat } from '../lib/do
 import { uploadMaterialImage } from '../lib/materialApi'
 import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
 import { TooltipButton } from './TooltipButton'
+import ImageLayerMenu from './ImageLayerMenu'
 import CanvasReferenceConnections from './CanvasReferenceConnections'
 import CanvasControls, { type CanvasControlLayer, type CanvasControlsThumbnailSubscriber } from './CanvasControls'
 import SearchBar from './SearchBar'
+import { matchesKeyboardShortcut } from '../lib/keyboardShortcuts'
+import { layoutImageLayers } from '../lib/imageLayerLayout'
 import {
   AlignCenterHorizontalIcon,
   AlignCenterVerticalIcon,
@@ -64,6 +67,7 @@ import {
   FlipHorizontalIcon,
   FlipVerticalIcon,
   HandIcon,
+  PointerIcon,
   ImageIcon,
   InfoIcon,
   RefreshIcon,
@@ -404,16 +408,30 @@ function CanvasImageNode({
     }
 
     let cancelled = false
+    let fullDataUrl: string | undefined
+    let fullRequested = false
+    const loadFullImage = async () => {
+      if (fullRequested) return
+      fullRequested = true
+      const dataUrl = await ensureImageCached(node.imageId!)
+      if (!dataUrl) return
+      fullDataUrl = dataUrl
+      if (!cancelled) setSrc(dataUrl)
+    }
     const unsubscribe = subscribeImageThumbnail(node.imageId, (thumbnail) => {
       if (cancelled) return
-      setSrc(thumbnail.dataUrl)
+      if (!fullDataUrl) setSrc(thumbnail.dataUrl)
       updateDimensions(thumbnail.width, thumbnail.height)
+      void loadFullImage().catch(() => undefined)
     })
     void ensureImageThumbnailCached(node.imageId).then((thumbnail) => {
-      if (cancelled || !thumbnail) return
-      setSrc(thumbnail.dataUrl)
-      updateDimensions(thumbnail.width, thumbnail.height)
-    }).catch(() => undefined)
+      if (cancelled) return
+      if (thumbnail) {
+        if (!fullDataUrl) setSrc(thumbnail.dataUrl)
+        updateDimensions(thumbnail.width, thumbnail.height)
+      }
+      return loadFullImage()
+    }).catch(() => loadFullImage().catch(() => undefined))
     return () => {
       cancelled = true
       unsubscribe()
@@ -447,13 +465,13 @@ function CanvasImageNode({
     if (onRename(name)) setEditingName(false)
   }
 
-  const sourceRatio = dimensions ? dimensions.width / Math.max(1, dimensions.height) : 1
+  const sourceRatio = item.operator?.aspectRatio ?? (dimensions ? dimensions.width / Math.max(1, dimensions.height) : 1)
   const crop = item.operator?.crop
   const frameHeight = cropEditing
       ? item.width / sourceRatio
       : crop
         ? item.width * crop.height / (sourceRatio * crop.width)
-      : dimensions
+      : dimensions || item.operator?.aspectRatio
         ? item.width / sourceRatio
       : undefined
   const showResolution = item.width * viewportScale >= 160
@@ -583,7 +601,7 @@ function CanvasImageNode({
         width: item.width,
         transform: `rotate(${normalizeCanvasRotation(item.rotation ?? item.operator?.rotation ?? 0)}deg)`,
         transformOrigin: 'center center',
-        zIndex: selected || multiSelected ? Math.max(item.z, 1000) : item.z,
+        zIndex: (selected || multiSelected) && !item.operator?.aspectRatio ? Math.max(item.z, 1000) : item.z,
         touchAction: 'none',
       }}
       onPointerDown={onPointerDown}
@@ -597,7 +615,7 @@ function CanvasImageNode({
       title={node.error}
     >
       <div
-        className={`relative ${cropEditing || promptSearchMatch ? 'overflow-visible' : 'overflow-hidden'} bg-white shadow-sm dark:bg-gray-900 ${selected || multiSelected ? 'ring-0' : 'ring-1 ring-black/10 dark:ring-white/10'}`}
+        className={`relative ${cropEditing || promptSearchMatch ? 'overflow-visible' : 'overflow-hidden'} bg-transparent shadow-sm ${selected || multiSelected ? 'ring-0' : 'ring-1 ring-black/10 dark:ring-white/10'}`}
         style={{
           ...(!cropEditing && (selected || multiSelected) ? { boxShadow: `0 0 0 ${selectionStrokeWidth}px #3f78c5` } : {}),
           ...(frameHeight ? { height: frameHeight } : {}),
@@ -610,7 +628,7 @@ function CanvasImageNode({
           data-output-image-ids={node.imageId}
           draggable={false}
           alt=""
-          className={cropEditing || crop ? 'absolute max-w-none' : 'block h-auto w-full object-contain'}
+          className={cropEditing || crop ? 'absolute max-w-none' : item.operator?.aspectRatio ? 'block h-full w-full object-fill' : 'block h-auto w-full object-contain'}
           style={cropEditing && dimensions
             ? { width: '100%', height: '100%', left: 0, top: 0, objectFit: 'fill', ...(flipX || flipY ? { transform: `scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})` } : {}) }
             : crop && dimensions
@@ -896,6 +914,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const selectedTaskIds = useStore((s) => s.selectedTaskIds)
   const setSelectedTaskIds = useStore((s) => s.setSelectedTaskIds)
   const canvasWheelMode = useStore((s) => s.settings?.canvasWheelMode ?? 'pan')
+  const canvasPanModeShortcut = useStore((s) => s.settings?.canvasPanModeShortcut ?? 'm')
   const openImageFavoritePicker = useStore((s) => s.openImageFavoritePicker)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const showToast = useStore((s) => s.showToast)
@@ -940,7 +959,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const [multiSelectedKeys, setMultiSelectedKeys] = useState<string[]>([])
   const canvasSelectedTaskIdsRef = useRef<string[]>([])
   const [marquee, setMarquee] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null)
-  const [ratios, setRatios] = useState<Record<string, number>>({})
+  const [naturalRatios, setRatios] = useState<Record<string, number>>({})
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const [toolbarSize, setToolbarSize] = useState({ width: 0, height: 0 })
   const [cropImageId, setCropImageId] = useState<string | null>(null)
@@ -993,6 +1012,10 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const legacyFavoriteIdsByImage = useMemo(() => Object.fromEntries(projectTasks.flatMap((task) =>
     task.outputImages.map((imageId) => [imageId, task.isFavorite ? getImageFavoriteCollectionIds(imageId, task) : []]),
   )), [projectTasks])
+  const ratios = useMemo(() => ({
+    ...naturalRatios,
+    ...Object.fromEntries(Object.entries(canvas.items).flatMap(([id, item]) => item.operator?.aspectRatio ? [[id, item.operator.aspectRatio]] : [])),
+  }), [canvas.items, naturalRatios])
 
   useEffect(() => {
     const cachedCanvas = canvasProjectId ? projectCanvasCache[canvasProjectId] : undefined
@@ -1002,7 +1025,8 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       source: cachedCanvas ? 'localStorage.projectCanvasCache' : activeProject?.canvas ? 'IndexedDB.project' : 'memory/default',
       canvas: sourceCanvas,
     })
-    const next = ensureProjectCanvas(sourceCanvas, projectImageIds, legacyFavoriteIdsByImage, imageZById, errorNodeKeys)
+    const ensured = ensureProjectCanvas(sourceCanvas, projectImageIds, legacyFavoriteIdsByImage, imageZById, errorNodeKeys)
+    const next = layoutImageLayers(ensured, projectTasks)
     const preserveLocalViewport = canvasProjectRef.current === canvasProjectId && viewportDirtyRef.current
     if (preserveLocalViewport) next.viewport = canvasRef.current.viewport
     const historySourceChanged = historyInternalCanvasRef.current === null || !canvasItemsEqual(historyInternalCanvasRef.current, next)
@@ -1021,7 +1045,8 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     canvasProjectRef.current = canvasProjectId
     canvasRef.current = next
     setCanvas(next)
-  }, [activeProject, activeProject?.canvas, activeProject?.id, canvasProjectId, errorNodeKeys, imageZById, legacyFavoriteIdsByImage, projectCanvasCache, projectImageIds])
+    if (next !== ensured && canvasProjectId) updateProjectCanvas(canvasProjectId, next)
+  }, [activeProject, activeProject?.canvas, activeProject?.id, canvasProjectId, errorNodeKeys, imageZById, legacyFavoriteIdsByImage, projectCanvasCache, projectImageIds, projectTasks, updateProjectCanvas])
 
   useEffect(() => {
     const container = containerRef.current
@@ -1191,7 +1216,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       autoLayoutProjectRef.current = canvasProjectId
       knownImageIdsRef.current = new Set(Object.keys(persistedItems))
     }
-    const addedImageIds = projectImageIds.filter((imageId) => !knownImageIdsRef.current.has(imageId) && !persistedItems[imageId])
+    const addedImageIds = projectImageIds.filter((imageId) => !knownImageIdsRef.current.has(imageId) && !persistedItems[imageId] && !canvasRef.current.items[imageId]?.operator?.aspectRatio)
     if (addedImageIds.some((imageId) => !canvasRef.current.items[imageId])) return
     knownImageIdsRef.current = new Set(projectImageIds)
 
@@ -1252,6 +1277,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       const next = {
         ...current,
         ...position,
+        ...(task?.imageLayers?.[outputIndex]?.name ? { name: task.imageLayers[outputIndex].name } : {}),
         ...(transient?.name && transient.name !== transientNode?.placeholderName ? { name: transient.name } : {}),
       }
       nextItems[imageId] = next
@@ -1995,7 +2021,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const horizontal = resize.corner.endsWith('e') ? deltaX : -deltaX
     const vertical = resize.corner.startsWith('s') ? deltaY : -deltaY
     const widthDelta = Math.abs(horizontal) >= Math.abs(vertical * ratio) ? horizontal : vertical * ratio
-    const width = Math.max(80, resize.item.width + widthDelta)
+    const width = Math.max(resize.item.operator?.aspectRatio ? 0.01 : 80, resize.item.width + widthDelta)
     resize.moved = resize.moved || width !== resize.item.width
     const actualDelta = width - resize.item.width
     const originalWidth = resize.item.operator?.originalWidth ?? imageDimensions[resize.key]?.width ?? resize.item.width
@@ -2181,6 +2207,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       const originalWidth = selectedItem?.operator?.originalWidth
       const scale = selectedItem?.operator?.scale ?? (originalWidth ? selectedItem.width / originalWidth : 1)
       await exportImage(selectedNode.imageId, selectedItem?.name || `image-${selectedNode.imageId}`, format, {
+        aspectRatio: selectedItem?.operator?.aspectRatio,
         crop: selectedItem?.operator?.crop,
         scale,
         rotation: selectedItem ? normalizeCanvasRotation(selectedItem.rotation ?? selectedItem.operator?.rotation ?? 0) : undefined,
@@ -2370,6 +2397,11 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, [contenteditable="true"]'))) return
       const key = event.key.toLowerCase()
       const modifier = event.ctrlKey || event.metaKey
+      if (!event.repeat && matchesKeyboardShortcut(event, canvasPanModeShortcut)) {
+        event.preventDefault()
+        setPanMode((mode) => !mode)
+        return
+      }
       if (modifier && !event.altKey && !event.repeat && (key === 'z' || key === 'y')) {
         event.preventDefault()
         const direction = key === 'y' || event.shiftKey ? 'redo' : 'undo'
@@ -2384,7 +2416,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [applyCanvasHistory, canvasProjectId, handleDeleteSelection, multiSelectedKeys, redoProjectImageHistory, selectedKey, undoProjectImageHistory])
+  }, [applyCanvasHistory, canvasPanModeShortcut, canvasProjectId, handleDeleteSelection, multiSelectedKeys, redoProjectImageHistory, selectedKey, undoProjectImageHistory])
 
   const toolbarButtonClass = 'flex h-8 w-8 items-center justify-center rounded text-gray-600 transition hover:bg-gray-100 hover:text-gray-950 dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white'
 
@@ -2487,7 +2519,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
               type="button"
               aria-label="移动模式"
               aria-pressed={panMode}
-              title="移动模式"
+              title={`${panMode ? '移动模式' : '选择模式'} (${canvasPanModeShortcut.toUpperCase()})`}
               tabIndex={verticalToolbarCollapsed ? -1 : undefined}
               className={`flex h-9 w-9 items-center justify-center rounded transition ${panMode ? 'bg-[#3f78c5] text-white shadow-sm' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-white/[0.08] dark:hover:text-white'}`}
               onClick={() => {
@@ -2503,7 +2535,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
                 setPanMode(!panMode)
               }}
             >
-              <HandIcon className="h-5 w-5" />
+              {panMode ? <HandIcon className="h-5 w-5" /> : <PointerIcon className="h-5 w-5" />}
             </button>
           </div>
           <button
@@ -2704,6 +2736,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             <TooltipButton tooltip="重试单图" onClick={() => void handleRetryImage(selectedNode.task)} className={toolbarButtonClass}><RefreshIcon className="h-4 w-4" /></TooltipButton>
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
             <TooltipButton tooltip="裁剪图片" onClick={() => setCropImageId(selectedNode.imageId!)} className={toolbarButtonClass}><CropIcon className="h-4 w-4" /></TooltipButton>
+            <ImageLayerMenu key={selectedNode.imageId} task={selectedNode.task} imageId={selectedNode.imageId} disabled={tasks.some((task) => task.layerDecomposition && task.status === 'running' && task.inputImageIds.includes(selectedNode.imageId!))} className={toolbarButtonClass} />
             <TooltipButton tooltip="向左旋转 90°" onClick={() => handleRotateBy(-90)} className={toolbarButtonClass}><RotateLeftIcon className="h-4 w-4" /></TooltipButton>
             <TooltipButton tooltip="向右旋转 90°" onClick={() => handleRotateBy(90)} className={toolbarButtonClass}><RotateRightIcon className="h-4 w-4" /></TooltipButton>
             <TooltipButton tooltip="左右翻转" onClick={() => handleFlip('x')} className={toolbarButtonClass}><FlipHorizontalIcon className="h-4 w-4" /></TooltipButton>

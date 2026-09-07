@@ -1,4 +1,4 @@
-import type { AppSettings, ImageFailureEndpoint, ImageFailureKind, TaskOutputError, TaskParams } from '../types'
+import type { AppSettings, ImageFailureEndpoint, ImageFailureKind, ImageLayer, TaskOutputError, TaskParams } from '../types'
 import { blobToDataUrl } from './dataUrl'
 
 export const MIME_MAP: Record<string, string> = {
@@ -26,6 +26,8 @@ export interface CallApiOptions {
 }
 
 export interface CallApiResult {
+  imageLayers?: ImageLayer[]
+  layerUsage?: Record<string, number>
   /** base64 data URL 列表 */
   images: string[]
   /** API 返回的实际生效参数 */

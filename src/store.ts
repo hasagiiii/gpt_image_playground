@@ -64,6 +64,7 @@ import type { OnlineProjectResponse } from './lib/onlineProjects'
 import { callImageApi } from './lib/api'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
+import { callSeedreamLayers, DEFAULT_LAYER_PROMPT, SEEDREAM_LAYER_MODEL } from './lib/seedreamLayers'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
@@ -80,6 +81,7 @@ import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
 import { getAgentConversationProjectId, getChangedAgentConversationProjectIds } from './lib/agentConversationScope'
 import { ensureProjectCanvas, normalizeProjectCanvas, removeCanvasFavoriteCollection } from './lib/projectCanvas'
+import { layoutImageLayers } from './lib/imageLayerLayout'
 import { getTaskOutputImageSlots, removeTaskOutputImage as removeTaskOutputImageRecord } from './lib/singleImageOperations'
 import { playCompletionSound } from './lib/completionSound'
 
@@ -3390,6 +3392,8 @@ async function completeRecoveredCompositeTask(task: TaskRecord, result: Awaited<
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {
+    imageLayers: result.imageLayers,
+    layerUsage: result.layerUsage,
     outputImages: outputIds,
     transparentOriginalImages: transparentOriginalImageIds,
     rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
@@ -3440,12 +3444,13 @@ async function recoverCompositeTask(taskId: string) {
       requestId: task.compositeRequestId,
       statusUrl: task.compositeStatusUrl,
     })
-    const result = await queryBackendCompositeImageTask({
+    const result = await (task.layerDecomposition ? callSeedreamLayers : queryBackendCompositeImageTask)({
       apiKey: apiOverride.apiKey,
       model: task.apiModel,
       requestId: task.compositeRequestId,
       clientRequestId: requestId,
       params: task.params,
+      ...(task.layerDecomposition ? { baseUrl: isAuthEnabled() ? undefined : getTaskApiProfile(useStore.getState().settings, task)?.baseUrl } : {}),
     })
     if (!result) {
       if (Date.now() - task.createdAt >= COMPOSITE_RECOVERY_TIMEOUT_MS) {
@@ -4793,6 +4798,48 @@ async function initializeStore() {
         : {}),
     })
   }
+}
+
+/** 分层复用原图所在项目，不改动输入区草稿。 */
+export async function decomposeImage(task: TaskRecord, imageId: string, prompt = DEFAULT_LAYER_PROMPT) {
+  const state = useStore.getState()
+  if (!task.outputImages.includes(imageId)) throw new Error('当前图片不可分层')
+  if (!prompt.trim()) throw new Error('请输入分层指令')
+  if (state.tasks.some((item) => item.layerDecomposition && item.status === 'running' && item.inputImageIds.includes(imageId))) return
+  const profile = getActiveApiProfile(state.settings)
+  const apiKey = state.oidcApiOverride?.apiKey || profile.apiKey
+  if (!apiKey.trim()) throw new Error('请先选择 API Key')
+  const next: TaskRecord = {
+    id: genId(),
+    requestId: createRequestId(),
+    projectId: task.projectId,
+    prompt: prompt.trim(),
+    params: { ...DEFAULT_PARAMS, output_format: 'png' },
+    apiProvider: profile.provider,
+    apiProfileId: profile.id,
+    apiProfileName: profile.name,
+    apiMode: 'images',
+    apiModel: SEEDREAM_LAYER_MODEL,
+    apiOverride: { apiKey, model: SEEDREAM_LAYER_MODEL, platform: 'composite' },
+    layerDecomposition: true,
+    inputImageIds: [imageId],
+    outputImages: [],
+    status: 'running',
+    error: null,
+    createdAt: Date.now(),
+    finishedAt: null,
+    elapsed: null,
+  }
+  state.setTasks([next, ...state.tasks])
+  try {
+    await putTask(next)
+  } catch (err) {
+    useStore.setState((current) => ({ tasks: current.tasks.filter((item) => item.id !== next.id) }))
+    throw err
+  }
+  touchProject(next.projectId, false)
+  state.showToast('已提交图片分层任务', 'success')
+  void executeTask(next.id)
 }
 
 /** 提交新任务 */
@@ -7038,7 +7085,24 @@ async function executeTask(taskId: string) {
       : task.prompt
 
     const prompt = replaceImageMentionsForApi(requestPrompt, inputDataUrls.length)
-    const result = isCompositeRequest
+    const result = task.layerDecomposition
+      ? await callSeedreamLayers({
+          apiKey: activeProfile.apiKey,
+          model: task.apiModel,
+          baseUrl: isAuthEnabled() ? undefined : activeProfile.baseUrl,
+          timeout: activeProfile.timeout,
+          params: task.params,
+          prompt,
+          image: compositeInputFileUrls[0] || inputDataUrls[0],
+          requestId: task.compositeRequestId,
+          clientRequestId: requestId,
+          idempotencyKey: task.idempotencyKey ?? task.id,
+          onRequestCreated: async (request) => {
+            compositeRequestInfo = request
+            await updateExecutingTask({ compositeRequestId: request.requestId, compositeRecoverable: false })
+          },
+        })
+      : isCompositeRequest
       ? await callBackendCompositeImageApi({
           apiKey: task.apiOverride?.apiKey ?? '',
           clientRequestId: requestId,
@@ -7208,6 +7272,8 @@ async function executeTask(taskId: string) {
     useStore.getState().setTaskStreamPreview(taskId)
     updateExecutingTask({
       outputImages: outputIds,
+      imageLayers: result.imageLayers,
+      layerUsage: result.layerUsage,
       transparentOriginalImages: transparentOriginalImageIds,
       outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
       streamPartialImageIds: undefined,
@@ -7420,6 +7486,14 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>, sy
   )
   const task = updated.find((t) => t.id === taskId)
   setTasks(updated)
+  if (task?.layerDecomposition && task.status === 'done' && task.imageLayers?.length) {
+    const projectId = task.projectId ?? LOCAL_PROJECT_ID
+    const sourceCanvas = state.projectCanvasCache[projectId] ?? state.projects.find((item) => item.id === projectId)?.canvas
+    const imageIds = updated.filter((item) => (item.projectId ?? LOCAL_PROJECT_ID) === projectId).flatMap((item) => item.outputImages)
+    const canvas = ensureProjectCanvas(sourceCanvas, imageIds)
+    const next = layoutImageLayers(canvas, [task])
+    if (next !== canvas) state.updateProjectCanvas(projectId, next)
+  }
   if (previousTask?.status !== 'done' && task?.status === 'done' && task.outputImages.length > 0) playCompletionSound()
   maybeOpenSupportPrompt(tasks, updated, taskId)
   return task ? putTask(task, syncOnline) : undefined
@@ -7469,13 +7543,14 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
     return
   }
 
-  const compositeRecovery = !latest.rawImageUrls?.length && latest.compositeRequestId && latest.apiModel && latest.apiOverride?.platform?.trim().toLowerCase() === 'composite' && latest.apiOverride.apiKey
-    ? await queryBackendCompositeImageTask({
+  const compositeRecovery = (!latest.rawImageUrls?.length || latest.layerDecomposition) && latest.compositeRequestId && latest.apiModel && latest.apiOverride?.platform?.trim().toLowerCase() === 'composite' && latest.apiOverride.apiKey
+    ? await (latest.layerDecomposition ? callSeedreamLayers : queryBackendCompositeImageTask)({
         apiKey: latest.apiOverride.apiKey,
         model: latest.apiModel,
         requestId: latest.compositeRequestId,
         clientRequestId: latest.requestId ?? undefined,
         params: latest.params,
+        ...(latest.layerDecomposition ? { baseUrl: isAuthEnabled() ? undefined : getTaskApiProfile(useStore.getState().settings, latest)?.baseUrl } : {}),
       }).then((result) => ({ result, rawImageUrls: result?.rawImageUrls ?? [] }), (err) => ({ result: null, rawImageUrls: getRawErrorPayload(err).rawImageUrls ?? [] }))
     : { result: null, rawImageUrls: [] }
   const rawImageUrls = latest.rawImageUrls?.length ? latest.rawImageUrls : compositeRecovery.rawImageUrls
@@ -7491,6 +7566,7 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
   await updateTaskInStore(latest.id, {
     outputImages: outputIds,
+    ...(compositeRecovery.result?.imageLayers ? { imageLayers: compositeRecovery.result.imageLayers, layerUsage: compositeRecovery.result.layerUsage } : {}),
     transparentOriginalImages: transparentOriginalImageIds,
     outputErrors: undefined,
     actualParams: firstActualParams(actualParamsList),
@@ -7729,6 +7805,32 @@ export async function deleteFavoriteCollection(collectionId: string, deleteImage
 
 /** 重试失败的任务：创建新任务并执行。网络/限流等任务级失败由界面优先调用原位重试。 */
 export async function retryTask(task: TaskRecord) {
+  if (task.layerDecomposition) {
+    const resume = task.status === 'error' && (task.failureEndpoint === 'status' || task.failureEndpoint === 'download')
+    const next: TaskRecord = {
+      ...task,
+      id: genId(),
+      requestId: createRequestId(),
+      idempotencyKey: resume ? task.idempotencyKey ?? task.id : undefined,
+      compositeRequestId: resume ? task.compositeRequestId : undefined,
+      compositeRecoverable: false,
+      outputImages: [],
+      outputImageSlots: undefined,
+      imageLayers: undefined,
+      layerUsage: undefined,
+      rawImageUrls: undefined,
+      status: 'running',
+      error: null,
+      createdAt: Date.now(),
+      finishedAt: null,
+      elapsed: null,
+    }
+    useStore.getState().setTasks([next, ...useStore.getState().tasks])
+    await putTask(next)
+    touchProject(next.projectId, false)
+    void executeTask(next.id)
+    return
+  }
   const { settings, oidcApiOverride } = useStore.getState()
   const baseProfile = getActiveApiProfile(settings)
   const apiOverride = oidcApiOverride?.apiKey
@@ -7803,6 +7905,7 @@ export async function retryTaskInPlace(task: TaskRecord) {
   clearImageStatusRecoveryTimer(latest.id)
   await updateTaskInStore(latest.id, {
     idempotencyKey: latest.idempotencyKey ?? latest.id,
+    ...(latest.layerDecomposition && latest.failureEndpoint === 'result' ? { idempotencyKey: createRequestId(), compositeRequestId: undefined } : {}),
     status: 'running',
     error: null,
     falRecoverable: false,

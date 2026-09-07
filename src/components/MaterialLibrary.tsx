@@ -100,9 +100,10 @@ export default function MaterialLibrary() {
   })
 
   const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files
+    // FileList 会随 input 重置而清空，先保留本次选中的文件。
+    const files = Array.from(event.target.files ?? [])
     event.target.value = ''
-    if (!files?.length) return
+    if (!files.length) return
     await uploadFiles(files)
   }
 

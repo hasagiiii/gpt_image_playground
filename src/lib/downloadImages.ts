@@ -26,6 +26,7 @@ export interface DownloadImageZipEntry {
 export type ImageExportFormat = 'png' | 'jpg' | 'svg' | 'psd'
 
 export interface ImageExportOptions {
+  aspectRatio?: number
   crop?: ProjectCanvasCrop
   scale?: number
   rotation?: number
@@ -188,7 +189,7 @@ async function renderFinalCanvas(sourceBlob: Blob, options: ImageExportOptions):
   const sourceHeight = Math.max(1, Math.round(image.naturalHeight * crop.height))
   const scale = Math.max(0.01, options.scale ?? 1)
   const width = Math.max(1, Math.round(sourceWidth * scale))
-  const height = Math.max(1, Math.round(sourceHeight * scale))
+  const height = Math.max(1, Math.round((options.aspectRatio ? image.naturalWidth / options.aspectRatio * crop.height : sourceHeight) * scale))
   const rotation = (options.rotation ?? 0) * Math.PI / 180
   const cos = Math.abs(Math.cos(rotation))
   const sin = Math.abs(Math.sin(rotation))

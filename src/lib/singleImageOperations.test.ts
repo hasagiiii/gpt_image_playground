@@ -43,6 +43,12 @@ describe('single image operations', () => {
     expect(result?.task.id).toBe('task-a')
   })
 
+  it('删除图层后保持图层元数据与剩余图片对齐', () => {
+    const layers = ['a', 'b', 'c'].map((name) => ({ name, url: `https://example.com/${name}` }))
+    const result = removeTaskOutputImage(task({ layerDecomposition: true, imageLayers: layers }), 'image-b')
+    expect(result?.task.imageLayers).toEqual([layers[0], layers[2]])
+  })
+
   it('reads legacy tasks without stable slots', () => {
     expect(getTaskOutputImageSlots(task())).toEqual(['image-a', 'image-b', 'image-c'])
   })

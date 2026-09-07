@@ -225,7 +225,7 @@ export async function queryBackendCompositeImageTask(options: {
   return readCompositeTaskResult(options)
 }
 
-async function uploadReferenceFile(dataUrl: string, name: string, clientRequestId?: string): Promise<{ url: string; uploaded: boolean }> {
+export async function uploadReferenceFile(dataUrl: string, name: string, clientRequestId?: string, signal?: AbortSignal): Promise<{ url: string; uploaded: boolean }> {
   if (isHttpUrl(dataUrl)) return { url: dataUrl, uploaded: false }
   const blob = await dataUrlToBlob(dataUrl)
   const extension = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png'
@@ -241,11 +241,13 @@ async function uploadReferenceFile(dataUrl: string, name: string, clientRequestI
   const response = await retryApiFetch(
     () => authFetch('/api/v1/files', {
       method: 'POST',
+      signal,
       headers: clientRequestId ? { [REQUEST_ID_HEADER]: clientRequestId } : undefined,
       body: formData,
     }),
     {
       endpoint: 'edit',
+      signal,
       requestId: clientRequestId,
       maxRetries: MAX_RETRIES,
       retryableStatuses: [429],
