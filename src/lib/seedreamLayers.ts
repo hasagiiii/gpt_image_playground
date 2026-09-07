@@ -3,7 +3,7 @@ import { authFetch, createRequestId } from '../auth/api'
 import { uploadReferenceFile } from './backendCompositeImageApi'
 import { fetchImageUrlAsDataUrl, getApiResponseRetryCount, MIME_MAP, retryApiFetch, withApiFailureMetadata, type ApiFailure, type CallApiResult } from './imageApiShared'
 
-export const SEEDREAM_LAYER_MODEL = 'doubao-seedream-5-0-pro-260628'
+export const SEEDREAM_LAYER_MODEL = 'bytedance/seedream-v5.0-pro/layer'
 export const DEFAULT_LAYER_PROMPT = '将参考图片拆分为独立的背景和前景图层，保持各元素的原始外观。'
 
 interface SeedreamOptions {
@@ -98,7 +98,6 @@ export async function callSeedreamLayers(options: SeedreamOptions): Promise<Call
       const submitted = await request(path, {
         image: [image],
         prompt: options.prompt,
-        layer_decomposition: true,
         output_format: options.params.output_format,
         response_format: 'url',
         size: options.size ?? 'auto',

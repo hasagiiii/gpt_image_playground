@@ -50,7 +50,7 @@ describe('Seedream 分层协议', () => {
     expect(url).toBe(`/api/v1/model/${SEEDREAM_LAYER_MODEL}`)
     expect(init?.headers).toMatchObject({ 'X-Upstream-API-Key': opts.apiKey, 'Idempotency-Key': 'client-id' })
     expect(JSON.parse(init?.body as string)).toEqual({
-      image: [opts.image], prompt: opts.prompt, layer_decomposition: true,
+      image: [opts.image], prompt: opts.prompt,
       output_format: 'png', response_format: 'url', size: 'auto', watermark: true,
     })
     expect(vi.mocked(authFetch).mock.calls[4][0]).toContain('/requests/request%2F1')

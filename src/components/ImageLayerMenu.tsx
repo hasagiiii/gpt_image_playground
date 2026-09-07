@@ -41,7 +41,6 @@ export default function ImageLayerMenu({ task, imageId, disabled, className }: {
     setPrice('预估中...')
     const timer = setTimeout(() => {
       void estimateModelPricing(apiKey, SEEDREAM_LAYER_MODEL, {
-        layer_decomposition: true,
         prompt: DEFAULT_LAYER_PROMPT,
         size: 'auto',
         output_format: 'png',

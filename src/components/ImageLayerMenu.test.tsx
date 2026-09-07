@@ -53,7 +53,8 @@ describe('图片分层二级菜单', () => {
     expect(customItem()).not.toBeNull()
     await act(async () => vi.advanceTimersByTimeAsync(0))
     expect(menu().querySelector('[role="status"]')?.textContent).toBe('≈ $0.123456')
-    expect(mocks.estimate).toHaveBeenCalledWith('selected-key', SEEDREAM_LAYER_MODEL, expect.objectContaining({ layer_decomposition: true, size: 'auto', output_format: 'png' }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(mocks.estimate).toHaveBeenCalledWith('selected-key', SEEDREAM_LAYER_MODEL, expect.objectContaining({ size: 'auto', output_format: 'png' }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(mocks.estimate.mock.calls[0][2]).not.toHaveProperty('layer_decomposition')
     expect(mocks.decomposeImage).not.toHaveBeenCalled()
   })
 

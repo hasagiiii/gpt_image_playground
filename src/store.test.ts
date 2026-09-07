@@ -258,7 +258,7 @@ vi.mock('./lib/backendCompositeImageApi', () => ({
   queryBackendCompositeImageTask: vi.fn(async () => null),
 }))
 vi.mock('./lib/seedreamLayers', () => ({
-  SEEDREAM_LAYER_MODEL: 'doubao-seedream-5-0-pro-260628',
+  SEEDREAM_LAYER_MODEL: 'bytedance/seedream-v5.0-pro/layer',
   DEFAULT_LAYER_PROMPT: '将参考图片拆分为独立的背景和前景图层，保持各元素的原始外观。',
   callSeedreamLayers: vi.fn(),
 }))
