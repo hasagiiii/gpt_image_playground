@@ -42,6 +42,19 @@ describe('分层图片坐标拼合', () => {
     expect(result.items['layer-2'].name).toBe('左侧遗迹残柱与绿植')
   })
 
+  it('以被分层的原图位置和宽度作为图层组锚点', () => {
+    const original = canvas()
+    original.items.source = { x: 1200, y: 640, width: 400, z: 0 }
+    original.items['layer-0'].width = 240
+    const result = layoutImageLayers(original, [task])
+
+    expect(result.items['layer-0'].x).toBe(1200)
+    expect(result.items['layer-0'].y).toBe(640)
+    expect(result.items['layer-2'].x).toBeCloseTo(1200 + 45 * 0.2)
+    expect(result.items['layer-2'].y).toBeCloseTo(640 + 1453 * 0.2)
+    expect(result.items['layer-2'].width).toBeCloseTo((728 - 45) * 0.2)
+  })
+
   it('按 z_index 而不是回包数组顺序叠放', () => {
     const reordered = { ...task, imageLayers: layers.map((layer, index) => ({ ...layer, z_index: index === 1 ? 5 : index === 5 ? 1 : index })) }
     const result = layoutImageLayers(canvas(), [reordered])

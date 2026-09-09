@@ -2270,9 +2270,11 @@ export const useStore = create<AppState>()(
 
       // Selection
       selectedTaskIds: [],
-      setSelectedTaskIds: (updater) => set((s) => ({
-        selectedTaskIds: typeof updater === 'function' ? updater(s.selectedTaskIds) : updater
-      })),
+      setSelectedTaskIds: (updater) => set((s) => {
+        const next = typeof updater === 'function' ? updater(s.selectedTaskIds) : updater
+        if (next.length === s.selectedTaskIds.length && next.every((id, index) => id === s.selectedTaskIds[index])) return s
+        return { selectedTaskIds: next }
+      }),
       toggleTaskSelection: (id, force) => set((s) => {
         const isSelected = s.selectedTaskIds.includes(id)
         const shouldSelect = force !== undefined ? force : !isSelected

@@ -151,6 +151,9 @@ function getSearchSnippet(text: string, query: string, maxLength: number) {
 
 const EMPTY_PROJECT_CANVAS_CACHE: Record<string, ProjectCanvasState> = {}
 const CANVAS_HEADER_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-header-collapsed'
+const CANVAS_AUTO_PAN_EDGE_SIZE = 72
+const CANVAS_AUTO_PAN_SPEED = 0.45
+const CANVAS_AUTO_PAN_MAX_SPEED = 0.9
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y)
@@ -891,6 +894,22 @@ function CanvasImageNode({
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se'
 type CropHandle = ResizeCorner | 'move'
+type MultiTransformEntry = { key: string; item: ProjectCanvasItem; height: number }
+type MultiResizeState = {
+  pointerId: number
+  corner: ResizeCorner
+  start: { x: number; y: number }
+  bounds: { left: number; top: number; right: number; bottom: number }
+  entries: MultiTransformEntry[]
+  moved: boolean
+}
+type MultiRotateState = {
+  pointerId: number
+  center: { x: number; y: number }
+  startAngle: number
+  entries: MultiTransformEntry[]
+  moved: boolean
+}
 
 export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeaderControls }: { agentPanelCollapsed?: boolean; canvasHeaderControls?: ReactNode }) {
   const tasks = useStore((s) => s.tasks)
@@ -937,9 +956,21 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const pointersRef = useRef(new Map<number, { x: number; y: number }>())
   const panRef = useRef<{ pointerId: number; start: { x: number; y: number }; viewport: ProjectCanvasViewport; moved: boolean } | null>(null)
   const pinchRef = useRef<{ distance: number; screenCentroid: { x: number; y: number }; canvasCentroid: { x: number; y: number }; viewport: ProjectCanvasViewport; moved: boolean } | null>(null)
-  const dragRef = useRef<{ keys: string[]; pointerId: number; start: { x: number; y: number }; items: Record<string, ProjectCanvasItem>; moved: boolean } | null>(null)
+  const dragRef = useRef<{
+    keys: string[]
+    pointerId: number
+    start: { x: number; y: number }
+    startWorld: { x: number; y: number }
+    pointer: { x: number; y: number }
+    items: Record<string, ProjectCanvasItem>
+    moved: boolean
+    autoPanFrame: number | null
+    autoPanLastTime: number | null
+  } | null>(null)
   const resizeRef = useRef<{ key: string; pointerId: number; corner: ResizeCorner; start: { x: number; y: number }; item: ProjectCanvasItem; moved: boolean } | null>(null)
   const rotateRef = useRef<{ key: string; pointerId: number; center: { x: number; y: number }; startAngle: number; startRotation: number; moved: boolean } | null>(null)
+  const multiResizeRef = useRef<MultiResizeState | null>(null)
+  const multiRotateRef = useRef<MultiRotateState | null>(null)
   const marqueeRef = useRef<{ pointerId: number; start: { x: number; y: number }; initial: string[] } | null>(null)
   const autoLayoutProjectRef = useRef<string | null>(null)
   const knownImageIdsRef = useRef(new Set<string>())
@@ -958,6 +989,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const [interactionKeys, setInteractionKeys] = useState<string[]>([])
   const [multiSelectedKeys, setMultiSelectedKeys] = useState<string[]>([])
   const canvasSelectedTaskIdsRef = useRef<string[]>([])
+  const canvasSelectionSyncPendingRef = useRef<string[] | null>(null)
   const [marquee, setMarquee] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null)
   const [naturalRatios, setRatios] = useState<Record<string, number>>({})
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
@@ -1615,36 +1647,58 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }, firstBounds)
   }, [multiSelectedEntries])
 
-  useEffect(() => {
-    const taskIds = Array.from(new Set(
-      multiSelectedKeys
-        .map((key) => nodes.find((node) => node.key === key)?.task.id)
-        .filter((id): id is string => Boolean(id)),
-    ))
-    if (multiSelectedKeys.length > 1 && taskIds.length > 0) {
-      canvasSelectedTaskIdsRef.current = taskIds
+  const syncCanvasTaskSelection = (keys: string[]) => {
+    const taskIds = keys.length > 1
+      ? Array.from(new Set(
+        keys
+          .map((key) => nodes.find((node) => node.key === key)?.task.id)
+          .filter((id): id is string => Boolean(id)),
+      ))
+      : []
+    const previous = canvasSelectedTaskIdsRef.current
+    const current = useStore.getState().selectedTaskIds
+    canvasSelectedTaskIdsRef.current = taskIds
+    if (taskIds.length > 0) {
+      if (current.length === taskIds.length && current.every((id, index) => id === taskIds[index])) return
+      canvasSelectionSyncPendingRef.current = taskIds
       setSelectedTaskIds(taskIds)
       return
     }
-    if (canvasSelectedTaskIdsRef.current.length > 0) {
-      const previous = new Set(canvasSelectedTaskIdsRef.current)
-      canvasSelectedTaskIdsRef.current = []
-      setSelectedTaskIds((current) => current.filter((id) => !previous.has(id)))
+    if (previous.length > 0) {
+      const previousSet = new Set(previous)
+      const next = current.filter((id) => !previousSet.has(id))
+      if (next.length === current.length) return
+      canvasSelectionSyncPendingRef.current = []
+      setSelectedTaskIds(() => {
+        const latest = useStore.getState().selectedTaskIds
+        const latestNext = latest.filter((id) => !previousSet.has(id))
+        return latestNext.length === latest.length ? latest : latestNext
+      })
     }
-  }, [multiSelectedKeys, nodes, setSelectedTaskIds])
+  }
+
+  const nodeTaskSelectionSignature = useMemo(() => nodes.map((node) => `${node.key}:${node.task.id}`).join('|'), [nodes])
 
   useEffect(() => {
+    const pending = canvasSelectionSyncPendingRef.current
+    if (pending !== null) {
+      const pendingApplied = pending.length === selectedTaskIds.length
+        && pending.every((id, index) => id === selectedTaskIds[index])
+      if (!pendingApplied) return
+      canvasSelectionSyncPendingRef.current = null
+    }
     const syncedTaskIds = canvasSelectedTaskIdsRef.current
     if (syncedTaskIds.length > 0 && syncedTaskIds.length === selectedTaskIds.length && syncedTaskIds.every((id) => selectedTaskIds.includes(id))) return
 
     const selectedSet = new Set(selectedTaskIds)
     const keys = nodes.filter((node) => selectedSet.has(node.task.id)).map((node) => node.key)
+    canvasSelectedTaskIdsRef.current = keys.length > 1 ? Array.from(new Set(keys.map((key) => nodes.find((node) => node.key === key)?.task.id).filter((id): id is string => Boolean(id)))) : []
     setMultiSelectedKeys((current) => {
       if (current.length === keys.length && current.every((key, index) => key === keys[index])) return current
       return keys.length > 1 ? keys : []
     })
     if (keys.length > 1) setSelectedKey(null)
-  }, [nodes, selectedTaskIds])
+  }, [nodeTaskSelectionSignature, selectedTaskIds])
 
   useEffect(() => {
     if (!selectedItem) return
@@ -1686,14 +1740,16 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   })() : null
 
   const multiToolbarPosition = multiSelectedEntries.length > 1 ? (() => {
+    const bounds = multiSelectionBounds
+    if (!bounds) return null
     const scale = canvas.viewport.scale
-    const minX = Math.min(...multiSelectedEntries.map(({ item }) => item.x * scale + canvas.viewport.x))
-    const maxX = Math.max(...multiSelectedEntries.map(({ item }) => (item.x + item.width) * scale + canvas.viewport.x))
-    const minY = Math.min(...multiSelectedEntries.map(({ item }) => item.y * scale + canvas.viewport.y))
-    const maxY = Math.max(...multiSelectedEntries.map(({ item, height }) => (item.y + height) * scale + canvas.viewport.y))
+    const minX = bounds.left * scale + canvas.viewport.x
+    const maxX = bounds.right * scale + canvas.viewport.x
+    const minY = bounds.top * scale + canvas.viewport.y
+    const maxY = bounds.bottom * scale + canvas.viewport.y
     const toolbarWidth = 304
     const toolbarHeight = 42
-    const gap = 12
+    const gap = 34
     const above = minY - toolbarHeight - gap
     const below = maxY + gap
     const canPlaceAbove = above >= 8
@@ -1738,6 +1794,8 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (!canvasProjectId) return
     viewportDirtyRef.current = true
     if (viewportPersistTimerRef.current != null) window.clearTimeout(viewportPersistTimerRef.current)
+    const draggingPersistentImage = dragRef.current?.moved && dragRef.current.keys.some((key) => nodes.some((node) => node.key === key && (Boolean(node.imageId) || node.status === 'error')))
+    if (draggingPersistentImage) return
     viewportPersistTimerRef.current = window.setTimeout(() => {
       viewportPersistTimerRef.current = null
       if (!viewportDirtyRef.current || !canvasProjectId || typeof updateProjectCanvasViewport !== 'function') return
@@ -1753,6 +1811,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     setTransformPanelKey(null)
     setSelectedKey(key)
     setMultiSelectedKeys([])
+    syncCanvasTaskSelection([])
     setInteractionKeys([])
     const ratio = Math.max(0.01, ratios[key] ?? (node?.placeholderDimensions
       ? node.placeholderDimensions.width / node.placeholderDimensions.height
@@ -1802,6 +1861,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
     setSelectedKey(null)
     setMultiSelectedKeys([])
+    syncCanvasTaskSelection([])
     setInteractionKeys([])
 
     if (pointersRef.current.size === 1) {
@@ -1847,7 +1907,9 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         const nodeBottom = nodeRect.bottom - rect.top
         return left < nodeRight && right > nodeLeft && top < nodeBottom && bottom > nodeTop
       }).map((node) => node.key)
-      setMultiSelectedKeys(Array.from(new Set([...marqueeState.initial, ...hits])))
+      const nextKeys = Array.from(new Set([...marqueeState.initial, ...hits]))
+      setMultiSelectedKeys(nextKeys)
+      syncCanvasTaskSelection(nextKeys)
       return
     }
     if (!pointersRef.current.has(event.pointerId)) return
@@ -1881,12 +1943,23 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       if (multiSelectedKeys.length === 1) {
         setSelectedKey(multiSelectedKeys[0])
         setMultiSelectedKeys([])
+        syncCanvasTaskSelection([])
       }
       return
     }
     pointersRef.current.delete(event.pointerId)
     panRef.current = null
     pinchRef.current = null
+  }
+
+  const getCanvasWorldPoint = (clientX: number, clientY: number) => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    const scale = Math.max(canvasRef.current.viewport.scale, 0.01)
+    return {
+      x: (clientX - rect.left - canvasRef.current.viewport.x) / scale,
+      y: (clientY - rect.top - canvasRef.current.viewport.y) / scale,
+    }
   }
 
   const handleNodePointerDown = (node: CanvasNode, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1897,34 +1970,37 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (event.ctrlKey || event.metaKey) {
       setSelectedKey(null)
       setInteractionKeys([])
-      setMultiSelectedKeys((current) => {
-        const base = current.length > 0 ? current : selectedKey ? [selectedKey] : []
-        return base.includes(node.key) ? base.filter((key) => key !== node.key) : [...base, node.key]
-      })
+      const base = multiSelectedKeys.length > 0 ? multiSelectedKeys : selectedKey ? [selectedKey] : []
+      const nextKeys = base.includes(node.key) ? base.filter((key) => key !== node.key) : [...base, node.key]
+      setMultiSelectedKeys(nextKeys)
+      syncCanvasTaskSelection(nextKeys)
       return
     }
     event.currentTarget.setPointerCapture(event.pointerId)
     const keys = multiSelectedKeys.includes(node.key) && multiSelectedKeys.length > 1 ? multiSelectedKeys : [node.key]
     setSelectedKey(keys.length === 1 ? node.key : null)
     setMultiSelectedKeys(keys.length > 1 ? keys : [])
+    syncCanvasTaskSelection(keys.length > 1 ? keys : [])
     setInteractionKeys(keys)
     const items = Object.fromEntries(keys.flatMap((key) => nodeItems[key] ? [[key, nodeItems[key]]] : []))
+    const startWorld = getCanvasWorldPoint(event.clientX, event.clientY) ?? { x: event.clientX, y: event.clientY }
     dragRef.current = {
       keys,
       pointerId: event.pointerId,
       start: { x: event.clientX, y: event.clientY },
+      startWorld,
+      pointer: { x: event.clientX, y: event.clientY },
       items,
       moved: false,
+      autoPanFrame: null,
+      autoPanLastTime: null,
     }
   }
 
-  const handleNodePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
-    const deltaX = (event.clientX - drag.start.x) / canvasRef.current.viewport.scale
-    const deltaY = (event.clientY - drag.start.y) / canvasRef.current.viewport.scale
-    if (Math.hypot(deltaX, deltaY) <= 2 && !drag.moved) return
-    drag.moved = true
+  const updateDraggedItems = (drag: NonNullable<typeof dragRef.current>) => {
+    const currentWorld = getCanvasWorldPoint(drag.pointer.x, drag.pointer.y) ?? drag.startWorld
+    const deltaX = currentWorld.x - drag.startWorld.x
+    const deltaY = currentWorld.y - drag.startWorld.y
     const items = { ...canvasRef.current.items }
     const nextTransientItems = { ...transientNodeItemsRef.current }
     let hasPersistentChanges = false
@@ -1952,13 +2028,87 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
   }
 
+  const updateNodeAutoPan = (drag: NonNullable<typeof dragRef.current>) => {
+    if (drag.autoPanFrame != null || !drag.moved) return
+    drag.autoPanFrame = window.requestAnimationFrame((time) => {
+      drag.autoPanFrame = null
+      const current = dragRef.current
+      if (current !== drag || !current.moved) return
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect || rect.width <= 0 || rect.height <= 0) return
+      const elapsed = current.autoPanLastTime == null ? 16 : Math.min(32, Math.max(1, time - current.autoPanLastTime))
+      current.autoPanLastTime = time
+      const getAutoPanDelta = (position: number, size: number) => {
+        const distanceIntoEdge = position < CANVAS_AUTO_PAN_EDGE_SIZE
+          ? CANVAS_AUTO_PAN_EDGE_SIZE - position
+          : position > size - CANVAS_AUTO_PAN_EDGE_SIZE
+            ? position - size + CANVAS_AUTO_PAN_EDGE_SIZE
+            : 0
+        if (distanceIntoEdge <= 0) return 0
+        const speed = Math.min(CANVAS_AUTO_PAN_MAX_SPEED, CANVAS_AUTO_PAN_SPEED * distanceIntoEdge / CANVAS_AUTO_PAN_EDGE_SIZE)
+        return (position < CANVAS_AUTO_PAN_EDGE_SIZE ? 1 : -1) * speed * elapsed
+      }
+      const horizontal = getAutoPanDelta(current.pointer.x - rect.left, rect.width)
+      const vertical = getAutoPanDelta(current.pointer.y - rect.top, rect.height)
+      if (horizontal === 0 && vertical === 0) {
+        current.autoPanLastTime = null
+        return
+      }
+      setViewport({
+        ...canvasRef.current.viewport,
+        x: canvasRef.current.viewport.x + horizontal,
+        y: canvasRef.current.viewport.y + vertical,
+      })
+      updateDraggedItems(current)
+      updateNodeAutoPan(current)
+    })
+  }
+
+  const handleNodePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    drag.pointer = { x: event.clientX, y: event.clientY }
+    const deltaX = (event.clientX - drag.start.x) / canvasRef.current.viewport.scale
+    const deltaY = (event.clientY - drag.start.y) / canvasRef.current.viewport.scale
+    if (Math.hypot(deltaX, deltaY) <= 2 && !drag.moved) return
+    drag.moved = true
+    updateDraggedItems(drag)
+    updateNodeAutoPan(drag)
+  }
+
   const handleNodePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     dragRef.current = null
+    if (drag.autoPanFrame != null) window.cancelAnimationFrame(drag.autoPanFrame)
     setInteractionKeys([])
     if (drag.moved && drag.keys.some((key) => nodes.some((node) => node.key === key && (Boolean(node.imageId) || node.status === 'error')))) persistCanvas(canvasRef.current, 0)
   }
+
+  useEffect(() => {
+    const stopDragging = () => {
+      const drag = dragRef.current
+      if (!drag) return
+      dragRef.current = null
+      if (drag.autoPanFrame != null) window.cancelAnimationFrame(drag.autoPanFrame)
+      setInteractionKeys([])
+      if (drag.moved && drag.keys.some((key) => nodes.some((node) => node.key === key && (Boolean(node.imageId) || node.status === 'error')))) persistCanvas(canvasRef.current, 0)
+    }
+    const handlePointerOut = (event: PointerEvent) => {
+      if (event.relatedTarget === null) stopDragging()
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') stopDragging()
+    }
+    window.addEventListener('blur', stopDragging)
+    document.addEventListener('pointerout', handlePointerOut, true)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      window.removeEventListener('blur', stopDragging)
+      document.removeEventListener('pointerout', handlePointerOut, true)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [nodes, persistCanvas])
 
   const handleImageDimensions = (key: string, width: number, height: number) => {
     setImageDimensions((current) => current[key]?.width === width && current[key]?.height === height ? current : { ...current, [key]: { width, height } })
@@ -2044,6 +2194,67 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (resize.moved) persistCanvas(canvasRef.current, 0)
   }
 
+  const handleMultiResizeStart = (corner: ResizeCorner, event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    const bounds = multiSelectionBounds
+    if (!bounds || multiSelectedEntries.length < 2) return
+    const start = getCanvasWorldPoint(event.clientX, event.clientY)
+    if (!start) return
+    setInteractionKeys(multiSelectedEntries.map(({ key }) => key))
+    event.currentTarget.setPointerCapture(event.pointerId)
+    multiResizeRef.current = {
+      pointerId: event.pointerId,
+      corner,
+      start,
+      bounds,
+      entries: multiSelectedEntries.map(({ key, item, height }) => ({ key, item, height })),
+      moved: false,
+    }
+  }
+
+  const handleMultiResizeMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const resize = multiResizeRef.current
+    if (!resize || resize.pointerId !== event.pointerId) return
+    const point = getCanvasWorldPoint(event.clientX, event.clientY)
+    if (!point) return
+    const boundsWidth = Math.max(1, resize.bounds.right - resize.bounds.left)
+    const boundsHeight = Math.max(1, resize.bounds.bottom - resize.bounds.top)
+    const widthDelta = resize.corner.endsWith('e') ? point.x - resize.start.x : resize.start.x - point.x
+    const heightDelta = resize.corner.startsWith('s') ? point.y - resize.start.y : resize.start.y - point.y
+    const widthScale = 1 + widthDelta / boundsWidth
+    const heightScale = 1 + heightDelta / boundsHeight
+    const rawScale = Math.abs(widthScale - 1) >= Math.abs(heightScale - 1) ? widthScale : heightScale
+    const minScale = Math.max(0.05, ...resize.entries.map(({ item }) => (item.operator?.aspectRatio ? 0.01 : 80) / Math.max(0.01, item.width)))
+    const scale = Math.max(minScale, rawScale)
+    const anchorX = resize.corner.endsWith('e') ? resize.bounds.left : resize.bounds.right
+    const anchorY = resize.corner.startsWith('s') ? resize.bounds.top : resize.bounds.bottom
+    const nextItems = { ...canvasRef.current.items }
+    for (const { key, item, height } of resize.entries) {
+      const centerX = item.x + item.width / 2
+      const centerY = item.y + height / 2
+      const width = item.width * scale
+      const originalWidth = item.operator?.originalWidth ?? imageDimensions[key]?.width ?? item.width
+      nextItems[key] = {
+        ...item,
+        x: anchorX + (centerX - anchorX) * scale - width / 2,
+        y: anchorY + (centerY - anchorY) * scale - height * scale / 2,
+        width,
+        operator: { ...item.operator, originalWidth, scale: width / originalWidth },
+      }
+    }
+    resize.moved = resize.moved || Math.abs(scale - 1) > 0.001
+    canvasRef.current = { ...canvasRef.current, items: nextItems }
+    setCanvas(canvasRef.current)
+  }
+
+  const handleMultiResizeEnd = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const resize = multiResizeRef.current
+    if (!resize || resize.pointerId !== event.pointerId) return
+    multiResizeRef.current = null
+    setInteractionKeys([])
+    if (resize.moved) persistCanvas(canvasRef.current, 0)
+  }
+
   const handleRotateStart = (key: string, event: ReactPointerEvent<HTMLButtonElement>) => {
     event.stopPropagation()
     setInteractionKeys([key])
@@ -2083,6 +2294,66 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const rotate = rotateRef.current
     if (!rotate || rotate.pointerId !== event.pointerId) return
     rotateRef.current = null
+    setInteractionKeys([])
+    if (rotate.moved) persistCanvas(canvasRef.current, 0)
+  }
+
+  const handleMultiRotateStart = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    const bounds = multiSelectionBounds
+    if (!bounds || multiSelectedEntries.length < 2) return
+    const start = getCanvasWorldPoint(event.clientX, event.clientY)
+    if (!start) return
+    const center = {
+      x: (bounds.left + bounds.right) / 2,
+      y: (bounds.top + bounds.bottom) / 2,
+    }
+    if (Math.hypot(start.x - center.x, start.y - center.y) < 0.01) return
+    setInteractionKeys(multiSelectedEntries.map(({ key }) => key))
+    event.currentTarget.setPointerCapture(event.pointerId)
+    multiRotateRef.current = {
+      pointerId: event.pointerId,
+      center,
+      startAngle: Math.atan2(start.y - center.y, start.x - center.x),
+      entries: multiSelectedEntries.map(({ key, item, height }) => ({ key, item, height })),
+      moved: false,
+    }
+  }
+
+  const handleMultiRotateMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const rotate = multiRotateRef.current
+    if (!rotate || rotate.pointerId !== event.pointerId) return
+    const point = getCanvasWorldPoint(event.clientX, event.clientY)
+    if (!point) return
+    let delta = Math.atan2(point.y - rotate.center.y, point.x - rotate.center.x) - rotate.startAngle
+    if (delta > Math.PI) delta -= Math.PI * 2
+    if (delta < -Math.PI) delta += Math.PI * 2
+    const cos = Math.cos(delta)
+    const sin = Math.sin(delta)
+    const nextItems = { ...canvasRef.current.items }
+    for (const { key, item, height } of rotate.entries) {
+      const centerX = item.x + item.width / 2 - rotate.center.x
+      const centerY = item.y + height / 2 - rotate.center.y
+      const nextCenterX = rotate.center.x + centerX * cos - centerY * sin
+      const nextCenterY = rotate.center.y + centerX * sin + centerY * cos
+      const rotation = normalizeCanvasRotation((item.rotation ?? item.operator?.rotation ?? 0) + delta * 180 / Math.PI)
+      nextItems[key] = {
+        ...item,
+        x: nextCenterX - item.width / 2,
+        y: nextCenterY - height / 2,
+        rotation,
+        operator: { ...item.operator, rotation },
+      }
+    }
+    rotate.moved = rotate.moved || Math.abs(delta) > 0.0002
+    canvasRef.current = { ...canvasRef.current, items: nextItems }
+    setCanvas(canvasRef.current)
+  }
+
+  const handleMultiRotateEnd = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const rotate = multiRotateRef.current
+    if (!rotate || rotate.pointerId !== event.pointerId) return
+    multiRotateRef.current = null
     setInteractionKeys([])
     if (rotate.moved) persistCanvas(canvasRef.current, 0)
   }
@@ -2323,6 +2594,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       action: () => {
         setSelectedKey(null)
         setMultiSelectedKeys([])
+        syncCanvasTaskSelection([])
         void (async () => {
           const imageIds = entries
             .map((entry) => entry.node.imageId)
@@ -2461,7 +2733,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         {multiSelectionBounds && (
           <div
             data-canvas-multi-selection
-            className="pointer-events-none absolute z-0 border border-dashed border-[#3f78c5]/70"
+            className="pointer-events-none absolute z-[1005] border border-dashed border-[#3f78c5]/70"
             style={{
               left: multiSelectionBounds.left - 6 / Math.max(canvas.viewport.scale, 0.01),
               top: multiSelectionBounds.top - 6 / Math.max(canvas.viewport.scale, 0.01),
@@ -2469,7 +2741,52 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
               height: multiSelectionBounds.bottom - multiSelectionBounds.top + 12 / Math.max(canvas.viewport.scale, 0.01),
               borderWidth: `${1 / Math.max(canvas.viewport.scale, 0.01)}px`,
             }}
-          />
+          >
+            {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => {
+              const handleScale = 1 / Math.max(canvas.viewport.scale, 0.01)
+              const handleOffset = 5 * handleScale
+              return <button
+                key={corner}
+                type="button"
+                data-canvas-multi-resize={corner}
+                aria-label={`集体调整图片${corner}`}
+                title="集体缩放图片"
+                className={`pointer-events-auto absolute h-2.5 w-2.5 rounded-sm border border-[#3f78c5] bg-white shadow-sm ${corner === 'nw' ? 'left-0 top-0 cursor-nwse-resize' : corner === 'ne' ? 'right-0 top-0 cursor-nesw-resize' : corner === 'sw' ? 'bottom-0 left-0 cursor-nesw-resize' : 'right-0 bottom-0 cursor-nwse-resize'}`}
+                style={{
+                  left: corner === 'nw' || corner === 'sw' ? -handleOffset : undefined,
+                  right: corner === 'ne' || corner === 'se' ? -handleOffset : undefined,
+                  top: corner === 'nw' || corner === 'ne' ? -handleOffset : undefined,
+                  bottom: corner === 'sw' || corner === 'se' ? -handleOffset : undefined,
+                  transform: `scale(${handleScale})`,
+                  transformOrigin: 'center center',
+                }}
+                onPointerDown={(event) => handleMultiResizeStart(corner, event)}
+                onPointerMove={handleMultiResizeMove}
+                onPointerUp={handleMultiResizeEnd}
+                onPointerCancel={handleMultiResizeEnd}
+              />
+            })}
+            {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => {
+              const handleScale = 1 / Math.max(canvas.viewport.scale, 0.01)
+              const rotation = corner === 'nw' ? -90 : corner === 'sw' ? 180 : corner === 'se' ? 90 : 0
+              return <button
+                key={`rotate-${corner}`}
+                type="button"
+                data-canvas-multi-rotate={corner}
+                aria-label="集体旋转图片"
+                title="集体旋转图片"
+                className={`pointer-events-auto absolute flex h-8 w-8 cursor-grab items-center justify-center rounded-full text-black active:cursor-grabbing ${corner === 'nw' ? 'left-[-52px] top-[-52px]' : corner === 'ne' ? 'right-[-52px] top-[-52px]' : corner === 'sw' ? 'bottom-[-52px] left-[-52px]' : 'right-[-52px] bottom-[-52px]'}`}
+                style={{
+                  transform: `${rotation ? `rotate(${rotation}deg) ` : ''}scale(${handleScale})`,
+                  transformOrigin: 'center center',
+                }}
+                onPointerDown={handleMultiRotateStart}
+                onPointerMove={handleMultiRotateMove}
+                onPointerUp={handleMultiRotateEnd}
+                onPointerCancel={handleMultiRotateEnd}
+              ><RotateCornerIcon className="h-7 w-7" /></button>
+            })}
+          </div>
         )}
         {visibleNodes.map((node) => (
           <CanvasImageNode
@@ -2526,6 +2843,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
                 if (!panMode) {
                   setSelectedKey(null)
                   setMultiSelectedKeys([])
+                  syncCanvasTaskSelection([])
                   setInteractionKeys([])
                   setTransformPanelKey(null)
                   setCropImageId(null)

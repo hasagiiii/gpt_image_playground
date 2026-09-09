@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { TaskRecord } from '../types'
 import { estimateModelPricing } from '../auth/oidcResource'
-import { decomposeImage, useStore } from '../store'
+import { decomposeImage, ensureImageThumbnailCached, useStore } from '../store'
 import { getActiveApiProfile } from '../lib/apiProfiles'
 import { DEFAULT_LAYER_PROMPT, SEEDREAM_LAYER_MODEL } from '../lib/seedreamLayers'
 import { LayersIcon } from './icons'
@@ -40,18 +40,22 @@ export default function ImageLayerMenu({ task, imageId, disabled, className }: {
     const controller = new AbortController()
     setPrice('预估中...')
     const timer = setTimeout(() => {
-      void estimateModelPricing(apiKey, SEEDREAM_LAYER_MODEL, {
-        prompt: DEFAULT_LAYER_PROMPT,
-        size: 'auto',
-        output_format: 'png',
-        response_format: 'url',
-        watermark: true,
-        num_images: 1,
-      }, { signal: controller.signal }).then((result) => {
+      void ensureImageThumbnailCached(imageId).then((thumbnail) => {
         if (controller.signal.aborted) return
-        const raw: unknown = result.estimated_price
+        const size = thumbnail?.width && thumbnail.height ? `${thumbnail.width}x${thumbnail.height}` : 'auto'
+        return estimateModelPricing(apiKey, SEEDREAM_LAYER_MODEL, {
+          prompt: DEFAULT_LAYER_PROMPT,
+          size,
+          output_format: 'png',
+          response_format: 'url',
+          watermark: true,
+          num_images: 1,
+        }, { signal: controller.signal })
+      }).then((result) => {
+        if (controller.signal.aborted || !result) return
+        const raw: unknown = result.unit_price ?? result.estimated_price
         const value = typeof raw === 'number' || (typeof raw === 'string' && raw.trim()) ? Number(raw) : NaN
-        setPrice(Number.isFinite(value) && value >= 0 ? `≈ $${Number(value.toFixed(6))}` : '预估不可用')
+        setPrice(Number.isFinite(value) && value >= 0 ? `≈ $${Number(value.toFixed(6))}/张` : '预估不可用')
       }).catch((err) => {
         if (controller.signal.aborted) return
         console.warn('分层价格预估失败', err)
@@ -59,7 +63,7 @@ export default function ImageLayerMenu({ task, imageId, disabled, className }: {
       })
     }, 0)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [open, apiKey])
+  }, [open, apiKey, imageId])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -138,10 +142,7 @@ export default function ImageLayerMenu({ task, imageId, disabled, className }: {
           const index = items.indexOf(document.activeElement as HTMLButtonElement)
           items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus()
         }}>
-        <div className="mb-1 flex min-h-9 items-center justify-between gap-2 border-b border-gray-100 px-2 dark:border-white/[0.08]">
-          <span className="text-gray-500 dark:text-gray-400">预估费用</span><span role="status" className="font-medium tabular-nums text-gray-900 dark:text-white">{price}</span>
-        </div>
-        <button type="button" role="menuitem" disabled={disabled || submitting} onClick={() => void submit()} className="flex h-9 w-full items-center gap-2 rounded px-2 text-gray-700 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-200 dark:hover:bg-white/[0.08]"><LayersIcon className="h-4 w-4" />{disabled ? '分层中...' : submitting ? '提交中...' : '自定义分层'}</button>
+        <button type="button" role="menuitem" disabled={disabled || submitting} onClick={() => void submit()} className="flex h-9 w-full items-center gap-2 rounded px-2 text-gray-700 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-200 dark:hover:bg-white/[0.08]"><LayersIcon className="h-4 w-4" /><span className="min-w-0 flex-1 text-left">{disabled ? '分层中...' : submitting ? '提交中...' : '自定义分层'}</span><span role="status" className="shrink-0 font-medium tabular-nums text-gray-900 dark:text-white">{price}</span></button>
       </div>, document.body)}
   </>
 }

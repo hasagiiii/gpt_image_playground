@@ -10,12 +10,14 @@ import { SEEDREAM_LAYER_MODEL } from '../lib/seedreamLayers'
 const mocks = vi.hoisted(() => ({
   state: {} as Record<string, unknown>,
   decomposeImage: vi.fn(async (..._args: unknown[]) => undefined),
+  ensureImageThumbnailCached: vi.fn(async () => ({ dataUrl: 'data:image/png;base64,thumb', width: 2560, height: 1440 })),
   showToast: vi.fn(),
   estimate: vi.fn(),
 }))
 vi.mock('../store', () => ({
   useStore: (selector: (state: Record<string, unknown>) => unknown) => selector(mocks.state),
   decomposeImage: mocks.decomposeImage,
+  ensureImageThumbnailCached: mocks.ensureImageThumbnailCached,
 }))
 vi.mock('../auth/oidcResource', () => ({ estimateModelPricing: mocks.estimate }))
 
@@ -28,12 +30,12 @@ describe('图片分层二级菜单', () => {
   let root: Root
   const trigger = () => host.querySelector<HTMLButtonElement>('[aria-label="分层"]')!
   const menu = () => document.querySelector<HTMLElement>('[role="menu"]')!
-  const customItem = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((el) => el.textContent === '自定义分层')!
+  const customItem = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((el) => el.textContent?.startsWith('自定义分层'))!
 
   beforeEach(async () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
-    mocks.estimate.mockResolvedValue({ estimated_price: 0.123456 })
+    mocks.estimate.mockResolvedValue({ unit_price: 0.123456, estimated_price: 0.246912 })
     mocks.state = { settings: DEFAULT_SETTINGS, oidcApiOverride: { apiKey: 'selected-key', model: 'other-model' }, showToast: mocks.showToast }
     host = document.createElement('div')
     document.body.appendChild(host)
@@ -52,10 +54,17 @@ describe('图片分层二级菜单', () => {
     expect(menu()).not.toBeNull()
     expect(customItem()).not.toBeNull()
     await act(async () => vi.advanceTimersByTimeAsync(0))
-    expect(menu().querySelector('[role="status"]')?.textContent).toBe('≈ $0.123456')
-    expect(mocks.estimate).toHaveBeenCalledWith('selected-key', SEEDREAM_LAYER_MODEL, expect.objectContaining({ size: 'auto', output_format: 'png' }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(menu().querySelector('[role="status"]')?.textContent).toBe('≈ $0.123456/张')
+    expect(mocks.estimate).toHaveBeenCalledWith('selected-key', SEEDREAM_LAYER_MODEL, expect.objectContaining({ size: '2560x1440', output_format: 'png' }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(mocks.estimate.mock.calls[0][2]).not.toHaveProperty('layer_decomposition')
     expect(mocks.decomposeImage).not.toHaveBeenCalled()
+  })
+
+  it('优先展示接口返回的单价而不是总价', async () => {
+    mocks.estimate.mockResolvedValueOnce({ unit_price: 0.08, total_cost: 0.16, image_count: 2, estimated_price: 0.16 })
+    await act(async () => trigger().click())
+    await act(async () => vi.advanceTimersByTimeAsync(0))
+    expect(menu().querySelector('[role="status"]')?.textContent).toBe('≈ $0.08/张')
   })
 
   it('鼠标从触发器移入弹出层时保持打开，离开后关闭', async () => {
