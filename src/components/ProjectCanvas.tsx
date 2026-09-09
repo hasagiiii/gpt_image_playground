@@ -153,7 +153,7 @@ const EMPTY_PROJECT_CANVAS_CACHE: Record<string, ProjectCanvasState> = {}
 const CANVAS_HEADER_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-header-collapsed'
 const CANVAS_AUTO_PAN_EDGE_SIZE = 172
 const CANVAS_AUTO_PAN_SPEED = 1
-const CANVAS_AUTO_PAN_ACCELERATION = 5
+const CANVAS_AUTO_PAN_ACCELERATION = 3
 const CANVAS_AUTO_PAN_MAX_SPEED = 30
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
@@ -2062,46 +2062,15 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       if (!rect || rect.width <= 0 || rect.height <= 0) return
       const elapsed = current.autoPanLastTime == null ? 16 : Math.min(32, Math.max(1, time - current.autoPanLastTime))
       current.autoPanLastTime = time
-      const draggedBounds = current.keys.reduce((bounds, key) => {
-        const item = canvasRef.current.items[key] ?? transientNodeItemsRef.current[key] ?? current.items[key]
-        const node = nodes.find((candidate) => candidate.key === key)
-        if (!item || !node) return bounds
-        const ratio = Math.max(0.01, ratios[key] ?? (node.placeholderDimensions
-          ? node.placeholderDimensions.width / node.placeholderDimensions.height
-          : 1))
-        const crop = item.operator?.crop
-        const height = crop
-          ? item.width * crop.height / (ratio * crop.width)
-          : item.width / ratio
-        const rotation = normalizeCanvasRotation(item.rotation ?? item.operator?.rotation ?? 0) * Math.PI / 180
-        const rotatedWidth = Math.abs(Math.cos(rotation)) * item.width + Math.abs(Math.sin(rotation)) * height
-        const rotatedHeight = Math.abs(Math.sin(rotation)) * item.width + Math.abs(Math.cos(rotation)) * height
-        const centerX = rect.left + (item.x + item.width / 2) * canvasRef.current.viewport.scale + canvasRef.current.viewport.x
-        const centerY = rect.top + (item.y + height / 2) * canvasRef.current.viewport.scale + canvasRef.current.viewport.y
-        return {
-          left: Math.min(bounds.left, centerX - rotatedWidth * canvasRef.current.viewport.scale / 2),
-          top: Math.min(bounds.top, centerY - rotatedHeight * canvasRef.current.viewport.scale / 2),
-          right: Math.max(bounds.right, centerX + rotatedWidth * canvasRef.current.viewport.scale / 2),
-          bottom: Math.max(bounds.bottom, centerY + rotatedHeight * canvasRef.current.viewport.scale / 2),
-        }
-      }, { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity })
-      const getAutoPanDelta = (start: number, end: number, min: number, max: number, extent: number) => {
-        const distanceOutside = start < min
-          ? min - start
-          : end > max
-            ? end - max
-            : 0
-        if (distanceOutside <= 0) return 0
-        const distanceForMaxSpeed = Math.max(CANVAS_AUTO_PAN_EDGE_SIZE * 8, extent)
-        const speed = Math.min(CANVAS_AUTO_PAN_MAX_SPEED, CANVAS_AUTO_PAN_SPEED * (1 + CANVAS_AUTO_PAN_ACCELERATION * distanceOutside / distanceForMaxSpeed))
-        return (start < min ? 1 : -1) * speed * elapsed
+      const getAutoPanDelta = (position: number, min: number, max: number) => {
+        const direction = position <= min ? 1 : position >= max ? -1 : 0
+        if (direction === 0) return 0
+        const distanceOutside = direction > 0 ? min - position : position - max
+        const speed = Math.min(CANVAS_AUTO_PAN_MAX_SPEED, CANVAS_AUTO_PAN_SPEED * (1 + CANVAS_AUTO_PAN_ACCELERATION * distanceOutside / CANVAS_AUTO_PAN_EDGE_SIZE))
+        return direction * speed * elapsed
       }
-      const horizontal = Number.isFinite(draggedBounds.left)
-        ? getAutoPanDelta(draggedBounds.left, draggedBounds.right, rect.left, rect.right, draggedBounds.right - draggedBounds.left)
-        : 0
-      const vertical = Number.isFinite(draggedBounds.top)
-        ? getAutoPanDelta(draggedBounds.top, draggedBounds.bottom, rect.top, rect.bottom, draggedBounds.bottom - draggedBounds.top)
-        : 0
+      const horizontal = getAutoPanDelta(current.pointer.x, rect.left, rect.right)
+      const vertical = getAutoPanDelta(current.pointer.y, rect.top, rect.bottom)
       if (horizontal === 0 && vertical === 0) {
         current.autoPanLastTime = null
         return
@@ -2808,7 +2777,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             })}
             {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => {
               const handleScale = 1 / Math.max(canvas.viewport.scale, 0.01)
-              const rotateOffset = Math.max(72, 36 * handleScale - 16)
+              const rotateOffset = Math.max(52, 36 * handleScale - 16)
               const rotation = corner === 'nw' ? -90 : corner === 'sw' ? 180 : corner === 'se' ? 90 : 0
               return <button
                 key={`rotate-${corner}`}

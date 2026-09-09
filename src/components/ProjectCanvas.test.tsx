@@ -439,8 +439,8 @@ describe('ProjectCanvas interactions', () => {
 
     act(() => {
       node.dispatchEvent(pointerEvent('pointerdown', 8, 80, 80))
-      node.dispatchEvent(pointerEvent('pointermove', 8, 790, 300))
-      node.dispatchEvent(pointerEvent('pointerup', 8, 790, 300))
+      node.dispatchEvent(pointerEvent('pointermove', 8, 800, 300))
+      node.dispatchEvent(pointerEvent('pointerup', 8, 800, 300))
     })
 
     expect(requestAnimationFrame).toHaveBeenCalled()
@@ -529,6 +529,51 @@ describe('ProjectCanvas interactions', () => {
     expect(firstX - fasterX).toBeGreaterThan(initialX - firstX)
     expect(cappedX - stillCappedX).toBeCloseTo(fasterX - cappedX, 5)
     act(() => node.dispatchEvent(pointerEvent('pointerup', 9, 20000, 300)))
+    requestAnimationFrame.mockRestore()
+  })
+
+  it('鼠标越过四边相同距离时自动移动速度一致', () => {
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const canvas = host.querySelector<HTMLElement>('[data-project-canvas]')!
+    Object.defineProperty(canvas, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left: 100, top: 50, right: 900, bottom: 650, width: 800, height: 600 }),
+    })
+    const world = node.parentElement!
+    const getViewport = () => {
+      const match = world.style.transform.match(/translate\(([-\d.]+)px, ([-\d.]+)px\)/)
+      return { x: Number(match?.[1]), y: Number(match?.[2]) }
+    }
+    const callbacks: Array<(time: number) => void> = []
+    const requestAnimationFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callbacks.push(callback)
+      return callbacks.length
+    })
+    const measure = (pointerId: number, clientX: number, clientY: number) => {
+      const before = getViewport()
+      act(() => {
+        node.dispatchEvent(pointerEvent('pointerdown', pointerId, 500, 350))
+        node.dispatchEvent(pointerEvent('pointermove', pointerId, clientX, clientY))
+        callbacks.shift()?.(16)
+        node.dispatchEvent(pointerEvent('pointerup', pointerId, clientX, clientY))
+      })
+      callbacks.length = 0
+      const after = getViewport()
+      return { x: after.x - before.x, y: after.y - before.y }
+    }
+
+    const left = measure(16, 50, 350)
+    const right = measure(17, 950, 350)
+    const top = measure(18, 500, 0)
+    const bottom = measure(19, 500, 700)
+
+    expect(left.x).toBeGreaterThan(0)
+    expect(right.x).toBeLessThan(0)
+    expect(top.y).toBeGreaterThan(0)
+    expect(bottom.y).toBeLessThan(0)
+    expect(Math.abs(left.x)).toBeCloseTo(Math.abs(right.x), 5)
+    expect(Math.abs(left.x)).toBeCloseTo(Math.abs(top.y), 5)
+    expect(Math.abs(left.x)).toBeCloseTo(Math.abs(bottom.y), 5)
     requestAnimationFrame.mockRestore()
   })
 
@@ -696,7 +741,7 @@ describe('ProjectCanvas interactions', () => {
     const rotateHandle = host.querySelector<HTMLButtonElement>('[data-canvas-multi-rotate]')!
     const multiRotateHandles = host.querySelectorAll<HTMLButtonElement>('[data-canvas-multi-rotate]')
     expect(multiRotateHandles).toHaveLength(4)
-    expect([...multiRotateHandles].every((handle) => handle.style.left === '-72px' || handle.style.right === '-72px')).toBe(true)
+    expect([...multiRotateHandles].every((handle) => handle.style.left === '-52px' || handle.style.right === '-52px')).toBe(true)
     expect(host.querySelector<HTMLButtonElement>('[data-canvas-multi-resize="nw"]')?.style.left).toBe('-5px')
     expect(host.querySelector<HTMLButtonElement>('[data-canvas-multi-resize="ne"]')?.style.right).toBe('-5px')
     act(() => {
