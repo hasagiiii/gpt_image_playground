@@ -8,6 +8,7 @@ import { DEFAULT_SETTINGS } from '../lib/apiProfiles'
 
 const mocks = vi.hoisted(() => ({
   state: { current: {} as Record<string, unknown> },
+  thumbnailSubscribers: new Map<string, (thumbnail: { dataUrl: string; width: number; height: number }) => void>(),
   updateProjectCanvas: vi.fn(),
   updateProjectCanvasViewport: vi.fn(),
   clearProjectImageRedoHistory: vi.fn(),
@@ -32,7 +33,10 @@ vi.mock('../store', () => ({
   ),
   ensureImageCached: vi.fn(async () => 'data:image/png;base64,AA=='),
   ensureImageThumbnailCached: vi.fn(async () => null),
-  subscribeImageThumbnail: vi.fn(() => () => undefined),
+  subscribeImageThumbnail: vi.fn((imageId: string, callback: (thumbnail: { dataUrl: string; width: number; height: number }) => void) => {
+    mocks.thumbnailSubscribers.set(imageId, callback)
+    return () => mocks.thumbnailSubscribers.delete(imageId)
+  }),
   getImageFavoriteCollectionIds: (imageId: string, task: TaskRecord) => {
     const projects = mocks.state.current.projects as Project[]
     return projects.find((project) => project.id === task.projectId)?.canvas?.items[imageId]?.favoriteCollectionIds ?? []
@@ -115,6 +119,7 @@ describe('ProjectCanvas interactions', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    mocks.thumbnailSubscribers.clear()
     mocks.state.current = {
       tasks: [createTask()],
       settings: DEFAULT_SETTINGS,
@@ -446,7 +451,41 @@ describe('ProjectCanvas interactions', () => {
     requestAnimationFrame.mockRestore()
   })
 
+  it('鼠标离开图片但仍在画布内时不会结束拖拽', () => {
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const canvas = host.querySelector<HTMLElement>('[data-project-canvas]')!
+    act(() => {
+      node.dispatchEvent(pointerEvent('pointerdown', 13, 80, 80))
+      node.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, relatedTarget: canvas }))
+      node.dispatchEvent(pointerEvent('pointermove', 13, 120, 100))
+      node.dispatchEvent(pointerEvent('pointerup', 13, 120, 100))
+    })
+
+    expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
+      items: expect.objectContaining({
+        'image-a': expect.objectContaining({ x: 40, y: 20 }),
+      }),
+    }))
+  })
+
+  it('拖拽离开图片后由画布继续接收移动事件', () => {
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const canvas = host.querySelector<HTMLElement>('[data-project-canvas]')!
+    act(() => {
+      node.dispatchEvent(pointerEvent('pointerdown', 14, 80, 80))
+      canvas.dispatchEvent(pointerEvent('pointermove', 14, 120, 100))
+      canvas.dispatchEvent(pointerEvent('pointerup', 14, 120, 100))
+    })
+
+    expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
+      items: expect.objectContaining({
+        'image-a': expect.objectContaining({ x: 40, y: 20 }),
+      }),
+    }))
+  })
+
   it('自动移动速度随拖拽位置深入边缘增加并限制最大速度', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 5000 })
     const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
     const canvas = host.querySelector<HTMLElement>('[data-project-canvas]')!
     Object.defineProperty(canvas, 'getBoundingClientRect', {
@@ -478,22 +517,22 @@ describe('ProjectCanvas interactions', () => {
     runFrame(32)
     const fasterX = getWorldX()
 
-    act(() => node.dispatchEvent(pointerEvent('pointermove', 9, 2000, 300)))
+    act(() => node.dispatchEvent(pointerEvent('pointermove', 9, 10000, 300)))
     runFrame(48)
     const cappedX = getWorldX()
 
-    act(() => node.dispatchEvent(pointerEvent('pointermove', 9, 4000, 300)))
+    act(() => node.dispatchEvent(pointerEvent('pointermove', 9, 20000, 300)))
     runFrame(64)
     const stillCappedX = getWorldX()
 
     expect(initialX - firstX).toBeGreaterThan(0)
     expect(firstX - fasterX).toBeGreaterThan(initialX - firstX)
     expect(cappedX - stillCappedX).toBeCloseTo(fasterX - cappedX, 5)
-    act(() => node.dispatchEvent(pointerEvent('pointerup', 9, 4000, 300)))
+    act(() => node.dispatchEvent(pointerEvent('pointerup', 9, 20000, 300)))
     requestAnimationFrame.mockRestore()
   })
 
-  it('拖拽移出窗口后停止自动移动', () => {
+  it('拖拽移出窗口后继续自动移动，释放后停止', () => {
     const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
     const canvas = host.querySelector<HTMLElement>('[data-project-canvas]')!
     Object.defineProperty(canvas, 'getBoundingClientRect', {
@@ -513,16 +552,37 @@ describe('ProjectCanvas interactions', () => {
     })
     expect(callbacks).toHaveLength(1)
 
-    act(() => window.dispatchEvent(new Event('blur')))
-    expect(cancelAnimationFrame).toHaveBeenCalled()
-    expect(host.querySelector('[data-canvas-node]')).not.toBeNull()
+    act(() => {
+      window.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, clientX: -1, clientY: 300, relatedTarget: null }))
+      callbacks.shift()?.(16)
+    })
+    expect(callbacks).toHaveLength(1)
 
-    const callbackCount = callbacks.length
-    act(() => callbacks[0]?.(16))
-    expect(callbacks).toHaveLength(callbackCount)
+    act(() => node.dispatchEvent(pointerEvent('pointerup', 10, -1, 300)))
+    expect(cancelAnimationFrame).toHaveBeenCalled()
+    const callback = callbacks.shift()
+    act(() => callback?.(32))
+    expect(callbacks).toHaveLength(0)
 
     requestAnimationFrame.mockRestore()
     cancelAnimationFrame.mockRestore()
+  })
+
+  it('丢失图片的指针捕获后重新进入画布仍可继续拖拽', () => {
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const canvas = host.querySelector<HTMLElement>('[data-project-canvas]')!
+    act(() => {
+      node.dispatchEvent(pointerEvent('pointerdown', 15, 80, 80))
+      node.dispatchEvent(new Event('lostpointercapture', { bubbles: true }))
+      canvas.dispatchEvent(pointerEvent('pointermove', 15, 120, 100))
+      canvas.dispatchEvent(pointerEvent('pointerup', 15, 120, 100))
+    })
+
+    expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
+      items: expect.objectContaining({
+        'image-a': expect.objectContaining({ x: 40, y: 20 }),
+      }),
+    }))
   })
 
   it('自动平移期间不单独持久化视口，避免拖拽图片回到旧位置', () => {
@@ -634,7 +694,11 @@ describe('ProjectCanvas interactions', () => {
     expect(resizedItems['image-b'].width).toBe(resizedItems['image-a'].width)
 
     const rotateHandle = host.querySelector<HTMLButtonElement>('[data-canvas-multi-rotate]')!
-    expect(host.querySelectorAll('[data-canvas-multi-rotate]')).toHaveLength(4)
+    const multiRotateHandles = host.querySelectorAll<HTMLButtonElement>('[data-canvas-multi-rotate]')
+    expect(multiRotateHandles).toHaveLength(4)
+    expect([...multiRotateHandles].every((handle) => handle.style.left === '-72px' || handle.style.right === '-72px')).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('[data-canvas-multi-resize="nw"]')?.style.left).toBe('-5px')
+    expect(host.querySelector<HTMLButtonElement>('[data-canvas-multi-resize="ne"]')?.style.right).toBe('-5px')
     act(() => {
       rotateHandle.dispatchEvent(pointerEvent('pointerdown', 4, 414, -20))
       rotateHandle.dispatchEvent(pointerEvent('pointermove', 4, 597, 202))
@@ -643,6 +707,70 @@ describe('ProjectCanvas interactions', () => {
     const rotatedItems = mocks.updateProjectCanvas.mock.lastCall?.[1].items
     expect(rotatedItems['image-a'].rotation).toBeCloseTo(90, 0)
     expect(rotatedItems['image-b'].rotation).toBeCloseTo(90, 0)
+  })
+
+  it('旧图片首次集体旋转后可以撤销', async () => {
+    const secondTask = { ...createTask(), id: 'task-b', outputImages: ['image-b'], createdAt: 2, finishedAt: 3 }
+    const project = createProject()
+    project.canvas!.items['image-b'] = { x: 300, y: 0, width: 240, z: 1, favoriteCollectionIds: [] }
+    mocks.state.current = { ...mocks.state.current, tasks: [createTask(), secondTask], projects: [project] }
+    await act(async () => root.render(<ProjectCanvas />))
+
+    const first = host.querySelector<HTMLElement>('[data-node-key="image-a"]')!
+    const second = host.querySelector<HTMLElement>('[data-node-key="image-b"]')!
+    act(() => first.dispatchEvent(pointerEvent('pointerdown', 5, 80, 80, { ctrlKey: true })))
+    act(() => second.dispatchEvent(pointerEvent('pointerdown', 6, 380, 80, { ctrlKey: true })))
+    mocks.state.current.selectedTaskIds = ['task-a', 'task-b']
+    mocks.updateProjectCanvas.mockClear()
+
+    const rotateHandle = host.querySelector<HTMLButtonElement>('[data-canvas-multi-rotate="ne"]')!
+    act(() => {
+      rotateHandle.dispatchEvent(pointerEvent('pointerdown', 7, 414, -20))
+      rotateHandle.dispatchEvent(pointerEvent('pointermove', 7, 597, 202))
+      rotateHandle.dispatchEvent(pointerEvent('pointerup', 7, 597, 202))
+    })
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })))
+
+    expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
+      items: expect.objectContaining({
+        'image-a': expect.objectContaining({ x: 0, y: 0, width: 240 }),
+        'image-b': expect.objectContaining({ x: 300, y: 0, width: 240 }),
+      }),
+    }))
+    expect(mocks.updateProjectCanvas.mock.lastCall?.[1].items['image-a'].rotation).toBeUndefined()
+    expect(mocks.updateProjectCanvas.mock.lastCall?.[1].items['image-a'].operator).toBeUndefined()
+  })
+
+  it('旋转期间补齐旧图片尺寸属性后仍可撤销', async () => {
+    const secondTask = { ...createTask(), id: 'task-b', outputImages: ['image-b'], createdAt: 2, finishedAt: 3 }
+    const project = createProject()
+    project.canvas!.items['image-b'] = { x: 300, y: 0, width: 240, z: 1, favoriteCollectionIds: [] }
+    mocks.state.current = { ...mocks.state.current, tasks: [createTask(), secondTask], projects: [project] }
+    await act(async () => root.render(<ProjectCanvas />))
+
+    const first = host.querySelector<HTMLElement>('[data-node-key="image-a"]')!
+    const second = host.querySelector<HTMLElement>('[data-node-key="image-b"]')!
+    act(() => first.dispatchEvent(pointerEvent('pointerdown', 8, 80, 80, { ctrlKey: true })))
+    act(() => second.dispatchEvent(pointerEvent('pointerdown', 9, 380, 80, { ctrlKey: true })))
+    mocks.state.current.selectedTaskIds = ['task-a', 'task-b']
+    mocks.updateProjectCanvas.mockClear()
+
+    const rotateHandle = host.querySelector<HTMLButtonElement>('[data-canvas-multi-rotate="ne"]')!
+    act(() => {
+      rotateHandle.dispatchEvent(pointerEvent('pointerdown', 10, 414, -20))
+      rotateHandle.dispatchEvent(pointerEvent('pointermove', 10, 597, 202))
+      mocks.thumbnailSubscribers.get('image-a')?.({ dataUrl: 'data:image/png;base64,AA==', width: 1024, height: 1024 })
+      mocks.thumbnailSubscribers.get('image-b')?.({ dataUrl: 'data:image/png;base64,AA==', width: 1024, height: 1024 })
+      rotateHandle.dispatchEvent(pointerEvent('pointerup', 10, 597, 202))
+    })
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })))
+
+    expect(mocks.updateProjectCanvas).toHaveBeenLastCalledWith('project-a', expect.objectContaining({
+      items: expect.objectContaining({
+        'image-a': expect.objectContaining({ x: 0, y: 0, width: 240 }),
+        'image-b': expect.objectContaining({ x: 300, y: 0, width: 240 }),
+      }),
+    }))
   })
 
   it('moves one node and pans the viewport with the default wheel action', () => {

@@ -151,9 +151,10 @@ function getSearchSnippet(text: string, query: string, maxLength: number) {
 
 const EMPTY_PROJECT_CANVAS_CACHE: Record<string, ProjectCanvasState> = {}
 const CANVAS_HEADER_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-header-collapsed'
-const CANVAS_AUTO_PAN_EDGE_SIZE = 72
-const CANVAS_AUTO_PAN_SPEED = 0.45
-const CANVAS_AUTO_PAN_MAX_SPEED = 0.9
+const CANVAS_AUTO_PAN_EDGE_SIZE = 172
+const CANVAS_AUTO_PAN_SPEED = 1
+const CANVAS_AUTO_PAN_ACCELERATION = 5
+const CANVAS_AUTO_PAN_MAX_SPEED = 30
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y)
@@ -953,6 +954,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const undoStackRef = useRef<ProjectCanvasState[]>([])
   const redoStackRef = useRef<ProjectCanvasState[]>([])
   const historyApplyingRef = useRef(false)
+  const canvasTransformActiveRef = useRef(false)
   const pointersRef = useRef(new Map<number, { x: number; y: number }>())
   const panRef = useRef<{ pointerId: number; start: { x: number; y: number }; viewport: ProjectCanvasViewport; moved: boolean } | null>(null)
   const pinchRef = useRef<{ distance: number; screenCentroid: { x: number; y: number }; canvasCentroid: { x: number; y: number }; viewport: ProjectCanvasViewport; moved: boolean } | null>(null)
@@ -1169,6 +1171,15 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     historyBaselineRef.current = cloneCanvasState(next)
   }
 
+  const beginCanvasTransform = () => {
+    canvasTransformActiveRef.current = true
+    historyBaselineRef.current = cloneCanvasState(canvasRef.current)
+  }
+
+  const endCanvasTransform = () => {
+    canvasTransformActiveRef.current = false
+  }
+
   const applyCanvasHistory = (direction: 'undo' | 'redo') => {
     const source = direction === 'undo' ? undoStackRef.current : redoStackRef.current
     const target = source.pop()
@@ -1204,7 +1215,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
 
   const persistCanvas = (next: ProjectCanvasState, delay = 0, recordHistory = true) => {
     if (recordHistory) recordCanvasHistory(next)
-    else historyBaselineRef.current = cloneCanvasState(next)
+    else if (!canvasTransformActiveRef.current) historyBaselineRef.current = cloneCanvasState(next)
     canvasRef.current = next
     setCanvas(next)
     if (viewportPersistTimerRef.current != null) {
@@ -1912,6 +1923,15 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       syncCanvasTaskSelection(nextKeys)
       return
     }
+    if (dragRef.current?.pointerId === event.pointerId) {
+      const hasPointerCapture = event.currentTarget.hasPointerCapture
+      if (typeof event.currentTarget.setPointerCapture === 'function'
+        && (typeof hasPointerCapture !== 'function' || !hasPointerCapture.call(event.currentTarget, event.pointerId))) {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      }
+      updateDraggedPointer(event)
+      return
+    }
     if (!pointersRef.current.has(event.pointerId)) return
     pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
     const points = [...pointersRef.current.values()]
@@ -1945,6 +1965,10 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         setMultiSelectedKeys([])
         syncCanvasTaskSelection([])
       }
+      return
+    }
+    if (dragRef.current?.pointerId === event.pointerId) {
+      handleNodePointerEnd(event)
       return
     }
     pointersRef.current.delete(event.pointerId)
@@ -2038,18 +2062,46 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       if (!rect || rect.width <= 0 || rect.height <= 0) return
       const elapsed = current.autoPanLastTime == null ? 16 : Math.min(32, Math.max(1, time - current.autoPanLastTime))
       current.autoPanLastTime = time
-      const getAutoPanDelta = (position: number, size: number) => {
-        const distanceIntoEdge = position < CANVAS_AUTO_PAN_EDGE_SIZE
-          ? CANVAS_AUTO_PAN_EDGE_SIZE - position
-          : position > size - CANVAS_AUTO_PAN_EDGE_SIZE
-            ? position - size + CANVAS_AUTO_PAN_EDGE_SIZE
+      const draggedBounds = current.keys.reduce((bounds, key) => {
+        const item = canvasRef.current.items[key] ?? transientNodeItemsRef.current[key] ?? current.items[key]
+        const node = nodes.find((candidate) => candidate.key === key)
+        if (!item || !node) return bounds
+        const ratio = Math.max(0.01, ratios[key] ?? (node.placeholderDimensions
+          ? node.placeholderDimensions.width / node.placeholderDimensions.height
+          : 1))
+        const crop = item.operator?.crop
+        const height = crop
+          ? item.width * crop.height / (ratio * crop.width)
+          : item.width / ratio
+        const rotation = normalizeCanvasRotation(item.rotation ?? item.operator?.rotation ?? 0) * Math.PI / 180
+        const rotatedWidth = Math.abs(Math.cos(rotation)) * item.width + Math.abs(Math.sin(rotation)) * height
+        const rotatedHeight = Math.abs(Math.sin(rotation)) * item.width + Math.abs(Math.cos(rotation)) * height
+        const centerX = rect.left + (item.x + item.width / 2) * canvasRef.current.viewport.scale + canvasRef.current.viewport.x
+        const centerY = rect.top + (item.y + height / 2) * canvasRef.current.viewport.scale + canvasRef.current.viewport.y
+        return {
+          left: Math.min(bounds.left, centerX - rotatedWidth * canvasRef.current.viewport.scale / 2),
+          top: Math.min(bounds.top, centerY - rotatedHeight * canvasRef.current.viewport.scale / 2),
+          right: Math.max(bounds.right, centerX + rotatedWidth * canvasRef.current.viewport.scale / 2),
+          bottom: Math.max(bounds.bottom, centerY + rotatedHeight * canvasRef.current.viewport.scale / 2),
+        }
+      }, { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity })
+      const getAutoPanDelta = (start: number, end: number, min: number, max: number, extent: number) => {
+        const distanceOutside = start < min
+          ? min - start
+          : end > max
+            ? end - max
             : 0
-        if (distanceIntoEdge <= 0) return 0
-        const speed = Math.min(CANVAS_AUTO_PAN_MAX_SPEED, CANVAS_AUTO_PAN_SPEED * distanceIntoEdge / CANVAS_AUTO_PAN_EDGE_SIZE)
-        return (position < CANVAS_AUTO_PAN_EDGE_SIZE ? 1 : -1) * speed * elapsed
+        if (distanceOutside <= 0) return 0
+        const distanceForMaxSpeed = Math.max(CANVAS_AUTO_PAN_EDGE_SIZE * 8, extent)
+        const speed = Math.min(CANVAS_AUTO_PAN_MAX_SPEED, CANVAS_AUTO_PAN_SPEED * (1 + CANVAS_AUTO_PAN_ACCELERATION * distanceOutside / distanceForMaxSpeed))
+        return (start < min ? 1 : -1) * speed * elapsed
       }
-      const horizontal = getAutoPanDelta(current.pointer.x - rect.left, rect.width)
-      const vertical = getAutoPanDelta(current.pointer.y - rect.top, rect.height)
+      const horizontal = Number.isFinite(draggedBounds.left)
+        ? getAutoPanDelta(draggedBounds.left, draggedBounds.right, rect.left, rect.right, draggedBounds.right - draggedBounds.left)
+        : 0
+      const vertical = Number.isFinite(draggedBounds.top)
+        ? getAutoPanDelta(draggedBounds.top, draggedBounds.bottom, rect.top, rect.bottom, draggedBounds.bottom - draggedBounds.top)
+        : 0
       if (horizontal === 0 && vertical === 0) {
         current.autoPanLastTime = null
         return
@@ -2064,9 +2116,10 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     })
   }
 
-  const handleNodePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+  const updateDraggedPointer = (event: { pointerId: number; clientX: number; clientY: number }) => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
+    if (drag.pointer.x === event.clientX && drag.pointer.y === event.clientY) return
     drag.pointer = { x: event.clientX, y: event.clientY }
     const deltaX = (event.clientX - drag.start.x) / canvasRef.current.viewport.scale
     const deltaY = (event.clientY - drag.start.y) / canvasRef.current.viewport.scale
@@ -2074,6 +2127,10 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     drag.moved = true
     updateDraggedItems(drag)
     updateNodeAutoPan(drag)
+  }
+
+  const handleNodePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    updateDraggedPointer(event)
   }
 
   const handleNodePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2084,31 +2141,6 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     setInteractionKeys([])
     if (drag.moved && drag.keys.some((key) => nodes.some((node) => node.key === key && (Boolean(node.imageId) || node.status === 'error')))) persistCanvas(canvasRef.current, 0)
   }
-
-  useEffect(() => {
-    const stopDragging = () => {
-      const drag = dragRef.current
-      if (!drag) return
-      dragRef.current = null
-      if (drag.autoPanFrame != null) window.cancelAnimationFrame(drag.autoPanFrame)
-      setInteractionKeys([])
-      if (drag.moved && drag.keys.some((key) => nodes.some((node) => node.key === key && (Boolean(node.imageId) || node.status === 'error')))) persistCanvas(canvasRef.current, 0)
-    }
-    const handlePointerOut = (event: PointerEvent) => {
-      if (event.relatedTarget === null) stopDragging()
-    }
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') stopDragging()
-    }
-    window.addEventListener('blur', stopDragging)
-    document.addEventListener('pointerout', handlePointerOut, true)
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => {
-      window.removeEventListener('blur', stopDragging)
-      document.removeEventListener('pointerout', handlePointerOut, true)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }
-  }, [nodes, persistCanvas])
 
   const handleImageDimensions = (key: string, width: number, height: number) => {
     setImageDimensions((current) => current[key]?.width === width && current[key]?.height === height ? current : { ...current, [key]: { width, height } })
@@ -2158,6 +2190,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     event.currentTarget.setPointerCapture(event.pointerId)
     const item = nodeItems[key]
     if (!item) return
+    beginCanvasTransform()
     resizeRef.current = { key, pointerId: event.pointerId, corner, start: { x: event.clientX, y: event.clientY }, item, moved: false }
   }
 
@@ -2192,6 +2225,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     resizeRef.current = null
     setInteractionKeys([])
     if (resize.moved) persistCanvas(canvasRef.current, 0)
+    endCanvasTransform()
   }
 
   const handleMultiResizeStart = (corner: ResizeCorner, event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -2202,6 +2236,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (!start) return
     setInteractionKeys(multiSelectedEntries.map(({ key }) => key))
     event.currentTarget.setPointerCapture(event.pointerId)
+    beginCanvasTransform()
     multiResizeRef.current = {
       pointerId: event.pointerId,
       corner,
@@ -2253,6 +2288,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     multiResizeRef.current = null
     setInteractionKeys([])
     if (resize.moved) persistCanvas(canvasRef.current, 0)
+    endCanvasTransform()
   }
 
   const handleRotateStart = (key: string, event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -2264,6 +2300,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const ratio = ratios[key] ?? 1
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
+    beginCanvasTransform()
     const center = {
       x: rect.left + item.x * canvasRef.current.viewport.scale + canvasRef.current.viewport.x + item.width * canvasRef.current.viewport.scale / 2,
       y: rect.top + item.y * canvasRef.current.viewport.scale + canvasRef.current.viewport.y + item.width / ratio * canvasRef.current.viewport.scale / 2,
@@ -2296,6 +2333,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     rotateRef.current = null
     setInteractionKeys([])
     if (rotate.moved) persistCanvas(canvasRef.current, 0)
+    endCanvasTransform()
   }
 
   const handleMultiRotateStart = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -2311,6 +2349,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (Math.hypot(start.x - center.x, start.y - center.y) < 0.01) return
     setInteractionKeys(multiSelectedEntries.map(({ key }) => key))
     event.currentTarget.setPointerCapture(event.pointerId)
+    beginCanvasTransform()
     multiRotateRef.current = {
       pointerId: event.pointerId,
       center,
@@ -2356,6 +2395,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     multiRotateRef.current = null
     setInteractionKeys([])
     if (rotate.moved) persistCanvas(canvasRef.current, 0)
+    endCanvasTransform()
   }
 
   const updateSelectedImageOperator = (patch: Partial<NonNullable<ProjectCanvasItem['operator']>>) => {
@@ -2735,10 +2775,10 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             data-canvas-multi-selection
             className="pointer-events-none absolute z-[1005] border border-dashed border-[#3f78c5]/70"
             style={{
-              left: multiSelectionBounds.left - 6 / Math.max(canvas.viewport.scale, 0.01),
-              top: multiSelectionBounds.top - 6 / Math.max(canvas.viewport.scale, 0.01),
-              width: multiSelectionBounds.right - multiSelectionBounds.left + 12 / Math.max(canvas.viewport.scale, 0.01),
-              height: multiSelectionBounds.bottom - multiSelectionBounds.top + 12 / Math.max(canvas.viewport.scale, 0.01),
+              left: multiSelectionBounds.left,
+              top: multiSelectionBounds.top,
+              width: multiSelectionBounds.right - multiSelectionBounds.left,
+              height: multiSelectionBounds.bottom - multiSelectionBounds.top,
               borderWidth: `${1 / Math.max(canvas.viewport.scale, 0.01)}px`,
             }}
           >
@@ -2768,6 +2808,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             })}
             {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => {
               const handleScale = 1 / Math.max(canvas.viewport.scale, 0.01)
+              const rotateOffset = Math.max(72, 36 * handleScale - 16)
               const rotation = corner === 'nw' ? -90 : corner === 'sw' ? 180 : corner === 'se' ? 90 : 0
               return <button
                 key={`rotate-${corner}`}
@@ -2775,8 +2816,12 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
                 data-canvas-multi-rotate={corner}
                 aria-label="集体旋转图片"
                 title="集体旋转图片"
-                className={`pointer-events-auto absolute flex h-8 w-8 cursor-grab items-center justify-center rounded-full text-black active:cursor-grabbing ${corner === 'nw' ? 'left-[-52px] top-[-52px]' : corner === 'ne' ? 'right-[-52px] top-[-52px]' : corner === 'sw' ? 'bottom-[-52px] left-[-52px]' : 'right-[-52px] bottom-[-52px]'}`}
+                className="pointer-events-auto absolute flex h-8 w-8 cursor-grab items-center justify-center rounded-full text-black active:cursor-grabbing"
                 style={{
+                  left: corner === 'nw' || corner === 'sw' ? -rotateOffset : undefined,
+                  right: corner === 'ne' || corner === 'se' ? -rotateOffset : undefined,
+                  top: corner === 'nw' || corner === 'ne' ? -rotateOffset : undefined,
+                  bottom: corner === 'sw' || corner === 'se' ? -rotateOffset : undefined,
                   transform: `${rotation ? `rotate(${rotation}deg) ` : ''}scale(${handleScale})`,
                   transformOrigin: 'center center',
                 }}
