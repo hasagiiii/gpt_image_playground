@@ -1,4 +1,4 @@
-import type { ImageFailureEndpoint, ImageLayer, TaskParams } from '../types'
+import { INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type ImageFailureEndpoint, type ImageLayer, type TaskParams } from '../types'
 import { authFetch, createRequestId } from '../auth/api'
 import { uploadReferenceFile } from './backendCompositeImageApi'
 import { fetchImageUrlAsDataUrl, getApiResponseRetryCount, MIME_MAP, retryApiFetch, withApiFailureMetadata, type ApiFailure, type CallApiResult } from './imageApiShared'
@@ -27,9 +27,41 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
-export function parseSeedreamLayers(payload: unknown) {
+function getSeedreamResult(payload: unknown) {
   const root = record(payload)
-  const result = record(root.result ?? record(root.data).result ?? (Array.isArray(root.data) ? root : root.data) ?? root)
+  return record(root.result ?? record(root.data).result ?? (Array.isArray(root.data) ? root : root.data) ?? root)
+}
+
+function hasSeedreamLayerData(payload: unknown) {
+  const result = getSeedreamResult(payload)
+  return Array.isArray(result.data) && result.data.length > 0
+}
+
+function getActualCost(payload: unknown) {
+  const root = record(payload)
+  const result = getSeedreamResult(payload)
+  const value = result.actual_cost ?? root.actual_cost
+  const cost = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(cost) && cost >= 0 ? cost : undefined
+}
+
+function getSeedreamCode(payload: unknown) {
+  const root = record(payload)
+  const data = record(root.data)
+  const result = record(root.result ?? data.result)
+  const code = root.code ?? data.code ?? result.code
+  return typeof code === 'string' && code.trim() ? code.trim() : undefined
+}
+
+function getLayerDecompositionError(payload: unknown) {
+  const code = getSeedreamCode(payload)
+  return code === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE
+    ? withApiFailureMetadata(new Error('该图已无法再进行更多分层'), { endpoint: 'result', code })
+    : null
+}
+
+export function parseSeedreamLayers(payload: unknown) {
+  const result = getSeedreamResult(payload)
   if (!Array.isArray(result.data) || result.data.length === 0) throw new Error('Seedream 未返回图层 data')
   const layers = result.data.map((value, index): ImageLayer => {
     const item = record(value)
@@ -48,7 +80,7 @@ export function parseSeedreamLayers(payload: unknown) {
     }
   })
   const usage = Object.fromEntries(Object.entries(record(result.usage)).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1])))
-  return { layers, usage }
+  return { layers, usage, actualCost: getActualCost(payload) }
 }
 
 /** baseUrl 留空时走已有 Go 代理；直连时传网关根地址或 /api/v1 地址。 */
@@ -84,12 +116,17 @@ export async function callSeedreamLayers(options: SeedreamOptions): Promise<Call
       ...(body ? { body: JSON.stringify(body) } : {}),
     }), { endpoint, signal, requestId: clientRequestId, maxRetries: 3, retryableStatuses: Array.from({ length: 100 }, (_, index) => 500 + index) })
     const text = await response.text()
-    if (!response.ok) throw withApiFailureMetadata(new Error(`Seedream HTTP ${response.status}: ${text}`), { endpoint, status: response.status, requestId: clientRequestId, retryCount: getApiResponseRetryCount(response) })
+    let payload: Record<string, unknown>
     try {
-      return record(JSON.parse(text))
+      payload = record(JSON.parse(text))
     } catch {
+      if (!response.ok) throw withApiFailureMetadata(new Error(`Seedream HTTP ${response.status}: ${text}`), { endpoint, status: response.status, requestId: clientRequestId, retryCount: getApiResponseRetryCount(response) })
       throw new Error('Seedream 返回了无效的 JSON')
     }
+    const layerError = getLayerDecompositionError(payload)
+    if (layerError) throw withApiFailureMetadata(layerError, { endpoint, status: response.status, requestId: clientRequestId, code: layerError.code })
+    if (!response.ok) throw withApiFailureMetadata(new Error(`Seedream HTTP ${response.status}: ${text}`), { endpoint, status: response.status, code: getSeedreamCode(payload), requestId: clientRequestId, retryCount: getApiResponseRetryCount(response) })
+    return payload
   }
   try {
     let requestId = options.requestId
@@ -110,11 +147,17 @@ export async function callSeedreamLayers(options: SeedreamOptions): Promise<Call
     const resultPath = `${path}/requests/${encodeURIComponent(requestId)}`
     phase = 'status'
     let interval = 2000
+    let completedPayload: Record<string, unknown> | undefined
     while (true) {
       const status = await request(resultPath)
+      const layerError = getLayerDecompositionError(status)
+      if (layerError) throw withApiFailureMetadata(layerError, { endpoint: 'result', requestId: clientRequestId, code: layerError.code })
       const state = status.status ?? record(status.data).status
       if (state === 'FAILED' || state === 'CANCELED') throw withApiFailureMetadata(new Error(`Seedream ${state}: ${JSON.stringify(status)}`), { endpoint: 'result' })
-      if (state === 'COMPLETED') break
+      if (state === 'COMPLETED') {
+        completedPayload = status
+        break
+      }
       if (state !== 'IN_QUEUE' && state !== 'IN_PROGRESS') throw new Error(`Seedream 返回未知状态：${String(state)}`)
       await new Promise<void>((resolve, reject) => {
         const cancel = () => { clearTimeout(wait); reject(signal.reason) }
@@ -125,15 +168,17 @@ export async function callSeedreamLayers(options: SeedreamOptions): Promise<Call
       interval = Math.min(interval * 2, 15000)
     }
     phase = 'result'
-    const payload = await request(resultPath)
+    const payload = completedPayload && hasSeedreamLayerData(completedPayload)
+      ? completedPayload
+      : await request(resultPath)
     const finalStatus = payload.status ?? record(payload.data).status
     if (finalStatus !== undefined && finalStatus !== 'COMPLETED') throw new Error(`Seedream 最终结果未完成：${String(finalStatus)}`)
-    const { layers, usage } = parseSeedreamLayers(payload)
+    const { layers, usage, actualCost } = parseSeedreamLayers(payload)
     const urls = layers.map((layer) => layer.url)
     phase = 'download'
     try {
       const images = await Promise.all(layers.map((layer) => fetchImageUrlAsDataUrl(layer.url, MIME_MAP[layer.output_format ?? options.params.output_format] ?? 'image/png', signal)))
-      return { images, rawImageUrls: urls, imageLayers: layers, layerUsage: usage, actualParams: { ...options.params, n: images.length } }
+      return { images, rawImageUrls: urls, imageLayers: layers, layerUsage: usage, actualParams: { ...options.params, n: images.length }, ...(actualCost !== undefined ? { actualCost } : {}) }
     } catch (err) {
       if (err instanceof Error) Object.assign(err, { rawImageUrls: urls, imageLayers: layers, layerUsage: usage })
       throw err

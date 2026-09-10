@@ -57,10 +57,59 @@ describe('Seedream 分层协议', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('完成状态已经携带图层结果时直接使用该响应', async () => {
+    const completed = {
+      status: 'COMPLETED',
+      data: {
+        actual_cost: 1.1,
+        created: 1788995668,
+        data: [
+          { output_format: 'png', size: '1636x1638', url: 'https://files.test/base.png', z_index: 0 },
+          {
+            bounding_box: { absolute: [166, 160, 1470, 1479], normalized: [101, 98, 898, 902] },
+            description: '提取整张图像的均匀纯白色背景，不包含任何其他额外元素',
+            name: '全白背景图层',
+            output_format: 'png',
+            size: '1304x1319',
+            url: 'https://files.test/background.png',
+            z_index: 1,
+          },
+        ],
+        model: 'doubao-seedream-5-0-pro-260628',
+      },
+      request_id: 'request/1',
+    }
+    vi.mocked(authFetch)
+      .mockResolvedValueOnce(json({ request_id: 'request/1' }))
+      .mockResolvedValueOnce(json(completed))
+
+    const resultPromise = callSeedreamLayers(opts)
+    await vi.advanceTimersByTimeAsync(0)
+    const result = await resultPromise
+
+    expect(result.images).toHaveLength(2)
+    expect(result.imageLayers).toHaveLength(2)
+    expect(result.imageLayers?.[1]).toMatchObject({
+      name: '全白背景图层',
+      size: '1304x1319',
+      bounding_box: { absolute: [166, 160, 1470, 1479] },
+    })
+    expect(result.actualCost).toBe(1.1)
+    expect(authFetch).toHaveBeenCalledTimes(2)
+  })
+
   it.each([400, 401, 429])('HTTP %s 不重试并保留响应体', async (status) => {
     vi.mocked(authFetch).mockResolvedValueOnce(new Response('upstream detail', { status }))
     await expect(callSeedreamLayers(opts)).rejects.toThrow(`HTTP ${status}: upstream detail`)
     expect(authFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('HTTP 失败时保留上游业务错误码', async () => {
+    vi.mocked(authFetch).mockResolvedValueOnce(json({ code: 'INVALID_IMAGE_LAYER_DECOMPOSITION', message: '不能继续分层' }, 400))
+    await expect(callSeedreamLayers(opts)).rejects.toMatchObject({
+      code: 'INVALID_IMAGE_LAYER_DECOMPOSITION',
+      message: '该图已无法再进行更多分层',
+    })
   })
 
   it.each(['FAILED', 'CANCELED', 'UNKNOWN'])('终态或未知状态 %s 不读取产物', async (status) => {
@@ -68,6 +117,14 @@ describe('Seedream 分层协议', () => {
     await expect(callSeedreamLayers({ ...opts, requestId: 'existing' })).rejects.toThrow(status)
     expect(authFetch).toHaveBeenCalledTimes(1)
     expect(fetchImageUrlAsDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('失败状态中的业务错误码会转换为不可继续分层错误', async () => {
+    vi.mocked(authFetch).mockResolvedValueOnce(json({ status: 'FAILED', code: 'INVALID_IMAGE_LAYER_DECOMPOSITION' }))
+    await expect(callSeedreamLayers({ ...opts, requestId: 'existing' })).rejects.toMatchObject({
+      code: 'INVALID_IMAGE_LAYER_DECOMPOSITION',
+      message: '该图已无法再进行更多分层',
+    })
   })
 
   it.each(['network', 'server'])('%s 错误最多重试三次且保持幂等键', async (kind) => {

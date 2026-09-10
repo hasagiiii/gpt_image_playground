@@ -24,7 +24,7 @@ import type {
   ResponsesApiResponse,
   ResponsesOutputItem,
 } from './types'
-import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS, INVALID_IMAGE_LAYER_DECOMPOSITION_CODE } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
@@ -240,12 +240,36 @@ function getTaskImageIds(tasks: TaskRecord[]) {
   return Array.from(ids)
 }
 
+function getProjectImageHistoryBeforeTasks(beforeTasks: TaskRecord[], afterTasks: TaskRecord[]) {
+  const afterById = new Map(afterTasks.map((task) => [task.id, task]))
+  return beforeTasks.map((task) => {
+    const completedTask = afterById.get(task.id)
+    if (task.status !== 'running' || task.outputImages.length > 0 || !completedTask?.outputImages.length) return task
+    return {
+      ...completedTask,
+      outputImages: [],
+      outputImageSlots: undefined,
+      outputErrors: undefined,
+      transparentOriginalImages: undefined,
+      streamPartialImageIds: undefined,
+      imageLayers: undefined,
+      layerUsage: undefined,
+      actualParamsByImage: undefined,
+      revisedPromptByImage: undefined,
+      rawImageUrls: undefined,
+      status: 'done' as const,
+      error: null,
+    }
+  })
+}
+
 function cloneProjectCanvas(canvas?: ProjectCanvasState) {
   return canvas ? normalizeProjectCanvas(canvas) : undefined
 }
 
 function getProjectCanvasSnapshot(projectId: string) {
-  return cloneProjectCanvas(useStore.getState().projects.find((project) => project.id === projectId)?.canvas)
+  const state = useStore.getState()
+  return cloneProjectCanvas(state.projectCanvasCache[projectId] ?? state.projects.find((project) => project.id === projectId)?.canvas)
 }
 
 function removeProjectCanvasItems(canvas: ProjectCanvasState | undefined, imageIds: Iterable<string>) {
@@ -283,11 +307,12 @@ function recordProjectImageHistory(
   const before = getProjectTaskSnapshot(beforeTasks, projectId)
   const after = getProjectTaskSnapshot(afterTasks, projectId)
   if (!haveTaskOutputsChanged(before, after)) return
-  const ids = Array.from(new Set([...getTaskImageIds(before), ...getTaskImageIds(after)]))
+  const historyBefore = getProjectImageHistoryBeforeTasks(before, after)
+  const ids = Array.from(new Set([...getTaskImageIds(historyBefore), ...getTaskImageIds(after)]))
   const currentCanvas = getProjectCanvasSnapshot(projectId)
   const entry: ProjectImageHistoryEntry = {
     projectId,
-    beforeTasks: before,
+    beforeTasks: historyBefore,
     afterTasks: after,
     beforeCanvas: cloneProjectCanvas(beforeCanvas ?? currentCanvas),
     afterCanvas: cloneProjectCanvas(afterCanvas ?? beforeCanvas ?? currentCanvas),
@@ -2742,6 +2767,10 @@ async function applyProjectImageHistory(projectId: string, direction: 'undo' | '
   const state = useStore.getState()
   const currentTasks = state.tasks
   const currentProjectTasks = getProjectTaskSnapshot(currentTasks, projectId)
+  if (direction === 'undo') {
+    const currentCanvas = getProjectCanvasSnapshot(projectId)
+    if (currentCanvas) entry.afterCanvas = currentCanvas
+  }
   const targetTasks = direction === 'undo' ? entry.beforeTasks : entry.afterTasks
   const targetIds = new Set(getTaskImageIds(targetTasks))
   const recordsById = new Map(entry.imageRecords.map((record) => [record.id, record]))
@@ -3088,6 +3117,12 @@ function getApiFailureRetryCount(err: unknown): number | undefined {
   return typeof retryCount === 'number' && Number.isFinite(retryCount) ? retryCount : undefined
 }
 
+function getApiFailureCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object' || !('code' in err)) return undefined
+  const code = (err as { code?: unknown }).code
+  return typeof code === 'string' && code.trim() ? code.trim() : undefined
+}
+
 function getApiFailureKind(err: unknown): ImageFailureKind | undefined {
   if (!err || typeof err !== 'object' || !('kind' in err)) return undefined
   return (err as { kind?: unknown }).kind === 'network' ? 'network' : undefined
@@ -3099,6 +3134,17 @@ function getNetworkFailurePatch(err: unknown, fallbackEndpoint: ImageFailureEndp
     error: '网络异常',
     failureEndpoint: getApiFailureEndpoint(err) ?? fallbackEndpoint,
     failureKind: 'network',
+    failureRetryCount: getApiFailureRetryCount(err),
+  }
+}
+
+function getLayerDecompositionFailurePatch(err: unknown, fallbackEndpoint: ImageFailureEndpoint): Partial<TaskRecord> | null {
+  if (getApiFailureCode(err) !== INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) return null
+  return {
+    error: '该图已无法再进行更多分层',
+    failureEndpoint: getApiFailureEndpoint(err) ?? fallbackEndpoint,
+    failureKind: undefined,
+    failureCode: INVALID_IMAGE_LAYER_DECOMPOSITION_CODE,
     failureRetryCount: getApiFailureRetryCount(err),
   }
 }
@@ -3332,6 +3378,7 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
     revisedPromptByImage: undefined,
     failureEndpoint: undefined,
     failureKind: undefined,
+    failureCode: undefined,
     failureRetryCount: undefined,
     status: 'done',
     error: null,
@@ -3408,6 +3455,7 @@ async function completeRecoveredCompositeTask(task: TaskRecord, result: Awaited<
     ...(result.actualCost !== undefined ? { actualCost: result.actualCost } : {}),
     failureEndpoint: undefined,
     failureKind: undefined,
+    failureCode: undefined,
     failureRetryCount: undefined,
     status: 'done',
     error: null,
@@ -3491,12 +3539,14 @@ async function recoverCompositeTask(taskId: string) {
     }
 
     clearCompositeRecoveryTimer(taskId)
+    const layerFailure = getLayerDecompositionFailurePatch(err, 'status')
     updateTaskInStore(taskId, {
       status: 'error',
-      ...(getNetworkFailurePatch(err, 'status') ?? {
+      ...(layerFailure ?? getNetworkFailurePatch(err, 'status') ?? {
         error: err instanceof Error ? err.message : String(err),
         failureEndpoint: getApiFailureEndpoint(err) ?? 'status',
         failureKind: undefined,
+        failureCode: getApiFailureCode(err),
         failureRetryCount: getApiFailureRetryCount(err),
       }),
       ...getRawErrorPayload(err),
@@ -4032,6 +4082,7 @@ async function completeRecoveredImageStatusTask(task: TaskRecord, records: Image
     revisedPromptByImage: undefined,
     failureEndpoint: undefined,
     failureKind: undefined,
+    failureCode: undefined,
     failureRetryCount: undefined,
     status: 'done',
     error: null,
@@ -7285,6 +7336,7 @@ async function executeTask(taskId: string) {
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
       failureEndpoint: undefined,
       failureKind: undefined,
+      failureCode: undefined,
       failureRetryCount: undefined,
       ...(result.actualCost !== undefined ? { actualCost: result.actualCost } : {}),
       status: 'done',
@@ -7346,11 +7398,28 @@ async function executeTask(taskId: string) {
             ? 'edit'
             : 'generation',
     )
-    if (getApiErrorStatus(err) === 524 && latestTask.imageStatusRequestIds?.length && (latestTask.apiProvider ?? 'openai') !== 'fal') {
+    const layerFailure = getLayerDecompositionFailurePatch(err, networkFailure?.failureEndpoint ?? 'generation')
+    if (layerFailure) {
+      updateExecutingTask({
+        status: 'error',
+        ...layerFailure,
+        ...getRawErrorPayload(err),
+        falRecoverable: false,
+        customRecoverable: false,
+        compositeRecoverable: false,
+        imageStatusRecoverable: false,
+        ...(latestCompositeRequestInfo ? { compositeRequestId: latestCompositeRequestInfo.requestId, compositeStatusUrl: latestCompositeRequestInfo.statusUrl } : {}),
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      useStore.getState().setDetailTaskId(taskId)
+      useStore.getState().showToast(layerFailure.error!, 'error')
+    } else if (getApiErrorStatus(err) === 524 && latestTask.imageStatusRequestIds?.length && (latestTask.apiProvider ?? 'openai') !== 'fal') {
       updateExecutingTask({
         status: 'running',
         error: null,
         failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureCode: getApiFailureCode(err),
         failureRetryCount: getApiFailureRetryCount(err),
         imageStatusRecoverable: true,
         finishedAt: null,
@@ -7378,6 +7447,7 @@ async function executeTask(taskId: string) {
         status: 'error',
         error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
         failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureCode: getApiFailureCode(err),
         failureRetryCount: getApiFailureRetryCount(err),
         falRequestId: latestFalRequestInfo.requestId,
         falEndpoint: latestFalRequestInfo.endpoint,
@@ -7391,6 +7461,7 @@ async function executeTask(taskId: string) {
         status: 'error',
         error: '请求连接已断开，之后会继续查询图片状态。',
         failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureCode: getApiFailureCode(err),
         failureRetryCount: getApiFailureRetryCount(err),
         imageStatusRecoverable: true,
         finishedAt: Date.now(),
@@ -7402,6 +7473,7 @@ async function executeTask(taskId: string) {
         status: 'error',
         error: 'Composite 请求连接已断开，之后会继续查询任务结果。',
         failureEndpoint: getApiFailureEndpoint(err) ?? 'generation',
+        failureCode: getApiFailureCode(err),
         failureRetryCount: getApiFailureRetryCount(err),
         compositeRequestId: latestCompositeRequestInfo.requestId,
         compositeStatusUrl: latestCompositeRequestInfo.statusUrl,
@@ -7443,6 +7515,7 @@ async function executeTask(taskId: string) {
         error: errorMessage,
         failureEndpoint: getApiFailureEndpoint(err),
         failureKind: undefined,
+        failureCode: getApiFailureCode(err),
         failureRetryCount: getApiFailureRetryCount(err),
         ...getRawErrorPayload(err),
         falRecoverable: false,
@@ -7577,6 +7650,7 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
     error: null,
     failureEndpoint: undefined,
     failureKind: undefined,
+    failureCode: undefined,
     failureRetryCount: undefined,
     finishedAt: Date.now(),
     elapsed: Date.now() - latest.createdAt,
@@ -7807,6 +7881,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteImage
 
 /** 重试失败的任务：创建新任务并执行。网络/限流等任务级失败由界面优先调用原位重试。 */
 export async function retryTask(task: TaskRecord) {
+  if (task.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) throw new Error('该图已无法再进行更多分层')
   if (task.layerDecomposition) {
     const resume = task.status === 'error' && (task.failureEndpoint === 'status' || task.failureEndpoint === 'download')
     const next: TaskRecord = {
@@ -7899,6 +7974,7 @@ export async function retryTask(task: TaskRecord) {
 export async function retryTaskInPlace(task: TaskRecord) {
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status !== 'error') throw new Error('当前任务不可重试')
+  if (latest.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) throw new Error('该图已无法再进行更多分层')
   if (activeTaskExecutions.has(latest.id)) return
 
   clearFalRecoveryTimer(latest.id)
@@ -8373,6 +8449,7 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     revisedPromptByImage: undefined,
     failureEndpoint: undefined,
     failureKind: undefined,
+    failureCode: undefined,
     failureRetryCount: undefined,
     status: 'done',
     error: null,

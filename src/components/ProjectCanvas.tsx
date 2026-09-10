@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { ProjectCanvasCrop, ProjectCanvasItem, ProjectCanvasState, ProjectCanvasViewport, TaskOutputError, TaskRecord } from '../types'
+import { INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type ProjectCanvasCrop, type ProjectCanvasItem, type ProjectCanvasState, type ProjectCanvasViewport, type TaskOutputError, type TaskRecord } from '../types'
 import {
   ALL_FAVORITES_COLLECTION_ID,
   ALL_PROJECTS_ID,
@@ -93,6 +93,17 @@ type CanvasNode = {
   placeholderName?: string
 }
 
+type DragPointerEvent = {
+  pointerId: number
+  clientX: number
+  clientY: number
+  movementX?: number
+  movementY?: number
+  screenX?: number
+  screenY?: number
+  nativeEvent?: object
+}
+
 function cloneCanvasState(state: ProjectCanvasState): ProjectCanvasState {
   return {
     ...state,
@@ -109,11 +120,34 @@ function cloneCanvasState(state: ProjectCanvasState): ProjectCanvasState {
   }
 }
 
+function cloneCanvasItems(items: Record<string, ProjectCanvasItem>) {
+  return Object.fromEntries(Object.entries(items).map(([key, item]) => [key, {
+    ...item,
+    ...(item.operator ? {
+      operator: {
+        ...item.operator,
+        ...(item.operator.crop ? { crop: { ...item.operator.crop } } : {}),
+      },
+    } : {}),
+  }]))
+}
+
 function canvasItemsEqual(left: ProjectCanvasState, right: ProjectCanvasState) {
   const leftKeys = Object.keys(left.items)
   const rightKeys = Object.keys(right.items)
   if (leftKeys.length !== rightKeys.length) return false
   return leftKeys.every((key) => key in right.items && JSON.stringify(left.items[key]) === JSON.stringify(right.items[key]))
+}
+
+function summarizeCanvasState(state: ProjectCanvasState | null | undefined) {
+  if (!state) return null
+  return Object.fromEntries(Object.entries(state.items).map(([key, item]) => [key, {
+    x: item.x,
+    y: item.y,
+    width: item.width,
+    rotation: item.rotation,
+    operatorRotation: item.operator?.rotation,
+  }]))
 }
 
 function HighlightedSearchText({ text, query }: { text: string; query: string }) {
@@ -152,8 +186,8 @@ function getSearchSnippet(text: string, query: string, maxLength: number) {
 const EMPTY_PROJECT_CANVAS_CACHE: Record<string, ProjectCanvasState> = {}
 const CANVAS_HEADER_COLLAPSED_STORAGE_KEY = 'gpt-image-playground:canvas-header-collapsed'
 const CANVAS_AUTO_PAN_EDGE_SIZE = 172
-const CANVAS_AUTO_PAN_SPEED = 1
-const CANVAS_AUTO_PAN_ACCELERATION = 3
+const CANVAS_AUTO_PAN_SPEED = 0.6
+const CANVAS_AUTO_PAN_ACCELERATION = 1.5
 const CANVAS_AUTO_PAN_MAX_SPEED = 30
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
@@ -444,13 +478,14 @@ function CanvasImageNode({
 
   const failureEndpoint = node.failure?.endpoint ?? node.failureEndpoint ?? node.task.failureEndpoint
   const imageDownloadFailure = isImageDownloadFailureError(failureEndpoint, node.error)
+  const isLayerDecompositionUnavailable = node.task.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE
   const isNetworkFailure = node.task.failureKind === 'network'
     || node.failure?.kind === 'network'
     || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(node.error ?? '')
   const statusText = node.status === 'running'
     ? '生成中'
     : node.status === 'error'
-      ? imageDownloadFailure ? '图片下载失败' : isNetworkFailure ? '网络异常，请稍后重试。' : '生成失败'
+      ? isLayerDecompositionUnavailable ? '该图已无法再进行更多分层' : imageDownloadFailure ? '图片下载失败' : isNetworkFailure ? '网络异常，请稍后重试。' : '生成失败'
       : ''
   const taskIds = getTaskIds(node.task)
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
@@ -639,21 +674,21 @@ function CanvasImageNode({
               ? { width: `${100 / crop.width}%`, height: `${100 / crop.height}%`, left: `${-crop.x / crop.width * 100}%`, top: `${-crop.y / crop.height * 100}%`, ...(flipX || flipY ? { transform: `scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})` } : {}) }
               : flipX || flipY ? { transform: `scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})` } : undefined}
         /> : (
-          <div className={`relative flex w-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? isNetworkFailure || imageDownloadFailure ? 'border border-yellow-300 bg-yellow-100 text-yellow-800 dark:border-yellow-700/70 dark:bg-yellow-950/60 dark:text-yellow-300' : 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`} style={{ height: frameHeight ?? item.width }}>
+          <div className={`relative flex w-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure ? 'border border-yellow-300 bg-yellow-100 text-yellow-800 dark:border-yellow-700/70 dark:bg-yellow-950/60 dark:text-yellow-300' : 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`} style={{ height: frameHeight ?? item.width }}>
             {node.status === 'running' && <div className="pointer-events-none absolute inset-0 overflow-hidden">
               <span className="canvas-generation-glow-base" />
               <span className="canvas-generation-glow" />
             </div>}
             <div className="relative z-10 flex h-full w-full flex-col items-center justify-center gap-2">
               {node.status === 'error'
-                ? <WarningIcon className={`h-32 w-32 ${isNetworkFailure || imageDownloadFailure ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`} />
+                ? <WarningIcon className={`h-32 w-32 ${isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`} />
                 : <ImageIcon className={`h-[7.5rem] w-[7.5rem] text-[#3f78c5]/70 ${node.status === 'running' ? 'animate-pulse' : ''}`} />}
               {node.status === 'running'
                 ? <span>{statusText}</span>
-                : (isNetworkFailure || imageDownloadFailure)
-                  ? <span className="flex items-center gap-2 text-4xl font-medium"><span>{statusText}</span>{imageDownloadFailure ? <button type="button" data-canvas-handle disabled={redownloadPending} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重新下载图片" title={redownloadPending ? '正在下载' : '重新下载图片'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRedownloadImage() }}><DownloadIcon className={`h-6 w-6 ${redownloadPending ? 'animate-spin' : ''}`} /></button> : <button type="button" data-canvas-handle disabled={retryPending} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryPending ? '正在重试' : '重试请求'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryImage() }}><RefreshIcon className={`h-6 w-6 ${retryPending ? 'animate-spin' : ''}`} /></button>}</span>
+                : (isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure)
+                  ? <span className="flex items-center gap-2 text-4xl font-medium"><span>{statusText}</span>{isLayerDecompositionUnavailable ? null : imageDownloadFailure ? <button type="button" data-canvas-handle disabled={redownloadPending} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重新下载图片" title={redownloadPending ? '正在下载' : '重新下载图片'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRedownloadImage() }}><DownloadIcon className={`h-6 w-6 ${redownloadPending ? 'animate-spin' : ''}`} /></button> : <button type="button" data-canvas-handle disabled={retryPending} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label="重试请求" title={retryPending ? '正在重试' : '重试请求'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryImage() }}><RefreshIcon className={`h-6 w-6 ${retryPending ? 'animate-spin' : ''}`} /></button>}</span>
                   : <span className={node.status === 'error' ? 'text-4xl font-medium' : undefined}>{statusText}</span>}
-              {node.status === 'error' && node.error && (isNetworkFailure || imageDownloadFailure ? (
+              {node.status === 'error' && node.error && (isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure ? (
                 <>
                   {failureEndpoint && <span className="text-sm font-medium text-yellow-700 dark:text-yellow-300">失败接口：{getFailureEndpointLabel(failureEndpoint)}</span>}
                   {(node.failure?.requestId || node.task.requestId || taskIds.length > 0) && (
@@ -684,7 +719,7 @@ function CanvasImageNode({
                     {(node.task.rawImageUrls?.length || node.error?.includes('图片链接下载失败') || node.error?.includes('图片 URL 下载失败')) && node.task.outputImages.length === 0 && (
                       <button type="button" data-canvas-handle disabled={redownloadPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 transition hover:bg-red-200/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="重新下载图片" title={redownloadPending ? '正在重新下载' : '重新下载图片'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRedownloadImage() }}><DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /></button>
                     )}
-                    <button type="button" data-canvas-handle disabled={retryPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 transition hover:bg-red-200/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="重试生成" title={retryPending ? '正在重试' : '重试生成'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryImage() }}><RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} /></button>
+                    {!isLayerDecompositionUnavailable && <button type="button" data-canvas-handle disabled={retryPending} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 transition hover:bg-red-200/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="重试生成" title={retryPending ? '正在重试' : '重试生成'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryImage() }}><RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} /></button>}
                   </span>
                   {(node.failure?.status || node.failure?.requestId || node.failure?.retryCount !== undefined || node.task.requestId || taskIds.length > 0) && (
                     <span className="flex max-w-[92%] flex-col items-center gap-1 text-center font-mono text-base leading-6 text-red-600/90 dark:text-red-300/90">
@@ -953,6 +988,8 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const historyImageIdsRef = useRef<string[]>([])
   const undoStackRef = useRef<ProjectCanvasState[]>([])
   const redoStackRef = useRef<ProjectCanvasState[]>([])
+  const transientUndoStackRef = useRef<Record<string, ProjectCanvasItem>[]>([])
+  const transientRedoStackRef = useRef<Record<string, ProjectCanvasItem>[]>([])
   const historyApplyingRef = useRef(false)
   const canvasTransformActiveRef = useRef(false)
   const pointersRef = useRef(new Map<number, { x: number; y: number }>())
@@ -963,16 +1000,22 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     pointerId: number
     start: { x: number; y: number }
     startWorld: { x: number; y: number }
-    pointer: { x: number; y: number }
+    pointer: { x: number; y: number; screenX?: number; screenY?: number }
     items: Record<string, ProjectCanvasItem>
+    transientItems: Record<string, ProjectCanvasItem>
     moved: boolean
     autoPanFrame: number | null
     autoPanLastTime: number | null
+    autoPanElapsed: { x: number; y: number }
+    autoPanEdgeSide: { x: 'min' | 'max' | null; y: 'min' | 'max' | null }
+    lastPointerEvent: object | null
   } | null>(null)
   const resizeRef = useRef<{ key: string; pointerId: number; corner: ResizeCorner; start: { x: number; y: number }; item: ProjectCanvasItem; moved: boolean } | null>(null)
   const rotateRef = useRef<{ key: string; pointerId: number; center: { x: number; y: number }; startAngle: number; startRotation: number; moved: boolean } | null>(null)
   const multiResizeRef = useRef<MultiResizeState | null>(null)
   const multiRotateRef = useRef<MultiRotateState | null>(null)
+  const dragPointerMoveRef = useRef<(event: DragPointerEvent) => void>(() => undefined)
+  const dragPointerEndRef = useRef<(event: DragPointerEvent) => void>(() => undefined)
   const marqueeRef = useRef<{ pointerId: number; start: { x: number; y: number }; initial: string[] } | null>(null)
   const autoLayoutProjectRef = useRef<string | null>(null)
   const knownImageIdsRef = useRef(new Set<string>())
@@ -1066,13 +1109,36 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const historySourceChanged = historyInternalCanvasRef.current === null || !canvasItemsEqual(historyInternalCanvasRef.current, next)
     const historyImageIdsChanged = historyImageIdsRef.current.length !== projectImageIds.length
       || historyImageIdsRef.current.some((id, index) => id !== projectImageIds[index])
-    if (historyProjectRef.current !== canvasProjectId || historyBaselineRef.current === null || historySourceChanged) {
+    const historyBaselineContainsAddedImage = projectImageIds.some((imageId) =>
+      !historyImageIdsRef.current.includes(imageId) && Boolean(historyBaselineRef.current?.items[imageId]),
+    )
+    const shouldResetHistory = historyProjectRef.current !== canvasProjectId
+      || historyBaselineRef.current === null
+      || (historyImageIdsChanged && !historyBaselineContainsAddedImage)
+      || (historySourceChanged && undoStackRef.current.length === 0 && !historyBaselineContainsAddedImage)
+    console.info('[画布历史] 同步画布', {
+      projectId: canvasProjectId,
+      projectImageIds,
+      previousImageIds: historyImageIdsRef.current,
+      historySourceChanged,
+      historyImageIdsChanged,
+      baseline: summarizeCanvasState(historyBaselineRef.current),
+      current: summarizeCanvasState(canvasRef.current),
+      next: summarizeCanvasState(next),
+      undoLength: undoStackRef.current.length,
+      redoLength: redoStackRef.current.length,
+      transientUndoLength: transientUndoStackRef.current.length,
+      transientRedoLength: transientRedoStackRef.current.length,
+      historyBaselineContainsAddedImage,
+      shouldResetHistory,
+    })
+    if (shouldResetHistory) {
       historyProjectRef.current = canvasProjectId
       historyBaselineRef.current = Object.keys(sourceCanvas?.items ?? {}).length > 0 ? cloneCanvasState(next) : null
       undoStackRef.current = []
       redoStackRef.current = []
-    } else if (historyImageIdsChanged) {
-      redoStackRef.current = []
+      transientUndoStackRef.current = []
+      transientRedoStackRef.current = []
     }
     historyImageIdsRef.current = [...projectImageIds]
     historyInternalCanvasRef.current = cloneCanvasState(next)
@@ -1158,13 +1224,33 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (historyApplyingRef.current) return
     const previous = historyBaselineRef.current
     if (!previous) {
+      console.info('[画布历史] 建立基线', {
+        projectId: canvasProjectId,
+        next: summarizeCanvasState(next),
+        undoLength: undoStackRef.current.length,
+        redoLength: redoStackRef.current.length,
+      })
       historyBaselineRef.current = cloneCanvasState(next)
       return
     }
     if (canvasItemsEqual(previous, next)) {
+      console.info('[画布历史] 编辑未改变图片状态', {
+        projectId: canvasProjectId,
+        baseline: summarizeCanvasState(previous),
+        next: summarizeCanvasState(next),
+        undoLength: undoStackRef.current.length,
+        redoLength: redoStackRef.current.length,
+      })
       historyBaselineRef.current = cloneCanvasState(next)
       return
     }
+    console.info('[画布历史] 记录编辑', {
+      projectId: canvasProjectId,
+      previous: summarizeCanvasState(previous),
+      next: summarizeCanvasState(next),
+      undoLengthBefore: undoStackRef.current.length,
+      redoLengthBefore: redoStackRef.current.length,
+    })
     undoStackRef.current = [...undoStackRef.current, cloneCanvasState(previous)].slice(-30)
     redoStackRef.current = []
     if (canvasProjectId) clearProjectImageRedoHistory(canvasProjectId)
@@ -1172,6 +1258,13 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   }
 
   const beginCanvasTransform = () => {
+    console.info('[画布历史] 开始变换', {
+      projectId: canvasProjectId,
+      canvas: summarizeCanvasState(canvasRef.current),
+      baselineBefore: summarizeCanvasState(historyBaselineRef.current),
+      undoLength: undoStackRef.current.length,
+      redoLength: redoStackRef.current.length,
+    })
     canvasTransformActiveRef.current = true
     historyBaselineRef.current = cloneCanvasState(canvasRef.current)
   }
@@ -1183,7 +1276,15 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   const applyCanvasHistory = (direction: 'undo' | 'redo') => {
     const source = direction === 'undo' ? undoStackRef.current : redoStackRef.current
     const target = source.pop()
-    if (!target) return false
+    if (!target) {
+      console.info('[画布历史] 无可应用的画布历史', {
+        projectId: canvasProjectId,
+        direction,
+        undoLength: undoStackRef.current.length,
+        redoLength: redoStackRef.current.length,
+      })
+      return false
+    }
     const current = cloneCanvasState(canvasRef.current)
     const destination = direction === 'undo' ? redoStackRef.current : undoStackRef.current
     destination.push(current)
@@ -1192,6 +1293,14 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       ...target,
       viewport: { ...canvasRef.current.viewport },
     }
+    console.info('[画布历史] 应用画布历史', {
+      projectId: canvasProjectId,
+      direction,
+      current: summarizeCanvasState(current),
+      next: summarizeCanvasState(next),
+      undoLengthAfterPop: undoStackRef.current.length,
+      redoLengthAfterPop: redoStackRef.current.length,
+    })
     historyApplyingRef.current = true
     historyBaselineRef.current = cloneCanvasState(next)
     canvasRef.current = next
@@ -1213,9 +1322,39 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     return true
   }
 
+  const applyTransientHistory = (direction: 'undo' | 'redo') => {
+    const source = direction === 'undo' ? transientUndoStackRef.current : transientRedoStackRef.current
+    const target = source.pop()
+    if (!target) {
+      console.info('[画布历史] 无可应用的占位符历史', {
+        projectId: canvasProjectId,
+        direction,
+        transientUndoLength: transientUndoStackRef.current.length,
+        transientRedoLength: transientRedoStackRef.current.length,
+      })
+      return false
+    }
+    const destination = direction === 'undo' ? transientRedoStackRef.current : transientUndoStackRef.current
+    console.info('[画布历史] 应用占位符历史', {
+      projectId: canvasProjectId,
+      direction,
+      current: cloneCanvasItems(transientNodeItemsRef.current),
+      next: target,
+      transientUndoLengthAfterPop: transientUndoStackRef.current.length,
+      transientRedoLengthAfterPop: transientRedoStackRef.current.length,
+    })
+    destination.push(cloneCanvasItems(transientNodeItemsRef.current))
+    transientNodeItemsRef.current = cloneCanvasItems(target)
+    setTransientNodeItems(transientNodeItemsRef.current)
+    return true
+  }
+
   const persistCanvas = (next: ProjectCanvasState, delay = 0, recordHistory = true) => {
-    if (recordHistory) recordCanvasHistory(next)
-    else if (!canvasTransformActiveRef.current) historyBaselineRef.current = cloneCanvasState(next)
+    if (recordHistory) {
+      if (!historyBaselineRef.current) historyBaselineRef.current = cloneCanvasState(canvasRef.current)
+      recordCanvasHistory(next)
+    }
+    else if (!canvasTransformActiveRef.current && undoStackRef.current.length === 0) historyBaselineRef.current = cloneCanvasState(next)
     canvasRef.current = next
     setCanvas(next)
     if (viewportPersistTimerRef.current != null) {
@@ -1236,6 +1375,12 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       updateProjectCanvas(canvasProjectId, canvasRef.current)
       persistTimerRef.current = null
     }, delay)
+  }
+
+  const ensureCanvasItemForEdit = (key: string, item: ProjectCanvasItem | undefined) => {
+    if (!item || canvasRef.current.items[key]) return item
+    persistCanvas({ ...canvasRef.current, items: { ...canvasRef.current.items, [key]: item } }, 0, false)
+    return item
   }
 
   useEffect(() => {
@@ -2007,17 +2152,28 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     syncCanvasTaskSelection(keys.length > 1 ? keys : [])
     setInteractionKeys(keys)
     const items = Object.fromEntries(keys.flatMap((key) => nodeItems[key] ? [[key, nodeItems[key]]] : []))
+    const transientItems = cloneCanvasItems(transientNodeItemsRef.current)
+    for (const key of keys) {
+      const candidate = nodes.find((item) => item.key === key)
+      if (candidate?.status === 'running' && !candidate.imageId && !transientItems[key] && nodeItems[key]) {
+        transientItems[key] = cloneCanvasItems({ [key]: nodeItems[key] })[key]
+      }
+    }
     const startWorld = getCanvasWorldPoint(event.clientX, event.clientY) ?? { x: event.clientX, y: event.clientY }
     dragRef.current = {
       keys,
       pointerId: event.pointerId,
       start: { x: event.clientX, y: event.clientY },
       startWorld,
-      pointer: { x: event.clientX, y: event.clientY },
+      pointer: { x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY },
       items,
+      transientItems,
       moved: false,
       autoPanFrame: null,
       autoPanLastTime: null,
+      autoPanElapsed: { x: 0, y: 0 },
+      autoPanEdgeSide: { x: null, y: null },
+      lastPointerEvent: null,
     }
   }
 
@@ -2062,15 +2218,16 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       if (!rect || rect.width <= 0 || rect.height <= 0) return
       const elapsed = current.autoPanLastTime == null ? 16 : Math.min(32, Math.max(1, time - current.autoPanLastTime))
       current.autoPanLastTime = time
-      const getAutoPanDelta = (position: number, min: number, max: number) => {
-        const direction = position <= min ? 1 : position >= max ? -1 : 0
-        if (direction === 0) return 0
-        const distanceOutside = direction > 0 ? min - position : position - max
-        const speed = Math.min(CANVAS_AUTO_PAN_MAX_SPEED, CANVAS_AUTO_PAN_SPEED * (1 + CANVAS_AUTO_PAN_ACCELERATION * distanceOutside / CANVAS_AUTO_PAN_EDGE_SIZE))
+      const getAutoPanDelta = (axis: 'x' | 'y') => {
+        const side = current.autoPanEdgeSide[axis]
+        if (!side) return 0
+        const speed = Math.min(CANVAS_AUTO_PAN_MAX_SPEED, CANVAS_AUTO_PAN_SPEED * (1 + CANVAS_AUTO_PAN_ACCELERATION * current.autoPanElapsed[axis] / 120))
+        const direction = side === 'min' ? 1 : -1
+        current.autoPanElapsed[axis] += elapsed
         return direction * speed * elapsed
       }
-      const horizontal = getAutoPanDelta(current.pointer.x, rect.left, rect.right)
-      const vertical = getAutoPanDelta(current.pointer.y, rect.top, rect.bottom)
+      const horizontal = getAutoPanDelta('x')
+      const vertical = getAutoPanDelta('y')
       if (horizontal === 0 && vertical === 0) {
         current.autoPanLastTime = null
         return
@@ -2085,10 +2242,31 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     })
   }
 
-  const updateDraggedPointer = (event: { pointerId: number; clientX: number; clientY: number }) => {
+  const updateDraggedPointer = (event: DragPointerEvent) => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
+    const eventIdentity = event.nativeEvent ?? event
+    if (drag.lastPointerEvent === eventIdentity) return
+    drag.lastPointerEvent = eventIdentity
     if (drag.pointer.x === event.clientX && drag.pointer.y === event.clientY) return
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (rect) {
+      for (const [axis, next, min, max] of [
+        ['x', event.clientX, rect.left, rect.right],
+        ['y', event.clientY, rect.top, rect.bottom],
+      ] as const) {
+        const side = next <= min ? 'min' : next >= max ? 'max' : null
+        if (!side) {
+          drag.autoPanElapsed[axis] = 0
+          drag.autoPanEdgeSide[axis] = null
+          continue
+        }
+        if (drag.autoPanEdgeSide[axis] !== side) {
+          drag.autoPanEdgeSide[axis] = side
+          drag.autoPanElapsed[axis] = 0
+        }
+      }
+    }
     drag.pointer = { x: event.clientX, y: event.clientY }
     const deltaX = (event.clientX - drag.start.x) / canvasRef.current.viewport.scale
     const deltaY = (event.clientY - drag.start.y) / canvasRef.current.viewport.scale
@@ -2098,18 +2276,53 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     updateNodeAutoPan(drag)
   }
 
+  dragPointerMoveRef.current = updateDraggedPointer
+
   const handleNodePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     updateDraggedPointer(event)
   }
 
-  const handleNodePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+  const handleNodePointerEnd = (event: DragPointerEvent) => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     dragRef.current = null
     if (drag.autoPanFrame != null) window.cancelAnimationFrame(drag.autoPanFrame)
     setInteractionKeys([])
+    const hasTransientItems = drag.keys.some((key) => nodes.some((node) => node.key === key && node.status === 'running' && !node.imageId))
+    if (drag.moved && hasTransientItems) {
+      const previous = cloneCanvasItems(drag.transientItems)
+      const current = cloneCanvasItems(transientNodeItemsRef.current)
+      if (JSON.stringify(previous) !== JSON.stringify(current)) {
+        console.info('[画布历史] 记录占位符移动', {
+          projectId: canvasProjectId,
+          previous,
+          current,
+          transientUndoLengthBefore: transientUndoStackRef.current.length,
+          transientRedoLengthBefore: transientRedoStackRef.current.length,
+        })
+        transientUndoStackRef.current = [...transientUndoStackRef.current, previous].slice(-30)
+        transientRedoStackRef.current = []
+      }
+    }
     if (drag.moved && drag.keys.some((key) => nodes.some((node) => node.key === key && (Boolean(node.imageId) || node.status === 'error')))) persistCanvas(canvasRef.current, 0)
   }
+
+  dragPointerEndRef.current = handleNodePointerEnd
+
+  useEffect(() => {
+    const handlePointerMove: EventListener = (event) => dragPointerMoveRef.current(event as unknown as DragPointerEvent)
+    const handlePointerEnd: EventListener = (event) => dragPointerEndRef.current(event as unknown as DragPointerEvent)
+    window.addEventListener('pointermove', handlePointerMove, true)
+    window.addEventListener('pointerrawupdate', handlePointerMove, true)
+    window.addEventListener('pointerup', handlePointerEnd, true)
+    window.addEventListener('pointercancel', handlePointerEnd, true)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove, true)
+      window.removeEventListener('pointerrawupdate', handlePointerMove, true)
+      window.removeEventListener('pointerup', handlePointerEnd, true)
+      window.removeEventListener('pointercancel', handlePointerEnd, true)
+    }
+  }, [])
 
   const handleImageDimensions = (key: string, width: number, height: number) => {
     setImageDimensions((current) => current[key]?.width === width && current[key]?.height === height ? current : { ...current, [key]: { width, height } })
@@ -2264,12 +2477,25 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     event.stopPropagation()
     setInteractionKeys([key])
     event.currentTarget.setPointerCapture(event.pointerId)
-    const item = nodeItems[key]
+    const item = ensureCanvasItemForEdit(key, nodeItems[key])
     if (!item) return
     const ratio = ratios[key] ?? 1
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     beginCanvasTransform()
+    console.info('[画布历史] 开始旋转', {
+      projectId: canvasProjectId,
+      key,
+      item: {
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        rotation: item.rotation,
+        operatorRotation: item.operator?.rotation,
+      },
+      undoLength: undoStackRef.current.length,
+      redoLength: redoStackRef.current.length,
+    })
     const center = {
       x: rect.left + item.x * canvasRef.current.viewport.scale + canvasRef.current.viewport.x + item.width * canvasRef.current.viewport.scale / 2,
       y: rect.top + item.y * canvasRef.current.viewport.scale + canvasRef.current.viewport.y + item.width / ratio * canvasRef.current.viewport.scale / 2,
@@ -2301,6 +2527,15 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     if (!rotate || rotate.pointerId !== event.pointerId) return
     rotateRef.current = null
     setInteractionKeys([])
+    console.info('[画布历史] 结束旋转', {
+      projectId: canvasProjectId,
+      key: rotate.key,
+      moved: rotate.moved,
+      canvas: summarizeCanvasState(canvasRef.current),
+      baseline: summarizeCanvasState(historyBaselineRef.current),
+      undoLengthBeforePersist: undoStackRef.current.length,
+      redoLengthBeforePersist: redoStackRef.current.length,
+    })
     if (rotate.moved) persistCanvas(canvasRef.current, 0)
     endCanvasTransform()
   }
@@ -2369,7 +2604,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
 
   const updateSelectedImageOperator = (patch: Partial<NonNullable<ProjectCanvasItem['operator']>>) => {
     if (!selectedKey) return
-    const item = canvasRef.current.items[selectedKey]
+    const item = ensureCanvasItemForEdit(selectedKey, canvasRef.current.items[selectedKey] ?? selectedItem)
     if (!item) return
     const nextOperator = { ...item.operator, ...patch }
     const nextItem = {
@@ -2378,6 +2613,28 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       operator: nextOperator,
     }
     if (JSON.stringify(nextItem) === JSON.stringify(item)) return
+    console.info('[画布历史] 菜单修改图片', {
+      projectId: canvasProjectId,
+      key: selectedKey,
+      patch,
+      previous: {
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        rotation: item.rotation,
+        operatorRotation: item.operator?.rotation,
+      },
+      next: {
+        x: nextItem.x,
+        y: nextItem.y,
+        width: nextItem.width,
+        rotation: nextItem.rotation,
+        operatorRotation: nextItem.operator?.rotation,
+      },
+      baseline: summarizeCanvasState(historyBaselineRef.current),
+      undoLength: undoStackRef.current.length,
+      redoLength: redoStackRef.current.length,
+    })
     persistCanvas({ ...canvasRef.current, items: { ...canvasRef.current.items, [selectedKey]: nextItem } }, 0)
   }
 
@@ -2537,10 +2794,12 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   }
 
   const selectedNodeFailureEndpoint = selectedNode?.failure?.endpoint ?? selectedNode?.failureEndpoint ?? selectedNode?.task.failureEndpoint
+  const selectedNodeLayerDecompositionUnavailable = selectedNode?.task.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE
   const selectedNodeImageDownloadFailure = selectedNode?.status === 'error'
     && isImageDownloadFailureError(selectedNodeFailureEndpoint, selectedNode.error)
 
   const handleRetryImage = async (task: TaskRecord) => {
+    if (task.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) return
     try {
       if (!task.outputImages.length && task.status === 'error') await retryTaskInPlace(task)
       else await retryImage(task)
@@ -2686,7 +2945,27 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       if (modifier && !event.altKey && !event.repeat && (key === 'z' || key === 'y')) {
         event.preventDefault()
         const direction = key === 'y' || event.shiftKey ? 'redo' : 'undo'
-        if (applyCanvasHistory(direction) || !canvasProjectId) return
+        const transientApplied = applyTransientHistory(direction)
+        if (transientApplied) {
+          console.info('[画布历史] 快捷键走占位符历史', { projectId: canvasProjectId, direction })
+          return
+        }
+        const canvasApplied = applyCanvasHistory(direction)
+        if (canvasApplied) {
+          console.info('[画布历史] 快捷键走画布历史', { projectId: canvasProjectId, direction })
+          return
+        }
+        if (!canvasProjectId) return
+        console.info('[画布历史] 快捷键走图片历史', {
+          projectId: canvasProjectId,
+          direction,
+          undoLength: undoStackRef.current.length,
+          redoLength: redoStackRef.current.length,
+          transientUndoLength: transientUndoStackRef.current.length,
+          transientRedoLength: transientRedoStackRef.current.length,
+          baseline: summarizeCanvasState(historyBaselineRef.current),
+          current: summarizeCanvasState(canvasRef.current),
+        })
         const applyImageHistory = direction === 'undo' ? undoProjectImageHistory : redoProjectImageHistory
         if (typeof applyImageHistory === 'function') void applyImageHistory(canvasProjectId)
         return
@@ -3065,7 +3344,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             <TooltipButton tooltip="编辑输出" onClick={() => void editOutputImage(selectedNode.task, selectedNode.imageId!)} className={toolbarButtonClass}><EditIcon className="h-4 w-4" /></TooltipButton>
             <TooltipButton tooltip="复用配置" onClick={() => void reuseImageConfig(selectedNode.task, selectedNode.imageId!)} className={toolbarButtonClass}><ReuseConfigIcon className="h-4 w-4" /></TooltipButton>
             <TooltipButton tooltip="保存到素材库" onClick={() => void handleSaveMaterial()} className={toolbarButtonClass}><CloudUploadIcon className="h-4 w-4" /></TooltipButton>
-            <TooltipButton tooltip="重试单图" onClick={() => void handleRetryImage(selectedNode.task)} className={toolbarButtonClass}><RefreshIcon className="h-4 w-4" /></TooltipButton>
+            {!selectedNodeLayerDecompositionUnavailable && <TooltipButton tooltip="重试单图" onClick={() => void handleRetryImage(selectedNode.task)} className={toolbarButtonClass}><RefreshIcon className="h-4 w-4" /></TooltipButton>}
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
             <TooltipButton tooltip="裁剪图片" onClick={() => setCropImageId(selectedNode.imageId!)} className={toolbarButtonClass}><CropIcon className="h-4 w-4" /></TooltipButton>
             <ImageLayerMenu key={selectedNode.imageId} task={selectedNode.task} imageId={selectedNode.imageId} disabled={tasks.some((task) => task.layerDecomposition && task.status === 'running' && task.inputImageIds.includes(selectedNode.imageId!))} className={toolbarButtonClass} />
@@ -3081,7 +3360,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
           </>}
           {selectedNode.status === 'error' && <>
             <TooltipButton tooltip="复用配置" onClick={() => void reuseImageConfig(selectedNode.task)} className={toolbarButtonClass}><ReuseConfigIcon className="h-4 w-4" /></TooltipButton>
-            <TooltipButton
+            {!selectedNodeLayerDecompositionUnavailable && <TooltipButton
               tooltip={selectedNodeImageDownloadFailure ? '重新下载图片' : '重试单图'}
               onClick={() => void (selectedNodeImageDownloadFailure
                 ? handleRedownloadImage(selectedNode.task, selectedNode.failure?.requestIndex)
@@ -3089,7 +3368,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
               className={toolbarButtonClass}
             >
               {selectedNodeImageDownloadFailure ? <DownloadIcon className="h-4 w-4" /> : <RefreshIcon className="h-4 w-4" />}
-            </TooltipButton>
+            </TooltipButton>}
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
             <TooltipButton tooltip="图片信息" onClick={() => setDetailTaskId(selectedNode.task.id)} className={toolbarButtonClass}><InfoIcon className="h-4 w-4" /></TooltipButton>
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />

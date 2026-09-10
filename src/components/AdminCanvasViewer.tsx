@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import type { AgentConversation, Project, ProjectCanvasItem, ProjectCanvasState, TaskOutputError, TaskRecord } from '../types'
+import { INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type AgentConversation, type Project, type ProjectCanvasItem, type ProjectCanvasState, type TaskOutputError, type TaskRecord } from '../types'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
@@ -484,6 +484,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   })() : null
 
   const handleRetryTask = async (task: TaskRecord, requestIndex?: number, downloadOnly = false) => {
+    if (task.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) return
     if (retryingTaskIds.has(task.id)) return
     setRetryingTaskIds((current) => new Set(current).add(task.id))
     try {
@@ -634,11 +635,12 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
             const metadataScale = 1 / Math.max(viewport.scale, 0.01)
             const failureEndpoint = node.failure?.endpoint ?? node.task?.failureEndpoint
             const imageDownloadFailure = isImageDownloadFailureError(failureEndpoint, node.error)
+            const isLayerDecompositionUnavailable = node.task?.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE
             const isNetworkFailure = node.task?.failureKind === 'network'
               || node.failure?.kind === 'network'
               || /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(node.error ?? '')
             const statusText = node.status === 'error'
-              ? imageDownloadFailure ? '图片下载失败' : isNetworkFailure ? '网络异常，请稍后重试。' : '生成失败'
+              ? isLayerDecompositionUnavailable ? '该图已无法再进行更多分层' : imageDownloadFailure ? '图片下载失败' : isNetworkFailure ? '网络异常，请稍后重试。' : '生成失败'
               : ''
             const taskIds = node.task ? getTaskIds(node.task) : []
             const failureRetryCount = node.failure?.retryCount ?? node.task?.failureRetryCount
@@ -694,20 +696,20 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                           : undefined}
                     />
                   ) : (
-                    <div className={`relative flex h-full w-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? isNetworkFailure || imageDownloadFailure ? 'border border-yellow-300 bg-yellow-100 text-yellow-800 dark:border-yellow-700/70 dark:bg-yellow-950/60 dark:text-yellow-300' : 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`}>
+                    <div className={`relative flex h-full w-full items-center justify-center overflow-hidden text-xs ${node.status === 'error' ? isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure ? 'border border-yellow-300 bg-yellow-100 text-yellow-800 dark:border-yellow-700/70 dark:bg-yellow-950/60 dark:text-yellow-300' : 'border border-red-200 bg-red-100 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`}>
                       <div className="relative z-10 flex h-full w-full flex-col items-center justify-center gap-2">
                         {node.status === 'error'
-                          ? <WarningIcon className={`h-32 w-32 ${isNetworkFailure || imageDownloadFailure ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`} />
+                          ? <WarningIcon className={`h-32 w-32 ${isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`} />
                           : <ImageIcon className={`h-[7.5rem] w-[7.5rem] text-[#3f78c5]/70 ${node.status === 'done' ? '' : 'animate-pulse'}`} />}
                         {node.status === 'error'
-                          ? (isNetworkFailure || imageDownloadFailure)
+                          ? (isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure)
                             ? <span className="flex items-center gap-2 text-4xl font-medium">
                               <span>{statusText}</span>
-                              {editingMode && node.task && <button type="button" data-canvas-handle disabled={retryingTaskIds.has(node.task.id)} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={retryingTaskIds.has(node.task.id) ? '正在重试' : imageDownloadFailure ? '重新下载图片' : '重试请求'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryTask(node.task!, node.failure?.requestIndex ?? node.outputRequestIndex, imageDownloadFailure) }}>{imageDownloadFailure ? <DownloadIcon className="h-6 w-6" /> : <RefreshIcon className={`h-6 w-6 ${retryingTaskIds.has(node.task.id) ? 'animate-spin' : ''}`} />}</button>}
+                              {editingMode && node.task && !isLayerDecompositionUnavailable && <button type="button" data-canvas-handle disabled={retryingTaskIds.has(node.task.id)} className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400" aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={retryingTaskIds.has(node.task.id) ? '正在重试' : imageDownloadFailure ? '重新下载图片' : '重试请求'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryTask(node.task!, node.failure?.requestIndex ?? node.outputRequestIndex, imageDownloadFailure) }}>{imageDownloadFailure ? <DownloadIcon className="h-6 w-6" /> : <RefreshIcon className={`h-6 w-6 ${retryingTaskIds.has(node.task.id) ? 'animate-spin' : ''}`} />}</button>}
                             </span>
                             : <span className="text-4xl font-medium">{statusText}</span>
                           : <span>{node.status === 'done' ? '' : '图片不可用'}</span>}
-                        {node.status === 'error' && node.error && (isNetworkFailure || imageDownloadFailure ? (
+                        {node.status === 'error' && node.error && (isLayerDecompositionUnavailable || isNetworkFailure || imageDownloadFailure ? (
                           <>
                             {failureEndpoint && <span className="text-sm font-medium text-yellow-700 dark:text-yellow-300">失败接口：{getFailureEndpointLabel(failureEndpoint)}</span>}
                             {(node.failure?.requestId || node.task?.requestId || taskIds.length > 0) && (
@@ -725,7 +727,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                             <span className="flex max-w-[92%] items-center gap-1">
                               <span className="max-h-24 min-w-0 flex-1 overflow-hidden break-words text-center text-base leading-6 text-red-700 dark:text-red-300" title={node.error}>{node.error}</span>
                               <button type="button" data-canvas-handle className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-600 hover:bg-red-200/70 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="复制错误原因" title="复制错误原因" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleCopyFailureError(node.error!) }}><CopyIcon className="h-4 w-4" /></button>
-                              {editingMode && node.task && <button type="button" data-canvas-handle disabled={retryingTaskIds.has(node.task.id)} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 transition hover:bg-red-200/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="重试生成" title={retryingTaskIds.has(node.task.id) ? '正在重试' : '重试生成'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryTask(node.task!, node.failure?.requestIndex ?? node.outputRequestIndex) }}><RefreshIcon className={`h-4 w-4 ${retryingTaskIds.has(node.task.id) ? 'animate-spin' : ''}`} /></button>}
+                              {editingMode && node.task && !isLayerDecompositionUnavailable && <button type="button" data-canvas-handle disabled={retryingTaskIds.has(node.task.id)} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-600 transition hover:bg-red-200/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-900/50" aria-label="重试生成" title={retryingTaskIds.has(node.task.id) ? '正在重试' : '重试生成'} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void handleRetryTask(node.task!, node.failure?.requestIndex ?? node.outputRequestIndex) }}><RefreshIcon className={`h-4 w-4 ${retryingTaskIds.has(node.task.id) ? 'animate-spin' : ''}`} /></button>}
                             </span>
                             {(node.failure?.status || failureRetryCount !== undefined || node.failure?.requestId || node.task?.requestId || taskIds.length > 0) && (
                               <span className="flex max-w-[92%] flex-col items-center gap-1 text-center font-mono text-base leading-6 text-red-600/90 dark:text-red-300/90">

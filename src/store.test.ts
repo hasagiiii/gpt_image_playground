@@ -423,6 +423,24 @@ describe('Seedream 分层任务', () => {
     expect(useStore.getState().tasks).toHaveLength(1)
   })
 
+  it('分层返回不可继续分层错误时显示黄色失败状态且禁止重试', async () => {
+    vi.mocked(callSeedreamLayers).mockRejectedValueOnce(Object.assign(new Error('upstream detail'), {
+      code: 'INVALID_IMAGE_LAYER_DECOMPOSITION',
+      endpoint: 'result',
+    }))
+    await decomposeImage(useStore.getState().tasks[0], imageA.id)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('error'))
+    const failed = useStore.getState().tasks[0]
+    expect(failed).toMatchObject({
+      error: '该图已无法再进行更多分层',
+      failureCode: 'INVALID_IMAGE_LAYER_DECOMPOSITION',
+      failureEndpoint: 'result',
+    })
+    await expect(retryTaskInPlace(failed)).rejects.toThrow('该图已无法再进行更多分层')
+    await expect(retryTask({ ...failed })).rejects.toThrow('该图已无法再进行更多分层')
+    expect(vi.mocked(callSeedreamLayers)).toHaveBeenCalledTimes(1)
+  })
+
   it('自定义分层指令传到模型请求并保存到任务中', async () => {
     vi.mocked(callSeedreamLayers).mockResolvedValueOnce({ images: [] })
     await decomposeImage(useStore.getState().tasks[0], imageA.id, '  将标题文字和背景分别拆成图层  ')
@@ -779,6 +797,70 @@ describe('online canvas persistence', () => {
     expect(useStore.getState().tasks[0]?.outputImages).toEqual([])
     expect(useStore.getState().projects[0]?.canvas?.items[image.id]).toBeUndefined()
     expect(await getImage(image.id)).toBeUndefined()
+  })
+
+  it('does not undo a completed generation back to its running placeholder', async () => {
+    const project: Project = {
+      id: 'project-running-history',
+      title: '生成历史项目',
+      initialPrompt: '',
+      storage: 'local',
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const image = { id: 'running-history-image', dataUrl: 'data:image/png;base64,running-history', source: 'generated' as const, createdAt: 1 }
+    const running = task({
+      id: 'running-history-task',
+      projectId: project.id,
+      status: 'running',
+      finishedAt: null,
+      elapsed: null,
+    })
+    const completed = {
+      ...running,
+      outputImages: [image.id],
+      status: 'done' as const,
+      finishedAt: 3,
+      elapsed: 2,
+    }
+    await putImage(image)
+    useStore.setState({ projects: [project], projectsLoaded: true, tasks: [running] })
+
+    useStore.getState().setTasks([completed])
+    useStore.getState().updateProjectCanvas(project.id, {
+      version: 1,
+      viewport: { x: 0, y: 0, scale: 1 },
+      items: {
+        [image.id]: {
+          x: 420,
+          y: 180,
+          width: 320,
+          z: 0,
+          rotation: 90,
+          operator: { rotation: 90, originalWidth: 1024, scale: 320 / 1024 },
+          favoriteCollectionIds: [],
+        },
+      },
+    })
+    expect((await useStore.getState().undoProjectImageHistory(project.id))).toBe(true)
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      id: running.id,
+      status: 'done',
+      outputImages: [],
+      finishedAt: completed.finishedAt,
+    })
+    expect(await getImage(image.id)).toBeUndefined()
+
+    expect((await useStore.getState().redoProjectImageHistory(project.id))).toBe(true)
+    expect(useStore.getState().tasks[0]).toEqual(completed)
+    expect(useStore.getState().projects[0]?.canvas?.items[image.id]).toMatchObject({
+      x: 420,
+      y: 180,
+      width: 320,
+      rotation: 90,
+      operator: { rotation: 90, originalWidth: 1024 },
+    })
+    expect(await getImage(image.id)).toMatchObject({ id: image.id, dataUrl: image.dataUrl })
   })
 
   it('does not create image history while hydrating persisted tasks', async () => {

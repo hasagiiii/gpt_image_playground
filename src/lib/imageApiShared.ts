@@ -54,6 +54,7 @@ export type ApiFailure = Error & {
   endpoint?: ImageFailureEndpoint
   kind?: ImageFailureKind
   status?: number
+  code?: string
   requestId?: string
   retryCount?: number
 }
@@ -145,7 +146,7 @@ export function getApiResponseRetryCount(response: Response): number | undefined
 
 export function withApiFailureMetadata(
   error: Error,
-  metadata: Pick<ApiFailure, 'endpoint' | 'kind' | 'status' | 'requestId' | 'retryCount'>,
+  metadata: Pick<ApiFailure, 'endpoint' | 'kind' | 'status' | 'code' | 'requestId' | 'retryCount'>,
 ): ApiFailure {
   return Object.assign(error, metadata)
 }

@@ -25,6 +25,7 @@ export interface ApiOverride {
 export type CustomProviderTemplate = 'http-image'
 export const DEFAULT_STREAM_PARTIAL_IMAGES = 1
 export const DEFAULT_AGENT_MAX_TOOL_ROUNDS = 15
+export const INVALID_IMAGE_LAYER_DECOMPOSITION_CODE = 'INVALID_IMAGE_LAYER_DECOMPOSITION'
 
 export type CustomProviderRequestMethod = 'GET' | 'POST'
 export type CustomProviderContentType = 'json' | 'multipart'
@@ -276,6 +277,8 @@ export interface TaskRecord {
   failureEndpoint?: ImageFailureEndpoint
   /** 任务级失败类型，用于区分网络异常等特殊展示 */
   failureKind?: ImageFailureKind
+  /** 上游返回的业务错误码 */
+  failureCode?: string
   /** 任务级请求已自动重试的次数 */
   failureRetryCount?: number
   /** 流式生成的中间步骤图片 id 列表，仅失败时保留供排查/下载 */

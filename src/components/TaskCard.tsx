@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react'
-import type { TaskRecord } from '../types'
+import { INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type TaskRecord } from '../types'
 import { useStore, ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail, retryImage, retryTaskInPlace, redownloadTaskImage } from '../store'
 import { formatImageRatio } from '../lib/size'
 import { formatActualCost } from '../lib/cost'
@@ -387,13 +387,14 @@ export default function TaskCard({
   const imageDownloadFailure = isImageDownloadFailureError(task.failureEndpoint, task.error)
     || Boolean(task.outputErrors?.some((error) => isImageDownloadFailureError(error.endpoint, error.error)))
   const downloadFailureRequestIndex = task.outputErrors?.find((error) => isImageDownloadFailureError(error.endpoint, error.error))?.requestIndex
+  const isLayerDecompositionUnavailable = task.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE
 
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
   const failedToFetch = /failed to fetch/i.test(task.error ?? '')
   const requestTimeout = /请求超时|request (?:timed out|timeout)|timed out/i.test(task.error ?? '')
-  const inlineRetryableFailure = task.status === 'error' && (failedToFetch || imageDownloadFailure || requestTimeout)
+  const inlineRetryableFailure = task.status === 'error' && !isLayerDecompositionUnavailable && (failedToFetch || imageDownloadFailure || requestTimeout)
   const agentBranchRetry = task.status === 'error' && Boolean(onRetry)
   const taskIds = getTaskIds(task)
 
@@ -429,6 +430,7 @@ export default function TaskCard({
   }
 
   const handleRetry = async (inPlace = false) => {
+    if (isLayerDecompositionUnavailable) return
     if (retryPending) return
     setRetryPending(true)
     try {
@@ -583,7 +585,7 @@ export default function TaskCard({
           {task.status === 'error' && !isFalReconnecting && (
             <div className="flex flex-col items-center gap-1 px-2">
               <svg
-                className={`w-7 h-7 ${isInterrupted || inlineRetryableFailure ? 'text-yellow-500' : 'text-red-400'}`}
+                className={`w-7 h-7 ${isInterrupted || inlineRetryableFailure || isLayerDecompositionUnavailable ? 'text-yellow-500' : 'text-red-400'}`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -595,11 +597,11 @@ export default function TaskCard({
                   d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
-              {inlineRetryableFailure ? (
+              {inlineRetryableFailure || isLayerDecompositionUnavailable ? (
                 <>
                   <span className="flex items-center gap-1 text-center text-sm font-medium leading-tight text-yellow-700 dark:text-yellow-300">
-                    <span>{imageDownloadFailure ? '图片下载失败' : requestTimeout ? '请求超时，请稍后重试。' : '网络异常，请稍后重试。'}</span>
-                    <button type="button" disabled={readOnly || retryPending || redownloadPending} className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400 ${readOnlyActionClass}`} aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={imageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryPending ? '正在重试' : '重试请求')} onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry(true)) }}>{imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}</button>
+                    <span>{isLayerDecompositionUnavailable ? '该图已无法再进行更多分层' : imageDownloadFailure ? '图片下载失败' : requestTimeout ? '请求超时，请稍后重试。' : '网络异常，请稍后重试。'}</span>
+                    {!isLayerDecompositionUnavailable && <button type="button" disabled={readOnly || retryPending || redownloadPending} className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-green-700/60 bg-green-600 text-white shadow-sm shadow-green-500/30 transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-green-500 dark:hover:bg-green-400 ${readOnlyActionClass}`} aria-label={imageDownloadFailure ? '重新下载图片' : '重试请求'} title={imageDownloadFailure ? (redownloadPending ? '正在下载' : '重新下载图片') : (retryPending ? '正在重试' : '重试请求')} onTouchStart={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void (imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry(true)) }}>{imageDownloadFailure ? <DownloadIcon className={`h-4 w-4 ${redownloadPending ? 'animate-spin' : ''}`} /> : <RefreshIcon className={`h-4 w-4 ${retryPending ? 'animate-spin' : ''}`} />}</button>}
                   </span>
                   {task.failureEndpoint && <span className="text-xs text-yellow-700 dark:text-yellow-300">失败接口：{task.failureEndpoint}</span>}
                   {(task.requestId || taskIds.length > 0) && (
@@ -838,7 +840,7 @@ export default function TaskCard({
               onTouchEnd={(e) => e.stopPropagation()}
               onTouchCancel={(e) => e.stopPropagation()}
             >
-              {((task.status === 'error' && !isFalReconnecting) || hasPartialOutputFailure || settings.alwaysShowRetryButton) && (
+              {(!isLayerDecompositionUnavailable && ((task.status === 'error' && !isFalReconnecting) || hasPartialOutputFailure || settings.alwaysShowRetryButton)) && (
                 <TaskActionButton
                   tooltip={agentBranchRetry ? '重试任务' : imageDownloadFailure ? '重新下载图片' : hasPartialOutputFailure ? '重试失败图片' : '重试任务'}
                   onClick={() => void (agentBranchRetry ? handleRetry() : imageDownloadFailure ? handleRedownloadImage(downloadFailureRequestIndex) : handleRetry())}
