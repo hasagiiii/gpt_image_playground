@@ -139,6 +139,15 @@ function canvasItemsEqual(left: ProjectCanvasState, right: ProjectCanvasState) {
   return leftKeys.every((key) => key in right.items && JSON.stringify(left.items[key]) === JSON.stringify(right.items[key]))
 }
 
+function canvasStateEqual(left: ProjectCanvasState | undefined, right: ProjectCanvasState) {
+  if (!left) return false
+  return left.version === right.version
+    && left.viewport.x === right.viewport.x
+    && left.viewport.y === right.viewport.y
+    && left.viewport.scale === right.viewport.scale
+    && canvasItemsEqual(left, right)
+}
+
 function summarizeCanvasState(state: ProjectCanvasState | null | undefined) {
   if (!state) return null
   return Object.fromEntries(Object.entries(state.items).map(([key, item]) => [key, {
@@ -1097,11 +1106,6 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
   useEffect(() => {
     const cachedCanvas = canvasProjectId ? projectCanvasCache[canvasProjectId] : undefined
     const sourceCanvas = cachedCanvas ?? activeProject?.canvas ?? canvasRef.current
-    console.info('[项目画布] 初始化数据', {
-      projectId: canvasProjectId,
-      source: cachedCanvas ? 'localStorage.projectCanvasCache' : activeProject?.canvas ? 'IndexedDB.project' : 'memory/default',
-      canvas: sourceCanvas,
-    })
     const ensured = ensureProjectCanvas(sourceCanvas, projectImageIds, legacyFavoriteIdsByImage, imageZById, errorNodeKeys)
     const layerAnchors = Object.fromEntries(projectTasks.flatMap((task) => {
       if (!task.layerDecomposition || task.status !== 'done' || !task.outputImages[0]) return []
@@ -1112,6 +1116,8 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const next = layoutImageLayers(ensured, projectTasks, layerAnchors)
     const preserveLocalViewport = canvasProjectRef.current === canvasProjectId && viewportDirtyRef.current
     if (preserveLocalViewport) next.viewport = canvasRef.current.viewport
+    const canvasChanged = !canvasStateEqual(canvasRef.current, next)
+    const sourceCanvasChanged = next !== ensured && Boolean(sourceCanvas && !canvasStateEqual(sourceCanvas, next))
     const historySourceChanged = historyInternalCanvasRef.current === null || !canvasItemsEqual(historyInternalCanvasRef.current, next)
     const historyImageIdsChanged = historyImageIdsRef.current.length !== projectImageIds.length
       || historyImageIdsRef.current.some((id, index) => id !== projectImageIds[index])
@@ -1122,22 +1128,36 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       || historyBaselineRef.current === null
       || (historyImageIdsChanged && !historyBaselineContainsAddedImage)
       || (historySourceChanged && undoStackRef.current.length === 0 && !historyBaselineContainsAddedImage)
-    console.info('[画布历史] 同步画布', {
-      projectId: canvasProjectId,
-      projectImageIds,
-      previousImageIds: historyImageIdsRef.current,
-      historySourceChanged,
-      historyImageIdsChanged,
-      baseline: summarizeCanvasState(historyBaselineRef.current),
-      current: summarizeCanvasState(canvasRef.current),
-      next: summarizeCanvasState(next),
-      undoLength: undoStackRef.current.length,
-      redoLength: redoStackRef.current.length,
-      transientUndoLength: transientUndoStackRef.current.length,
-      transientRedoLength: transientRedoStackRef.current.length,
-      historyBaselineContainsAddedImage,
-      shouldResetHistory,
-    })
+    const historyProjectChanged = historyProjectRef.current !== canvasProjectId
+    const shouldProcessInitialization = canvasChanged
+      || sourceCanvasChanged
+      || historyProjectChanged
+      || historyInternalCanvasRef.current === null
+      || historySourceChanged
+      || historyImageIdsChanged
+    if (shouldProcessInitialization) {
+      console.info('[项目画布] 初始化数据', {
+        projectId: canvasProjectId,
+        source: cachedCanvas ? 'localStorage.projectCanvasCache' : activeProject?.canvas ? 'IndexedDB.project' : 'memory/default',
+        canvas: sourceCanvas,
+      })
+      console.info('[画布历史] 同步画布', {
+        projectId: canvasProjectId,
+        projectImageIds,
+        previousImageIds: historyImageIdsRef.current,
+        historySourceChanged,
+        historyImageIdsChanged,
+        baseline: summarizeCanvasState(historyBaselineRef.current),
+        current: summarizeCanvasState(canvasRef.current),
+        next: summarizeCanvasState(next),
+        undoLength: undoStackRef.current.length,
+        redoLength: redoStackRef.current.length,
+        transientUndoLength: transientUndoStackRef.current.length,
+        transientRedoLength: transientRedoStackRef.current.length,
+        historyBaselineContainsAddedImage,
+        shouldResetHistory,
+      })
+    }
     if (shouldResetHistory) {
       historyProjectRef.current = canvasProjectId
       historyBaselineRef.current = Object.keys(sourceCanvas?.items ?? {}).length > 0 ? cloneCanvasState(next) : null
@@ -1149,9 +1169,11 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     historyImageIdsRef.current = [...projectImageIds]
     historyInternalCanvasRef.current = cloneCanvasState(next)
     canvasProjectRef.current = canvasProjectId
-    canvasRef.current = next
-    setCanvas(next)
-    if (next !== ensured && canvasProjectId) updateProjectCanvas(canvasProjectId, next)
+    if (canvasChanged) {
+      canvasRef.current = next
+      setCanvas(next)
+    }
+    if (sourceCanvasChanged && canvasProjectId) updateProjectCanvas(canvasProjectId, next)
   }, [activeProject, activeProject?.canvas, activeProject?.id, canvasProjectId, errorNodeKeys, imageZById, legacyFavoriteIdsByImage, projectCanvasCache, projectImageIds, projectTasks, updateProjectCanvas])
 
   useEffect(() => {
