@@ -42,17 +42,29 @@ describe('分层图片坐标拼合', () => {
     expect(result.items['layer-2'].name).toBe('左侧遗迹残柱与绿植')
   })
 
-  it('以被分层的原图位置和宽度作为图层组锚点', () => {
+  it('不使用被分层原图的位置，避免生成图层覆盖原图', () => {
     const original = canvas()
     original.items.source = { x: 1200, y: 640, width: 400, z: 0 }
     original.items['layer-0'].width = 240
     const result = layoutImageLayers(original, [task])
 
-    expect(result.items['layer-0'].x).toBe(1200)
-    expect(result.items['layer-0'].y).toBe(640)
-    expect(result.items['layer-2'].x).toBeCloseTo(1200 + 45 * 0.2)
-    expect(result.items['layer-2'].y).toBeCloseTo(640 + 1453 * 0.2)
+    expect(result.items['layer-0'].x).toBe(100)
+    expect(result.items['layer-0'].y).toBe(200)
+    expect(result.items['layer-0'].width).toBe(400)
+    expect(result.items['layer-2'].x).toBeCloseTo(100 + 45 * 0.2)
+    expect(result.items['layer-2'].y).toBeCloseTo(200 + 1453 * 0.2)
     expect(result.items['layer-2'].width).toBeCloseTo((728 - 45) * 0.2)
+  })
+
+  it('占位符锚点可以强制覆盖首次后台布局', () => {
+    const initial = layoutImageLayers(canvas(), [task])
+    const result = layoutImageLayers(initial, [task], { layers: { x: 900, y: 500 } })
+
+    expect(result.items['layer-0'].x).toBe(900)
+    expect(result.items['layer-0'].y).toBe(500)
+    expect(result.items['layer-0'].width).toBe(400)
+    expect(result.items['layer-2'].x).toBeCloseTo(900 + 45 * 0.2)
+    expect(result.items['layer-2'].y).toBeCloseTo(500 + 1453 * 0.2)
   })
 
   it('按 z_index 而不是回包数组顺序叠放', () => {

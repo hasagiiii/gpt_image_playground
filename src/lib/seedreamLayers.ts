@@ -49,7 +49,10 @@ function getSeedreamCode(payload: unknown) {
   const root = record(payload)
   const data = record(root.data)
   const result = record(root.result ?? data.result)
-  const code = root.code ?? data.code ?? result.code
+  const error = record(root.error)
+  const dataError = record(data.error)
+  const resultError = record(result.error)
+  const code = root.code ?? error.code ?? data.code ?? dataError.code ?? result.code ?? resultError.code
   return typeof code === 'string' && code.trim() ? code.trim() : undefined
 }
 

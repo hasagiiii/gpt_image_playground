@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_PARAMS, type Project, type TaskRecord } from '../types'
+import { DEFAULT_PARAMS, type Project, type ProjectCanvasState, type TaskRecord } from '../types'
 import { DEFAULT_SETTINGS } from '../lib/apiProfiles'
 
 const mocks = vi.hoisted(() => ({
@@ -432,6 +432,65 @@ describe('ProjectCanvas interactions', () => {
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true, cancelable: true })))
     expect(Number.parseFloat(node.style.left)).toBeCloseTo(-414.4762, 3)
     expect(Number.parseFloat(node.style.top)).toBeCloseTo(-463.2381, 3)
+  })
+
+  it('分层完成后在占位符位置拼合图层，不覆盖被分层原图', async () => {
+    const project = createProject()
+    project.canvas!.items['image-a'] = { ...project.canvas!.items['image-a'], width: 659 }
+    const sourceTask = createTask()
+    const runningTask: TaskRecord = {
+      ...createTask(),
+      id: 'layer-task',
+      inputImageIds: ['image-a'],
+      outputImages: [],
+      layerDecomposition: true,
+      status: 'running',
+      finishedAt: null,
+      elapsed: null,
+    }
+    mocks.state.current = { ...mocks.state.current, projects: [project], tasks: [sourceTask, runningTask] }
+    await act(async () => root.render(<ProjectCanvas />))
+
+    const placeholder = host.querySelector<HTMLElement>('[data-node-key="layer-task:running:0"]')!
+    act(() => {
+      placeholder.dispatchEvent(pointerEvent('pointerdown', 17, 400, 300))
+      placeholder.dispatchEvent(pointerEvent('pointermove', 17, 520, 380))
+      placeholder.dispatchEvent(pointerEvent('pointerup', 17, 520, 380))
+    })
+    const placeholderX = Number.parseFloat(placeholder.style.left)
+    const placeholderY = Number.parseFloat(placeholder.style.top)
+
+    mocks.updateProjectCanvas.mockClear()
+    mocks.updateProjectCanvas.mockImplementationOnce((projectId: string, canvas: ProjectCanvasState) => {
+      mocks.state.current = {
+        ...mocks.state.current,
+        projectCanvasCache: { ...(mocks.state.current.projectCanvasCache as Record<string, ProjectCanvasState>), [projectId]: canvas },
+      }
+    })
+    mocks.state.current = {
+      ...mocks.state.current,
+      tasks: [sourceTask, {
+        ...runningTask,
+        outputImages: ['layer-a', 'layer-b'],
+        imageLayers: [
+          { url: 'https://files.test/layer-a.png', size: '2000x2240', z_index: 0 },
+          { url: 'https://files.test/layer-b.png', size: '1000x1000', z_index: 1, bounding_box: { absolute: [500, 600, 1500, 1600] } },
+        ],
+        status: 'done' as const,
+        finishedAt: 3,
+        elapsed: 2,
+      }],
+    }
+    await act(async () => root.render(<ProjectCanvas />))
+
+    const base = host.querySelector<HTMLElement>('[data-node-key="layer-a"]')!
+    const layer = host.querySelector<HTMLElement>('[data-node-key="layer-b"]')!
+    expect(Number.parseFloat(base.style.left)).toBeCloseTo(placeholderX)
+    expect(Number.parseFloat(base.style.top)).toBeCloseTo(placeholderY)
+    expect(Number.parseFloat(base.style.left)).not.toBe(0)
+    expect(Number.parseFloat(base.style.width)).toBeCloseTo(659)
+    expect(Number.parseFloat(layer.style.left)).toBeCloseTo(placeholderX + 500 * 659 / 2000)
+    expect(Number.parseFloat(layer.style.top)).toBeCloseTo(placeholderY + 600 * 659 / 2000)
   })
 
   it('生成完成后不会先撤销占位符移动', async () => {

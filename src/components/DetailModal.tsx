@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
-import type { ImageFailureEndpoint, TaskRecord } from '../types'
+import { INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type ImageFailureEndpoint, type TaskRecord } from '../types'
 import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, redownloadTaskImage, retryImage, retryTaskInPlace } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
@@ -369,7 +369,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
   }
 
   const handleReuse = () => {
-    if (readOnly) return
+    if (readOnly || task?.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) return
     reuseConfig(task)
     close()
   }
@@ -1285,7 +1285,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
 
           {/* 操作按钮 */}
           <div className="grid grid-cols-4 sm:flex gap-2 pt-4 border-t border-gray-100 dark:border-white/[0.08]">
-            <button
+            {task.failureCode !== INVALID_IMAGE_LAYER_DECOMPOSITION_CODE && <button
               onClick={handleReuse}
               disabled={readOnly}
               className={`col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 disabled:hover:bg-blue-50 dark:disabled:hover:bg-blue-500/10 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap ${readOnlyActionClass}`}
@@ -1294,7 +1294,7 @@ export default function DetailModal({ taskOverride, imageIdOverride, outputReque
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
               </svg>
               复用配置
-            </button>
+            </button>}
             <button
               onClick={handleEdit}
               disabled={!outputLen || readOnly}

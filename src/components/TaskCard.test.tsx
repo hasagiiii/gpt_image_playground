@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_PARAMS, type TaskRecord } from '../types'
+import { DEFAULT_PARAMS, INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type TaskRecord } from '../types'
 
 const mocks = vi.hoisted(() => ({
   state: { current: {} as Record<string, unknown> },
@@ -162,5 +162,17 @@ describe('TaskCard', () => {
     await act(async () => menuRetryButton?.click())
     expect(onRetry).toHaveBeenCalledOnce()
     expect(mocks.redownloadTaskImage).toHaveBeenCalledOnce()
+  })
+
+  it('分层不可用错误不显示复用配置', async () => {
+    const task = errorTask('图片无法继续分层', { failureCode: INVALID_IMAGE_LAYER_DECOMPOSITION_CODE })
+    const onReuse = vi.fn()
+
+    await act(async () => root.render(
+      <TaskCard task={task} onReuse={onReuse} onEditOutputs={vi.fn()} onDelete={vi.fn()} onClick={vi.fn()} />,
+    ))
+
+    expect(host.querySelector('button[aria-label="复用配置"]')).toBeNull()
+    expect(onReuse).not.toHaveBeenCalled()
   })
 })

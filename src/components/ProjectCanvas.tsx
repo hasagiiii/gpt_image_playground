@@ -1103,7 +1103,13 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
       canvas: sourceCanvas,
     })
     const ensured = ensureProjectCanvas(sourceCanvas, projectImageIds, legacyFavoriteIdsByImage, imageZById, errorNodeKeys)
-    const next = layoutImageLayers(ensured, projectTasks)
+    const layerAnchors = Object.fromEntries(projectTasks.flatMap((task) => {
+      if (!task.layerDecomposition || task.status !== 'done' || !task.outputImages[0]) return []
+      const transient = transientNodeItemsRef.current[`${task.id}:running:0`] ?? transientNodeItemsRef.current[`${task.id}:error`]
+      const base = ensured.items[task.outputImages[0]]
+      return transient && base ? [[task.id, { x: transient.x, y: transient.y }]] : []
+    }))
+    const next = layoutImageLayers(ensured, projectTasks, layerAnchors)
     const preserveLocalViewport = canvasProjectRef.current === canvasProjectId && viewportDirtyRef.current
     if (preserveLocalViewport) next.viewport = canvasRef.current.viewport
     const historySourceChanged = historyInternalCanvasRef.current === null || !canvasItemsEqual(historyInternalCanvasRef.current, next)
@@ -3032,7 +3038,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
           >
             {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => {
               const handleScale = 1 / Math.max(canvas.viewport.scale, 0.01)
-              const handleOffset = 5 * handleScale
+              const handleOffset = 5
               return <button
                 key={corner}
                 type="button"
@@ -3056,7 +3062,6 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             })}
             {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => {
               const handleScale = 1 / Math.max(canvas.viewport.scale, 0.01)
-              const rotateOffset = Math.max(52, 36 * handleScale - 16)
               const rotation = corner === 'nw' ? -90 : corner === 'sw' ? 180 : corner === 'se' ? 90 : 0
               return <button
                 key={`rotate-${corner}`}
@@ -3066,10 +3071,10 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
                 title="集体旋转图片"
                 className="pointer-events-auto absolute flex h-8 w-8 cursor-grab items-center justify-center rounded-full text-black active:cursor-grabbing"
                 style={{
-                  left: corner === 'nw' || corner === 'sw' ? -rotateOffset : undefined,
-                  right: corner === 'ne' || corner === 'se' ? -rotateOffset : undefined,
-                  top: corner === 'nw' || corner === 'ne' ? -rotateOffset : undefined,
-                  bottom: corner === 'sw' || corner === 'se' ? -rotateOffset : undefined,
+                  left: corner === 'nw' || corner === 'sw' ? -52 : undefined,
+                  right: corner === 'ne' || corner === 'se' ? -52 : undefined,
+                  top: corner === 'nw' || corner === 'ne' ? -52 : undefined,
+                  bottom: corner === 'sw' || corner === 'se' ? -52 : undefined,
                   transform: `${rotation ? `rotate(${rotation}deg) ` : ''}scale(${handleScale})`,
                   transformOrigin: 'center center',
                 }}
@@ -3342,7 +3347,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             </div>
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
             <TooltipButton tooltip="编辑输出" onClick={() => void editOutputImage(selectedNode.task, selectedNode.imageId!)} className={toolbarButtonClass}><EditIcon className="h-4 w-4" /></TooltipButton>
-            <TooltipButton tooltip="复用配置" onClick={() => void reuseImageConfig(selectedNode.task, selectedNode.imageId!)} className={toolbarButtonClass}><ReuseConfigIcon className="h-4 w-4" /></TooltipButton>
+            {!selectedNodeLayerDecompositionUnavailable && <TooltipButton tooltip="复用配置" onClick={() => void reuseImageConfig(selectedNode.task, selectedNode.imageId!)} className={toolbarButtonClass}><ReuseConfigIcon className="h-4 w-4" /></TooltipButton>}
             <TooltipButton tooltip="保存到素材库" onClick={() => void handleSaveMaterial()} className={toolbarButtonClass}><CloudUploadIcon className="h-4 w-4" /></TooltipButton>
             {!selectedNodeLayerDecompositionUnavailable && <TooltipButton tooltip="重试单图" onClick={() => void handleRetryImage(selectedNode.task)} className={toolbarButtonClass}><RefreshIcon className="h-4 w-4" /></TooltipButton>}
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-white/20" />
@@ -3359,7 +3364,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
             <TooltipButton tooltip="删除当前图片" onClick={handleDelete} className={`${toolbarButtonClass} text-red-500 hover:bg-red-50 hover:text-red-600 dark:text-red-400 dark:hover:bg-red-400/10 dark:hover:text-red-300`}><TrashIcon className="h-4 w-4" /></TooltipButton>
           </>}
           {selectedNode.status === 'error' && <>
-            <TooltipButton tooltip="复用配置" onClick={() => void reuseImageConfig(selectedNode.task)} className={toolbarButtonClass}><ReuseConfigIcon className="h-4 w-4" /></TooltipButton>
+            {!selectedNodeLayerDecompositionUnavailable && <TooltipButton tooltip="复用配置" onClick={() => void reuseImageConfig(selectedNode.task)} className={toolbarButtonClass}><ReuseConfigIcon className="h-4 w-4" /></TooltipButton>}
             {!selectedNodeLayerDecompositionUnavailable && <TooltipButton
               tooltip={selectedNodeImageDownloadFailure ? '重新下载图片' : '重试单图'}
               onClick={() => void (selectedNodeImageDownloadFailure

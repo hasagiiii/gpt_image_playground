@@ -1,21 +1,22 @@
 import type { ProjectCanvasState, TaskRecord } from '../types'
 
 /** 第一张图提供基准尺寸，absolute 为 [left, top, right, bottom]。 */
-export function layoutImageLayers(canvas: ProjectCanvasState, tasks: TaskRecord[]): ProjectCanvasState {
+export function layoutImageLayers(canvas: ProjectCanvasState, tasks: TaskRecord[], anchors: Record<string, { x: number; y: number }> = {}): ProjectCanvasState {
   let items = canvas.items
   for (const task of tasks) {
     const layers = task.imageLayers
     if (!task.layerDecomposition || !layers?.length || task.outputImages.length !== layers.length) continue
     const base = items[task.outputImages[0]]
-    const anchor = items[task.inputImageIds[0]] ?? base
+    const source = items[task.inputImageIds[0]] ?? base
+    const position = anchors[task.id] ?? base
     // 已拼合的图层继续使用用户保存的坐标，不能在刷新时覆盖拖动、裁剪等编辑。
-    if (!base || !anchor || base.operator?.aspectRatio) continue
+    if (!base || !source || !position || (base.operator?.aspectRatio && !anchors[task.id])) continue
     const size = /^([1-9]\d*)x([1-9]\d*)$/i.exec(layers[0].size ?? task.actualParamsByImage?.[task.outputImages[0]]?.size ?? '')
     if (!size) continue
     const width = Number(size[1])
     const height = Number(size[2])
     if (!Number.isFinite(width) || !Number.isFinite(height)) continue
-    const scale = anchor.width / width
+    const scale = source.width / width
     const order = layers.map((layer, index) => ({ index, z: layer.z_index ?? index })).sort((a, b) => a.z - b.z || a.index - b.index)
     const baseZ = Math.min(...task.outputImages.map((id) => items[id]?.z ?? base.z))
     const next = { ...items }
@@ -33,8 +34,8 @@ export function layoutImageLayers(canvas: ProjectCanvasState, tasks: TaskRecord[
       next[imageId] = {
         ...item,
         name: layer.name || item.name,
-        x: anchor.x + box[0] * scale,
-        y: anchor.y + box[1] * scale,
+        x: position.x + box[0] * scale,
+        y: position.y + box[1] * scale,
         width: layerWidth * scale,
         z: baseZ + rank,
         rotation: 0,

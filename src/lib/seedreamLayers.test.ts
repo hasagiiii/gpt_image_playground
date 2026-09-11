@@ -127,6 +127,19 @@ describe('Seedream 分层协议', () => {
     })
   })
 
+  it('失败状态从 error.code 读取业务错误码', async () => {
+    vi.mocked(authFetch).mockResolvedValueOnce(json({
+      status: 'FAILED',
+      request_id: 'request/1',
+      actual_cost: 0,
+      error: { type: 'api_error', code: 'INVALID_IMAGE_LAYER_DECOMPOSITION' },
+    }))
+    await expect(callSeedreamLayers({ ...opts, requestId: 'existing' })).rejects.toMatchObject({
+      code: 'INVALID_IMAGE_LAYER_DECOMPOSITION',
+      message: '该图已无法再进行更多分层',
+    })
+  })
+
   it.each(['network', 'server'])('%s 错误最多重试三次且保持幂等键', async (kind) => {
     if (kind === 'network') vi.mocked(authFetch).mockRejectedValue(new TypeError('Failed to fetch'))
     else vi.mocked(authFetch).mockImplementation(async () => new Response('overloaded', { status: 503 }))

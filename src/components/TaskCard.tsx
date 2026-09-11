@@ -874,7 +874,7 @@ export default function TaskCard({
                   />
                 </svg>
               </TaskActionButton>
-              <TaskActionButton
+              {!isLayerDecompositionUnavailable && <TaskActionButton
                 tooltip="复用配置"
                 onClick={onReuse}
                 disabled={readOnly}
@@ -893,7 +893,7 @@ export default function TaskCard({
                     d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
                   />
                 </svg>
-              </TaskActionButton>
+              </TaskActionButton>}
               <TaskActionButton
                 tooltip="编辑输出"
                 onClick={onEditOutputs}

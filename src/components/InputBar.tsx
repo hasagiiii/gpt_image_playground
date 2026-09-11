@@ -555,7 +555,6 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
         if (cancelled) return
         const keys = res.sub2api_apikeys || []
         const items = res.items || []
-        console.log('[InputBar] parsed apiKeys:', keys, 'count:', res.sub2api_apikey_count)
         setApiKeys(keys)
         setApiKeyItems(items)
         // 选中优先级：当前已选（仍在列表中）> 本地缓存的上次选中 > 列表第一个
