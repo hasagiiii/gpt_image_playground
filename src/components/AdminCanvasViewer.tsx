@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type AgentConversation, type Project, type ProjectCanvasItem, type ProjectCanvasState, type TaskOutputError, type TaskRecord } from '../types'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
-import { clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
+import { CANVAS_TRACKPAD_ZOOM_SENSITIVITY, CANVAS_WHEEL_ZOOM_SENSITIVITY, clampCanvasScale, ensureProjectCanvas, isCanvasRectVisible, zoomCanvasViewport } from '../lib/projectCanvas'
 import { getTaskIds } from '../lib/taskIds'
 import { layoutImageLayers } from '../lib/imageLayerLayout'
 import { isImageDownloadFailure as isImageDownloadFailureError } from '../lib/imageApiShared'
@@ -418,7 +418,8 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
         }))
         return
       }
-      const factor = Math.exp(-event.deltaY * 0.0015)
+      const sensitivity = event.ctrlKey ? CANVAS_TRACKPAD_ZOOM_SENSITIVITY : CANVAS_WHEEL_ZOOM_SENSITIVITY
+      const factor = Math.exp(-event.deltaY * sensitivity)
       setViewport((current) => zoomCanvasViewport(current, { x: event.clientX - rect.left, y: event.clientY - rect.top }, current.scale * factor))
     }
     container.addEventListener('wheel', handleWheel, { passive: false })

@@ -23,6 +23,8 @@ import {
 } from '../store'
 import {
   CANVAS_PLACEHOLDER_GAP,
+  CANVAS_TRACKPAD_ZOOM_SENSITIVITY,
+  CANVAS_WHEEL_ZOOM_SENSITIVITY,
   DEFAULT_CANVAS_ITEM_WIDTH,
   clampCanvasScale,
   ensureProjectCanvas,
@@ -1553,7 +1555,8 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         return
       }
       const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
-      const factor = Math.exp(-event.deltaY * 0.0015)
+      const sensitivity = event.ctrlKey ? CANVAS_TRACKPAD_ZOOM_SENSITIVITY : CANVAS_WHEEL_ZOOM_SENSITIVITY
+      const factor = Math.exp(-event.deltaY * sensitivity)
       setViewport(zoomCanvasViewport(canvasRef.current.viewport, point, canvasRef.current.viewport.scale * factor))
     }
     container.addEventListener('wheel', handleWheel, { passive: false })

@@ -9,6 +9,7 @@ export const MIME_MAP: Record<string, string> = {
 
 export const MAX_MASK_EDIT_FILE_BYTES = 50 * 1024 * 1024
 export const MAX_IMAGE_INPUT_PAYLOAD_BYTES = 512 * 1024 * 1024
+export const MODERATION_BLOCKED_ERROR_MESSAGE = '提示词含有敏感内容，请调整输入提示重新生成。'
 
 export interface CallApiOptions {
   settings: AppSettings
@@ -149,6 +150,14 @@ export function withApiFailureMetadata(
   metadata: Pick<ApiFailure, 'endpoint' | 'kind' | 'status' | 'code' | 'requestId' | 'retryCount'>,
 ): ApiFailure {
   return Object.assign(error, metadata)
+}
+
+export function isModerationBlockedPayload(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  if (record.code === 'moderation_blocked') return true
+  if (!record.error || typeof record.error !== 'object') return false
+  return (record.error as Record<string, unknown>).code === 'moderation_blocked'
 }
 
 export function isHttpUrl(value: unknown): value is string {
@@ -294,12 +303,15 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   let errorMsg = `HTTP ${response.status}`
   const textResponse = response.clone()
   try {
-    const errJson = await response.json()
-    if (errJson.error?.message) errorMsg = errJson.error.message
-    else if (typeof errJson.detail === 'string') errorMsg = errJson.detail
-    else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
-    else if (typeof errJson.error === 'string') errorMsg = errJson.error
-    else if (errJson.message) errorMsg = errJson.message
+    const errJson = await response.json() as unknown
+    if (isModerationBlockedPayload(errJson)) return MODERATION_BLOCKED_ERROR_MESSAGE
+    const record = errJson && typeof errJson === 'object' ? errJson as Record<string, unknown> : {}
+    const error = record.error && typeof record.error === 'object' ? record.error as Record<string, unknown> : null
+    if (typeof error?.message === 'string') errorMsg = error.message
+    else if (typeof record.detail === 'string') errorMsg = record.detail
+    else if (Array.isArray(record.detail)) errorMsg = record.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
+    else if (typeof record.error === 'string') errorMsg = record.error
+    else if (typeof record.message === 'string') errorMsg = record.message
   } catch {
     try {
       errorMsg = await textResponse.text()

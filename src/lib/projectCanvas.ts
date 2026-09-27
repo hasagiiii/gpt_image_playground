@@ -5,6 +5,8 @@ export const DEFAULT_CANVAS_VIEWPORT: ProjectCanvasViewport = { x: 32, y: 32, sc
 export const DEFAULT_CANVAS_ITEM_WIDTH = 240
 export const MIN_CANVAS_SCALE = 0.01
 export const MAX_CANVAS_SCALE = 10
+export const CANVAS_WHEEL_ZOOM_SENSITIVITY = 0.0015
+export const CANVAS_TRACKPAD_ZOOM_SENSITIVITY = 0.003
 
 const ITEM_GAP = 32
 export const CANVAS_PLACEHOLDER_GAP = 96

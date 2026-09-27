@@ -12,8 +12,10 @@ import {
   getDataUrlEncodedByteSize,
   isDataUrl,
   isHttpUrl,
+  isModerationBlockedPayload,
   mergeActualParams,
   MIME_MAP,
+  MODERATION_BLOCKED_ERROR_MESSAGE,
   normalizeBase64Image,
 } from './imageApiShared'
 
@@ -153,6 +155,7 @@ async function parseFalResult(payload: FalApiResponse, params: TaskParams, custo
 export function getFalErrorMessage(err: unknown): string | null {
   const body = err && typeof err === 'object' && 'body' in err ? (err as { body?: unknown }).body : null
   if (!body || typeof body !== 'object') return null
+  if (isModerationBlockedPayload(body)) return MODERATION_BLOCKED_ERROR_MESSAGE
 
   const detail = (body as Record<string, unknown>).detail
   if (typeof detail === 'string' && detail.trim()) return detail

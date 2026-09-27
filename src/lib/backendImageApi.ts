@@ -1,6 +1,6 @@
 import type { Project, TaskParams, TaskRecord } from '../types'
 import { authFetch, REQUEST_ID_HEADER } from '../auth/api'
-import { createImageStatusRequestId, getApiResponseRetryCount, retryApiFetch, type CallApiResult, withApiFailureMetadata } from './imageApiShared'
+import { createImageStatusRequestId, getApiResponseRetryCount, isModerationBlockedPayload, MODERATION_BLOCKED_ERROR_MESSAGE, retryApiFetch, type CallApiResult, withApiFailureMetadata } from './imageApiShared'
 import { getOnlineProjectRecord } from './onlineProjects'
 
 interface BackendGenerationResponse {
@@ -136,7 +136,7 @@ export async function callBackendImageApi(options: {
     data: formatImageApiLogValue(data),
   })
   if (!resp.ok) {
-    const error = withApiFailureMetadata(new Error(data?.message || `后端生图失败：HTTP ${resp.status}`), {
+    const error = withApiFailureMetadata(new Error(isModerationBlockedPayload(data) ? MODERATION_BLOCKED_ERROR_MESSAGE : data?.message || `后端生图失败：HTTP ${resp.status}`), {
       endpoint: endpointType === 'edits' ? 'edit' : 'generation',
       status: resp.status,
       requestId: options.task.requestId,
