@@ -239,6 +239,25 @@ describe('onlineProjects', () => {
     expect(authFetch).not.toHaveBeenCalled()
   })
 
+  it('uses the project image endpoint as a URL when metadata has no direct URL', async () => {
+    const result = await downloadOnlineProjectImage('project-a', {
+      project_id: 'project-a',
+      image_id: 'image-a',
+      mime_type: 'image/png',
+      image_size: 3,
+      image_sha256: 'sha256',
+      created_at: '2026-08-16T00:00:00Z',
+      updated_at: '2026-08-16T00:00:00Z',
+    })
+
+    expect(result).toMatchObject({
+      id: 'image-a',
+      dataUrl: '/api/v1/projects/project-a/images/image-a',
+      remoteUrl: '/api/v1/projects/project-a/images/image-a',
+    })
+    expect(authFetch).not.toHaveBeenCalled()
+  })
+
   // forceDataUrl 的结果会被当作本地图片存下来，并直接用于 Responses 的 input_image，
   // 那里只接受 data URL，因此有直链也必须拉回真实字节
   it('fetches real bytes for a direct image URL when forceDataUrl is set', async () => {

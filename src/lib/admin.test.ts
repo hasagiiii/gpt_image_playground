@@ -33,10 +33,27 @@ describe('admin', () => {
     expect(result).toEqual({
       id: 'image-a',
       dataUrl: 'https://cdn.example/image-a.png',
+      remoteUrl: 'https://cdn.example/image-a.png',
       source: 'generated',
       width: 1024,
       height: 768,
       createdAt: Date.parse('2026-08-16T00:00:00Z'),
+    })
+    expect(authFetch).not.toHaveBeenCalled()
+  })
+
+  it('uses the admin image URL when metadata has no direct URL', async () => {
+    await expect(downloadAdminUserProjectImage('user-a', 'project-a', {
+      project_id: 'project-a',
+      image_id: 'reference-a',
+      mime_type: 'image/png',
+      image_size: 3,
+      image_sha256: 'sha256',
+      created_at: '2026-08-16T00:00:00Z',
+      updated_at: '2026-08-16T00:00:00Z',
+    })).resolves.toMatchObject({
+      id: 'reference-a',
+      dataUrl: '/api/v1/admin/users/user-a/projects/project-a/images/reference-a',
     })
     expect(authFetch).not.toHaveBeenCalled()
   })

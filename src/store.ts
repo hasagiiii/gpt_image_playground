@@ -4421,8 +4421,8 @@ async function loadOnlineProject(
         try {
           const hasLocalImage = availableImageIds.has(remoteImage.image_id)
           if (remoteImage.image_url && hasLocalImage) continue
-          // 本地没有图片时补齐引用；有直链就直接复用，避免再绕后端 fetch。
-          const image = await downloadOnlineProjectImage(response.id, remoteImage, { forceDataUrl: true })
+          // 普通展示只保存图片 URL；Agent 真正发请求时再按需转成 data URL。
+          const image = await downloadOnlineProjectImage(response.id, remoteImage)
           if (!hasLocalImage) {
             images.push(image)
           }

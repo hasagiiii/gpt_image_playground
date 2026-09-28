@@ -1,6 +1,5 @@
 import type { Project, StoredImage } from '../types'
 import { authFetch } from '../auth/api'
-import { blobToDataUrl } from './dataUrl'
 import type { MaterialList } from './materialApi'
 import type { OnlineProjectImageResponse, OnlineProjectResponse } from './onlineProjects'
 
@@ -53,6 +52,10 @@ export async function downloadAdminUserProject(userId: string, projectId: string
   return new Uint8Array(await resp.arrayBuffer())
 }
 
+export function getAdminUserProjectImageUrl(userId: string, projectId: string, imageId: string) {
+  return `/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(imageId)}`
+}
+
 export async function listAdminUserProjectImages(userId: string, projectId: string): Promise<OnlineProjectImageResponse[]> {
   const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images`, { cache: 'no-store' })
   if (!resp.ok) throw new Error(await readError(resp, '用户画布图片列表加载失败'))
@@ -61,22 +64,11 @@ export async function listAdminUserProjectImages(userId: string, projectId: stri
 }
 
 export async function downloadAdminUserProjectImage(userId: string, projectId: string, image: OnlineProjectImageResponse): Promise<StoredImage> {
-  if (image.image_url) {
-    return {
-      id: image.image_id,
-      dataUrl: image.image_url,
-      source: image.source,
-      width: image.width,
-      height: image.height,
-      createdAt: Date.parse(image.created_at) || undefined,
-    }
-  }
-
-  const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(image.image_id)}`)
-  if (!resp.ok) throw new Error(await readError(resp, '用户画布图片加载失败'))
+  const imageUrl = image.image_url || getAdminUserProjectImageUrl(userId, projectId, image.image_id)
   return {
     id: image.image_id,
-    dataUrl: await blobToDataUrl(await resp.blob(), image.mime_type),
+    dataUrl: imageUrl,
+    remoteUrl: imageUrl,
     source: image.source,
     width: image.width,
     height: image.height,

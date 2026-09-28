@@ -37,9 +37,18 @@ vi.mock('../lib/admin', () => ({
   downloadAdminUserProject: mocks.downloadAdminUserProject,
   listAdminUserProjectImages: mocks.listAdminUserProjectImages,
   downloadAdminUserProjectImage: mocks.downloadAdminUserProjectImage,
+  getAdminUserProjectImageUrl: (userId: string, projectId: string, imageId: string) => `/api/v1/admin/users/${userId}/projects/${projectId}/images/${imageId}`,
 }))
 
 vi.mock('../lib/onlineProjects', () => ({
+  getAgentConversationReferencedImageIds: (conversation: { rounds?: Array<{ inputImageIds?: string[] }>; messages?: Array<{ inputImageIds?: string[] }> }) => [
+    ...(conversation.rounds ?? []).flatMap((round) => round.inputImageIds ?? []),
+    ...(conversation.messages ?? []).flatMap((message) => message.inputImageIds ?? []),
+  ],
+  getTaskReferencedImageIds: (task: { inputImageIds?: string[]; outputImages?: string[] }) => [
+    ...(task.inputImageIds ?? []),
+    ...(task.outputImages ?? []),
+  ],
   readOnlineProjectArchive: mocks.readOnlineProjectArchive,
 }))
 
@@ -165,6 +174,37 @@ describe('AdminUsers', () => {
       created_at: '2026-09-03T12:00:00+08:00',
       updated_at: '2026-09-03T12:00:00+08:00',
     }])
+    await flushEffects()
+
+    expect(host.querySelector('[data-image-count]')?.textContent).toBe('1 张图片')
+  })
+
+  it('补齐归档任务引用但图片列表未返回的参考图 URL', async () => {
+    mocks.selection = { userId: 'user-a', projectId: 'project-a' }
+    mocks.listAdminUserProjects.mockResolvedValue([{
+      id: 'project-a',
+      title: '画布 A',
+      archive_size: 100,
+      archive_sha256: 'sha',
+      created_at: '2026-09-01T00:00:00+08:00',
+      updated_at: '2026-09-03T12:00:00+08:00',
+    }])
+    mocks.downloadAdminUserProject.mockResolvedValue(new Uint8Array([1]))
+    mocks.listAdminUserProjectImages.mockResolvedValue([])
+    mocks.readOnlineProjectArchive.mockReturnValue({
+      project: {
+        id: 'project-a',
+        title: '画布 A',
+        initialPrompt: '',
+        createdAt: 1,
+        updatedAt: 2,
+        canvas: { version: 1, viewport: { x: 0, y: 0, scale: 1 }, items: {} },
+      },
+      tasks: [{ inputImageIds: ['reference-a'], outputImages: [] }],
+      agentConversations: [],
+      images: [],
+    })
+    await act(async () => root.render(<AdminUsers />))
     await flushEffects()
 
     expect(host.querySelector('[data-image-count]')?.textContent).toBe('1 张图片')

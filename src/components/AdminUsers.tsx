@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { createAdminProject, downloadAdminUserProject, downloadAdminUserProjectImage, listAdminUserProjectImages, listAdminUserProjects, listAdminUsers, type AdminUser } from '../lib/admin'
+import { createAdminProject, downloadAdminUserProject, downloadAdminUserProjectImage, getAdminUserProjectImageUrl, listAdminUserProjectImages, listAdminUserProjects, listAdminUsers, type AdminUser } from '../lib/admin'
 import type { AgentConversation, Project, StoredImage, TaskRecord } from '../types'
-import { readOnlineProjectArchive, type OnlineProjectResponse } from '../lib/onlineProjects'
+import { getAgentConversationReferencedImageIds, getTaskReferencedImageIds, readOnlineProjectArchive, type OnlineProjectResponse } from '../lib/onlineProjects'
 import { getAdminUsersSelectionFromUrl, updateAdminUsersUrl } from '../lib/projectRoute'
 import { useStore } from '../store'
 import AdminCanvasViewer from './AdminCanvasViewer'
@@ -187,6 +187,18 @@ export default function AdminUsers() {
             console.warn(`管理员读取项目图片 ${remoteImage.image_id} 失败`, error)
           }
         }))
+        const referencedImageIds = new Set([
+          ...Object.keys(loadedProject.canvas?.items ?? {}),
+          ...parsed.tasks.flatMap(getTaskReferencedImageIds),
+          ...parsed.agentConversations.flatMap(getAgentConversationReferencedImageIds),
+        ])
+        const missingReferencedImages = Array.from(referencedImageIds).filter((imageId) => !images[imageId])
+        if (missingReferencedImages.length > 0 && !cancelled) {
+          for (const imageId of missingReferencedImages) {
+            images[imageId] = { id: imageId, dataUrl: getAdminUserProjectImageUrl(selectedUserId, project.id, imageId), remoteUrl: getAdminUserProjectImageUrl(selectedUserId, project.id, imageId) }
+          }
+          setViewer((current) => current ? { ...current, images: { ...current.images, ...Object.fromEntries(missingReferencedImages.map((imageId) => [imageId, images[imageId]])) } } : current)
+        }
         console.info('[只读画布] 加载数据', {
           userId: selectedUserId,
           projectId: project.id,
