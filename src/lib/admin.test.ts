@@ -6,7 +6,7 @@ const authFetch = vi.hoisted(() => vi.fn())
 
 vi.mock('../auth/api', () => ({ authFetch }))
 
-import { downloadAdminUserProjectImage, listAdminUserMaterials } from './admin'
+import { listAdminUserMaterials, toAdminUserProjectImage } from './admin'
 
 describe('admin', () => {
   beforeEach(() => {
@@ -28,7 +28,7 @@ describe('admin', () => {
       height: 768,
     }
 
-    const result = await downloadAdminUserProjectImage('user-a', 'project-a', image)
+    const result = toAdminUserProjectImage(image)
 
     expect(result).toEqual({
       id: 'image-a',
@@ -42,8 +42,8 @@ describe('admin', () => {
     expect(authFetch).not.toHaveBeenCalled()
   })
 
-  it('uses the admin image URL when metadata has no direct URL', async () => {
-    await expect(downloadAdminUserProjectImage('user-a', 'project-a', {
+  it('does not create an authenticated endpoint URL when metadata has no direct URL', () => {
+    expect(toAdminUserProjectImage({
       project_id: 'project-a',
       image_id: 'reference-a',
       mime_type: 'image/png',
@@ -51,11 +51,7 @@ describe('admin', () => {
       image_sha256: 'sha256',
       created_at: '2026-08-16T00:00:00Z',
       updated_at: '2026-08-16T00:00:00Z',
-    })).resolves.toMatchObject({
-      id: 'reference-a',
-      dataUrl: '/api/v1/admin/users/user-a/projects/project-a/images/reference-a',
-    })
-    expect(authFetch).not.toHaveBeenCalled()
+    })).toBeUndefined()
   })
 
   it('lists another user materials through the admin read-only endpoint', async () => {

@@ -239,7 +239,7 @@ describe('onlineProjects', () => {
     expect(authFetch).not.toHaveBeenCalled()
   })
 
-  it('uses the project image endpoint as a URL when metadata has no direct URL', async () => {
+  it('skips images without a direct URL in display mode', async () => {
     const result = await downloadOnlineProjectImage('project-a', {
       project_id: 'project-a',
       image_id: 'image-a',
@@ -250,11 +250,7 @@ describe('onlineProjects', () => {
       updated_at: '2026-08-16T00:00:00Z',
     })
 
-    expect(result).toMatchObject({
-      id: 'image-a',
-      dataUrl: '/api/v1/projects/project-a/images/image-a',
-      remoteUrl: '/api/v1/projects/project-a/images/image-a',
-    })
+    expect(result).toBeUndefined()
     expect(authFetch).not.toHaveBeenCalled()
   })
 
@@ -277,6 +273,7 @@ describe('onlineProjects', () => {
         source: 'generated',
       }, { forceDataUrl: true })
 
+      if (!result) throw new Error('forceDataUrl should return image data')
       expect(result.dataUrl.startsWith('data:image/png;base64,')).toBe(true)
       expect(fetchMock).toHaveBeenCalledWith('https://cdn.example/image-a.png', expect.anything())
       expect(authFetch).not.toHaveBeenCalled()

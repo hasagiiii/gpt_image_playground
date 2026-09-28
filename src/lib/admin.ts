@@ -52,10 +52,6 @@ export async function downloadAdminUserProject(userId: string, projectId: string
   return new Uint8Array(await resp.arrayBuffer())
 }
 
-export function getAdminUserProjectImageUrl(userId: string, projectId: string, imageId: string) {
-  return `/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(imageId)}`
-}
-
 export async function listAdminUserProjectImages(userId: string, projectId: string): Promise<OnlineProjectImageResponse[]> {
   const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images`, { cache: 'no-store' })
   if (!resp.ok) throw new Error(await readError(resp, '用户画布图片列表加载失败'))
@@ -63,12 +59,12 @@ export async function listAdminUserProjectImages(userId: string, projectId: stri
   return Array.isArray(data) ? data as OnlineProjectImageResponse[] : []
 }
 
-export async function downloadAdminUserProjectImage(userId: string, projectId: string, image: OnlineProjectImageResponse): Promise<StoredImage> {
-  const imageUrl = image.image_url || getAdminUserProjectImageUrl(userId, projectId, image.image_id)
+export function toAdminUserProjectImage(image: OnlineProjectImageResponse): StoredImage | undefined {
+  if (!image.image_url) return undefined
   return {
     id: image.image_id,
-    dataUrl: imageUrl,
-    remoteUrl: imageUrl,
+    dataUrl: image.image_url,
+    remoteUrl: image.image_url,
     source: image.source,
     width: image.width,
     height: image.height,

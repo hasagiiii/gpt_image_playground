@@ -147,7 +147,35 @@ func (h *ProjectImageHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": err.Error()})
 		return
 	}
+	if legacyStore, ok := h.images.(projectImageLegacyStore); ok {
+		images = migrateProjectImageURLs(c, userID, projectID, images, legacyStore, h.uploader)
+	}
 	c.JSON(http.StatusOK, images)
+}
+
+func migrateProjectImageURLs(c *gin.Context, userID, projectID string, images []models.ProjectImage, legacyStore projectImageLegacyStore, uploader projectImageUploader) []models.ProjectImage {
+	if uploader == nil {
+		return images
+	}
+	for index := range images {
+		if strings.TrimSpace(images[index].ImageURL) != "" {
+			continue
+		}
+		image, data, imageErr := legacyStore.GetImage(c.Request.Context(), userID, projectID, images[index].ImageID)
+		if imageErr != nil || image == nil || len(data) == 0 {
+			continue
+		}
+		fileName := filepath.Base(image.ImageID) + mimeExtension(image.MIMEType)
+		result, uploadErr := uploader.Upload(c.Request.Context(), c.GetString(middleware.ContextKeyProvider), fileName, image.MIMEType, data)
+		if uploadErr != nil || result == nil || strings.TrimSpace(result.URL) == "" {
+			continue
+		}
+		imageURL := strings.TrimSpace(result.URL)
+		if migrateErr := legacyStore.MigrateImageURL(c.Request.Context(), userID, projectID, image.ImageID, imageURL); migrateErr == nil {
+			images[index].ImageURL = imageURL
+		}
+	}
+	return images
 }
 
 func parseImageDimension(value string) (*int, error) {
