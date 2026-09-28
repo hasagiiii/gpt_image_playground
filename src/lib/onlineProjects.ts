@@ -242,10 +242,6 @@ export async function downloadOnlineProject(id: string): Promise<Uint8Array> {
   return new Uint8Array(await resp.arrayBuffer())
 }
 
-export function getOnlineProjectImageUrl(projectId: string, imageId: string) {
-  return `/api/v1/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(imageId)}`
-}
-
 export async function uploadOnlineProjectImage(projectId: string, taskId: string | undefined, image: StoredImage): Promise<OnlineProjectImageResponse> {
   const blob = await dataUrlToBlob(image.dataUrl)
   const form = new FormData()
@@ -282,16 +278,15 @@ export async function listOnlineProjectImages(projectId: string): Promise<Online
   })
 }
 
-export async function downloadOnlineProjectImage(projectId: string, image: OnlineProjectImageResponse, options: { forceDataUrl?: boolean } = {}): Promise<StoredImage> {
+export async function downloadOnlineProjectImage(projectId: string, image: OnlineProjectImageResponse, options: { forceDataUrl?: boolean } = {}): Promise<StoredImage | undefined> {
   // forceDataUrl 的调用方要把结果当作本地图片存下来，后续会被直接塞进
   // Responses 请求的 input_image.image_url，那里只接受 data URL；
   // 因此有直链也必须拉回真实字节。直链本身记在 remoteUrl 上供展示场景复用。
-  const imageUrl = image.image_url || getOnlineProjectImageUrl(projectId, image.image_id)
-  if (!options.forceDataUrl) {
+  if (image.image_url && !options.forceDataUrl) {
     return {
       id: image.image_id,
-      dataUrl: imageUrl,
-      remoteUrl: imageUrl,
+      dataUrl: image.image_url,
+      remoteUrl: image.image_url,
       source: image.source,
       width: image.width,
       height: image.height,
@@ -311,6 +306,8 @@ export async function downloadOnlineProjectImage(projectId: string, image: Onlin
       createdAt: Date.parse(image.created_at) || undefined,
     }
   }
+
+  if (!options.forceDataUrl) return undefined
 
   const resp = await authFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(image.image_id)}`)
   if (!resp.ok) {

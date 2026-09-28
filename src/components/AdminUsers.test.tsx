@@ -37,18 +37,9 @@ vi.mock('../lib/admin', () => ({
   downloadAdminUserProject: mocks.downloadAdminUserProject,
   listAdminUserProjectImages: mocks.listAdminUserProjectImages,
   downloadAdminUserProjectImage: mocks.downloadAdminUserProjectImage,
-  getAdminUserProjectImageUrl: (userId: string, projectId: string, imageId: string) => `/api/v1/admin/users/${userId}/projects/${projectId}/images/${imageId}`,
 }))
 
 vi.mock('../lib/onlineProjects', () => ({
-  getAgentConversationReferencedImageIds: (conversation: { rounds?: Array<{ inputImageIds?: string[] }>; messages?: Array<{ inputImageIds?: string[] }> }) => [
-    ...(conversation.rounds ?? []).flatMap((round) => round.inputImageIds ?? []),
-    ...(conversation.messages ?? []).flatMap((message) => message.inputImageIds ?? []),
-  ],
-  getTaskReferencedImageIds: (task: { inputImageIds?: string[]; outputImages?: string[] }) => [
-    ...(task.inputImageIds ?? []),
-    ...(task.outputImages ?? []),
-  ],
   readOnlineProjectArchive: mocks.readOnlineProjectArchive,
 }))
 

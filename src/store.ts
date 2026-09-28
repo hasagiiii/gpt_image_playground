@@ -4423,6 +4423,7 @@ async function loadOnlineProject(
           if (remoteImage.image_url && hasLocalImage) continue
           // 普通展示只保存图片 URL；Agent 真正发请求时再按需转成 data URL。
           const image = await downloadOnlineProjectImage(response.id, remoteImage)
+          if (!image) continue
           if (!hasLocalImage) {
             images.push(image)
           }

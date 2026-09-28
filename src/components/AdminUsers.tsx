@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { createAdminProject, downloadAdminUserProject, downloadAdminUserProjectImage, getAdminUserProjectImageUrl, listAdminUserProjectImages, listAdminUserProjects, listAdminUsers, type AdminUser } from '../lib/admin'
+import { createAdminProject, downloadAdminUserProject, listAdminUserProjectImages, listAdminUserProjects, listAdminUsers, toAdminUserProjectImage, type AdminUser } from '../lib/admin'
 import type { AgentConversation, Project, StoredImage, TaskRecord } from '../types'
-import { getAgentConversationReferencedImageIds, getTaskReferencedImageIds, readOnlineProjectArchive, type OnlineProjectResponse } from '../lib/onlineProjects'
+import { readOnlineProjectArchive, type OnlineProjectResponse } from '../lib/onlineProjects'
 import { getAdminUsersSelectionFromUrl, updateAdminUsersUrl } from '../lib/projectRoute'
 import { useStore } from '../store'
 import AdminCanvasViewer from './AdminCanvasViewer'
@@ -179,26 +179,14 @@ export default function AdminUsers() {
         await Promise.all(remoteImages.map(async (remoteImage) => {
           if (images[remoteImage.image_id]) return
           try {
-            const image = await downloadAdminUserProjectImage(selectedUserId, project.id, remoteImage)
-            if (cancelled) return
+            const image = toAdminUserProjectImage(remoteImage)
+            if (cancelled || !image) return
             images[remoteImage.image_id] = image
             setViewer((current) => current ? { ...current, images: { ...current.images, [image.id]: image } } : current)
           } catch (error) {
             console.warn(`管理员读取项目图片 ${remoteImage.image_id} 失败`, error)
           }
         }))
-        const referencedImageIds = new Set([
-          ...Object.keys(loadedProject.canvas?.items ?? {}),
-          ...parsed.tasks.flatMap(getTaskReferencedImageIds),
-          ...parsed.agentConversations.flatMap(getAgentConversationReferencedImageIds),
-        ])
-        const missingReferencedImages = Array.from(referencedImageIds).filter((imageId) => !images[imageId])
-        if (missingReferencedImages.length > 0 && !cancelled) {
-          for (const imageId of missingReferencedImages) {
-            images[imageId] = { id: imageId, dataUrl: getAdminUserProjectImageUrl(selectedUserId, project.id, imageId), remoteUrl: getAdminUserProjectImageUrl(selectedUserId, project.id, imageId) }
-          }
-          setViewer((current) => current ? { ...current, images: { ...current.images, ...Object.fromEntries(missingReferencedImages.map((imageId) => [imageId, images[imageId]])) } } : current)
-        }
         console.info('[只读画布] 加载数据', {
           userId: selectedUserId,
           projectId: project.id,

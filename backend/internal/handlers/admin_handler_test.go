@@ -77,7 +77,19 @@ func (s *adminProjectStoreStub) GetImage(_ context.Context, userID, projectID, i
 	return &s.images[0], []byte("image-data"), nil
 }
 
+func (s *adminProjectStoreStub) MigrateImageURL(_ context.Context, userID, projectID, imageID, imageURL string) error {
+	if len(s.projects) == 0 || s.projects[0].UserID != userID || s.projects[0].ID != projectID || len(s.images) == 0 || s.images[0].ImageID != imageID {
+		return database.ErrProjectNotFound
+	}
+	s.images[0].ImageURL = imageURL
+	return nil
+}
+
 func newAdminRouterWithMaterials(isAdmin bool) (*gin.Engine, *adminMaterialStoreStub) {
+	return newAdminRouterWithMaterialsAndUploader(isAdmin)
+}
+
+func newAdminRouterWithMaterialsAndUploader(isAdmin bool, uploaders ...projectImageUploader) (*gin.Engine, *adminMaterialStoreStub) {
 	gin.SetMode(gin.TestMode)
 	lastProjectUpdatedAt := time.Unix(2, 0)
 	userStore := &adminUserStoreStub{users: []models.User{{ID: "a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", OIDCProvider: "oidc", OIDCSub: "private-sub", Email: "user@example.com", CreatedAt: time.Unix(1, 0), LastProjectUpdatedAt: &lastProjectUpdatedAt}}}
@@ -92,7 +104,7 @@ func newAdminRouterWithMaterials(isAdmin bool) (*gin.Engine, *adminMaterialStore
 		c.Set(middleware.ContextKeyUserID, "admin-1")
 		c.Next()
 	})
-	NewAdminHandler(userStore, projectStore, materialStore, func(context.Context, string) (bool, error) { return isAdmin, nil }).Register(api)
+	NewAdminHandler(userStore, projectStore, materialStore, func(context.Context, string) (bool, error) { return isAdmin, nil }, uploaders...).Register(api)
 	return r, materialStore
 }
 
@@ -161,6 +173,19 @@ func TestAdminHandlerServesProjectArchiveAndImages(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s: want 200, got %d body=%s", path, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestAdminHandlerMigratesLegacyProjectImageBeforeListing(t *testing.T) {
+	uploader := &projectImageUploaderStub{result: &fileUploadResult{URL: "https://cdn.example/legacy-image.png"}}
+	r, _ := newAdminRouterWithMaterialsAndUploader(true, uploader)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/a6d80cf2-976f-4b2c-8b2e-64fc0d4e77e8/projects/86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8/images", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !containsString(w.Body.String(), `"image_url":"https://cdn.example/legacy-image.png"`) {
+		t.Fatalf("legacy image URL was not included: %s", w.Body.String())
 	}
 }
 

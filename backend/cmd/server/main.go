@@ -187,7 +187,7 @@ func main() {
 			return false, err
 		}
 		return authSvc.IsAdmin(user), nil
-	}).Register(api)
+	}, fileAPIHandler).Register(api)
 
 	// 前端 SPA fallback：所有 API 路由之后挂载，仅接管未匹配路由。
 	// 带 -tags embed 构建时服务嵌入的前端产物并注入运行时配置；否则为空 FS（本地开发交给 vite）。
