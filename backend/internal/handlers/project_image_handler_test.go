@@ -60,13 +60,6 @@ func (s *projectImageStoreStub) GetImage(_ context.Context, userID, projectID, i
 	return s.image, s.data, nil
 }
 
-func (s *projectImageStoreStub) MigrateImageURL(_ context.Context, _, _, _, imageURL string) error {
-	if s.image != nil {
-		s.image.ImageURL = imageURL
-	}
-	return nil
-}
-
 func (s *projectImageStoreStub) DeleteImage(_ context.Context, userID, projectID, imageID string) error {
 	s.userID = userID
 	s.projectID = projectID
@@ -76,7 +69,7 @@ func (s *projectImageStoreStub) DeleteImage(_ context.Context, userID, projectID
 }
 
 func newProjectImageRouter(store projectImageStore) *gin.Engine {
-	return newProjectImageRouterWithUploader(store)
+	return newProjectImageRouterWithUploader(store, &projectImageUploaderStub{result: &fileUploadResult{URL: "https://files.example/project-image.png"}})
 }
 
 func newProjectImageRouterWithUploader(store projectImageStore, uploader ...projectImageUploader) *gin.Engine {
@@ -146,8 +139,8 @@ func TestProjectImageHandlerSave(t *testing.T) {
 	if store.image.Width == nil || *store.image.Width != 1024 || store.image.Height == nil || *store.image.Height != 768 {
 		t.Fatalf("unexpected image dimensions: %#v", store.image)
 	}
-	if !bytes.Equal(store.data, data) || len(store.image.SHA256) != 64 {
-		t.Fatal("image bytes or sha256 was not saved")
+	if len(store.data) != 0 || store.image.ImageURL != "https://files.example/project-image.png" || len(store.image.SHA256) != 64 {
+		t.Fatalf("project image should persist URL without bytes: image=%#v data=%v", store.image, store.data)
 	}
 }
 
@@ -165,7 +158,7 @@ func TestProjectImageHandlerSaveDetectsImageWhenContentTypeIsGeneric(t *testing.
 	}
 }
 
-func TestProjectImageHandlerGetMigratesLegacyImage(t *testing.T) {
+func TestProjectImageHandlerGetDoesNotUploadLegacyImage(t *testing.T) {
 	data := []byte("legacy-image")
 	store := &projectImageStoreStub{
 		image: &models.ProjectImage{ProjectID: "86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8", ImageID: "image-a", MIMEType: "image/png", SHA256: "sha256"},
@@ -179,10 +172,10 @@ func TestProjectImageHandlerGetMigratesLegacyImage(t *testing.T) {
 	if w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), data) {
 		t.Fatalf("want legacy image response, got status=%d body=%q", w.Code, w.Body.Bytes())
 	}
-	if w.Header().Get("X-Project-Image-URL") != "https://cdn.example/image-a.png" || store.image.ImageURL != "https://cdn.example/image-a.png" {
-		t.Fatalf("image URL was not migrated: header=%q image=%#v", w.Header().Get("X-Project-Image-URL"), store.image)
+	if w.Header().Get("X-Project-Image-URL") != "" || store.image.ImageURL != "" {
+		t.Fatalf("legacy image should not be migrated during read: header=%q image=%#v", w.Header().Get("X-Project-Image-URL"), store.image)
 	}
-	if !bytes.Equal(uploader.data, data) {
-		t.Fatal("legacy image was not uploaded")
+	if len(uploader.data) != 0 {
+		t.Fatal("legacy image should not be uploaded")
 	}
 }

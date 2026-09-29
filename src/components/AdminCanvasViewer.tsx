@@ -141,7 +141,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   project: Project
   tasks: TaskRecord[]
   agentConversations: AgentConversation[]
-  images: Record<string, { dataUrl: string; width?: number; height?: number }>
+  images: Record<string, { dataUrl: string; remoteUrl?: string; width?: number; height?: number }>
   onBack: () => void
 }) {
   const showToast = useStore((state) => state.showToast)
@@ -248,7 +248,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   const selectedScale = selectedItem?.operator?.scale ?? 1
   const selectedTransformActive = Boolean(selectedItem && (selectedRotation !== 0 || Math.abs(selectedScale - 1) > 0.001))
   const infoNode = infoImageId ? nodeById.get(infoImageId) ?? null : null
-  const imageOverrides = useMemo(() => Object.fromEntries(Object.entries(images).map(([id, image]) => [id, image.dataUrl])), [images])
+  const imageOverrides = useMemo(() => Object.fromEntries(Object.entries(images).map(([id, image]) => [id, image.dataUrl || image.remoteUrl || ''])), [images])
 
   useEffect(() => {
     if (!selectedImageId || nodeById.has(selectedImageId)) return

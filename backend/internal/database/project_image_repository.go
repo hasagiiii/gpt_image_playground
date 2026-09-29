@@ -10,10 +10,10 @@ import (
 )
 
 // SaveImage 幂等保存项目图片，仅允许项目所有者写入。
-func (r *ProjectRepository) SaveImage(ctx context.Context, userID string, image models.ProjectImage, data []byte) (*models.ProjectImage, error) {
+func (r *ProjectRepository) SaveImage(ctx context.Context, userID string, image models.ProjectImage, _ []byte) (*models.ProjectImage, error) {
 	const q = `
-		INSERT INTO project_images (project_id, image_id, task_id, source, mime_type, width, height, image_data, image_size, image_sha256)
-		SELECT p.id, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, $10, $11
+		INSERT INTO project_images (project_id, image_id, task_id, source, mime_type, width, height, image_url, image_size, image_sha256)
+		SELECT p.id, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, $11
 		FROM online_projects p
 		WHERE p.id = $1 AND p.user_id = $2 AND p.deleted_at IS NULL
 		ON CONFLICT (project_id, image_id) DO UPDATE SET
@@ -22,8 +22,7 @@ func (r *ProjectRepository) SaveImage(ctx context.Context, userID string, image 
 			mime_type = EXCLUDED.mime_type,
 			width = EXCLUDED.width,
 			height = EXCLUDED.height,
-			image_data = EXCLUDED.image_data,
-			image_url = NULL,
+			image_url = EXCLUDED.image_url,
 			image_size = EXCLUDED.image_size,
 			image_sha256 = EXCLUDED.image_sha256,
 			updated_at = NOW()
@@ -38,8 +37,8 @@ func (r *ProjectRepository) SaveImage(ctx context.Context, userID string, image 
 		image.MIMEType,
 		image.Width,
 		image.Height,
-		data,
-		len(data),
+		image.ImageURL,
+		image.ImageSize,
 		image.SHA256,
 	).Scan(
 		&saved.ProjectID,
@@ -110,16 +109,15 @@ func (r *ProjectRepository) ListImages(ctx context.Context, userID, projectID st
 func (r *ProjectRepository) GetImage(ctx context.Context, userID, projectID, imageID string) (*models.ProjectImage, []byte, error) {
 	const q = `
 		SELECT i.project_id, i.image_id, COALESCE(i.task_id, ''), COALESCE(i.source, ''), i.mime_type,
-			COALESCE(i.image_url, ''), i.width, i.height, i.image_size, i.image_sha256, i.created_at, i.updated_at, i.image_data
+			COALESCE(i.image_url, ''), i.width, i.height, i.image_size, i.image_sha256, i.created_at, i.updated_at
 		FROM project_images i
 		JOIN online_projects p ON p.id = i.project_id
 		WHERE i.project_id = $1 AND i.image_id = $2 AND p.user_id = $3 AND p.deleted_at IS NULL`
 	var image models.ProjectImage
-	var data []byte
 	err := r.db.QueryRowContext(ctx, q, projectID, imageID, userID).Scan(
 		&image.ProjectID, &image.ImageID, &image.TaskID, &image.Source, &image.MIMEType,
 		&image.ImageURL, &image.Width, &image.Height, &image.ImageSize, &image.SHA256,
-		&image.CreatedAt, &image.UpdatedAt, &data,
+		&image.CreatedAt, &image.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ErrProjectNotFound
@@ -127,40 +125,7 @@ func (r *ProjectRepository) GetImage(ctx context.Context, userID, projectID, ima
 	if err != nil {
 		return nil, nil, fmt.Errorf("get project image: %w", err)
 	}
-	return &image, data, nil
-}
-
-// MigrateImageURL 在图片 URL 已成功转存后清理旧二进制数据。
-func (r *ProjectRepository) MigrateImageURL(ctx context.Context, userID, projectID, imageID, imageURL string) error {
-	const q = `
-		UPDATE project_images i
-		SET image_url = $4, image_data = NULL, updated_at = NOW()
-		FROM online_projects p
-		WHERE i.project_id = $1 AND i.image_id = $2 AND p.id = i.project_id AND p.user_id = $3 AND p.deleted_at IS NULL
-			AND i.image_data IS NOT NULL AND NULLIF(i.image_url, '') IS NULL`
-	result, err := r.db.ExecContext(ctx, q, projectID, imageID, userID, imageURL)
-	if err != nil {
-		return fmt.Errorf("migrate project image URL: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("migrate project image URL rows: %w", err)
-	}
-	if count == 0 {
-		var exists bool
-		if err := r.db.QueryRowContext(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM project_images i
-				JOIN online_projects p ON p.id = i.project_id
-				WHERE i.project_id = $1 AND i.image_id = $2 AND p.user_id = $3 AND p.deleted_at IS NULL
-			)`, projectID, imageID, userID).Scan(&exists); err != nil {
-			return fmt.Errorf("check project image migration: %w", err)
-		}
-		if !exists {
-			return ErrProjectNotFound
-		}
-	}
-	return nil
+	return &image, nil, nil
 }
 
 // DeleteImage 删除当前用户项目中的一张图片。

@@ -39,6 +39,8 @@ export interface CallApiResult {
   revisedPrompts?: Array<string | undefined>
   /** API 返回的原始图片 HTTP URL（非 base64 时记录） */
   rawImageUrls?: string[]
+  /** 与 images 按位置对应的原始图片 URL，用于在线项目持久化 */
+  imageUrls?: Array<string | undefined>
   /** 并发多图请求中失败的单张请求 */
   failedRequests?: TaskOutputError[]
   /** 图片是否已由后端写入在线项目 */

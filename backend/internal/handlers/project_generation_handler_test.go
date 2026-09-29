@@ -88,6 +88,7 @@ func newProjectGenerationRouter(store projectGenerationStore, transport http.Rou
 		c.Next()
 	})
 	handler := NewProjectGenerationHandler(store, imageProviderRegistryStub{baseURL: "https://provider.example"})
+	handler.SetUploader(&projectImageUploaderStub{result: &fileUploadResult{URL: "https://files.example/generated.png"}})
 	handler.client = &http.Client{Transport: transport}
 	handler.Register(api)
 	return r
@@ -281,11 +282,11 @@ func TestProjectGenerationHandlerGeneratesAndSavesBeforeReturning(t *testing.T) 
 	if store.userID != "user-a" || store.projectID != "86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8" || store.projectTitle != "在线项目" {
 		t.Fatalf("unexpected project metadata: user=%q project=%q title=%q", store.userID, store.projectID, store.projectTitle)
 	}
-	if !bytes.Equal(store.data, []byte{0, 1, 2, 3}) || store.image.TaskID != "task-a" || store.image.Source != "generated" {
+	if len(store.data) != 0 || store.image.TaskID != "task-a" || store.image.Source != "generated" || store.image.ImageURL != "https://files.example/generated.png" {
 		t.Fatalf("unexpected saved image: image=%#v data=%v", store.image, store.data)
 	}
 	dataURL := "data:image/png;base64,AAECAw=="
-	digest := sha256.Sum256([]byte(dataURL))
+	digest := sha256.Sum256([]byte("https://files.example/generated.png"))
 	expectedID := hex.EncodeToString(digest[:])
 	if store.image.ImageID != expectedID || !strings.Contains(w.Body.String(), `"image_ids":["`+expectedID+`"]`) {
 		t.Fatalf("unexpected image id: saved=%q body=%s", store.image.ImageID, w.Body.String())
@@ -555,7 +556,7 @@ func TestProjectGenerationHandlerUsesResponsesAPIAndSavesImage(t *testing.T) {
 	if strings.Join(store.events, ",") != "ensure,upstream,save" {
 		t.Fatalf("unexpected operation order: %v", store.events)
 	}
-	if !bytes.Equal(store.data, []byte{0, 1, 2, 3}) || !strings.Contains(w.Body.String(), `"images":["data:image/png;base64,AAECAw=="]`) {
+	if len(store.data) != 0 || store.image.ImageURL != "https://files.example/generated.png" || !strings.Contains(w.Body.String(), `"images":["data:image/png;base64,AAECAw=="]`) {
 		t.Fatalf("responses image was not saved before returning: data=%v body=%s", store.data, w.Body.String())
 	}
 }

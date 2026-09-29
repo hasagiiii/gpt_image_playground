@@ -317,18 +317,21 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
 
   const images: string[] = []
   const rawImageUrls = data.map((item) => item.url).filter(isHttpUrl)
+  const imageUrls: Array<string | undefined> = []
   const revisedPrompts: Array<string | undefined> = []
   try {
     for (const item of data) {
       const b64 = item.b64_json
       if (b64) {
         images.push(normalizeBase64Image(b64, mime))
+        imageUrls.push(undefined)
         revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
         continue
       }
 
       if (isHttpUrl(item.url) || isDataUrl(item.url)) {
         images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal))
+        imageUrls.push(isHttpUrl(item.url) ? item.url : undefined)
         revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
       }
     }
@@ -353,6 +356,7 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
     actualParams,
     actualParamsList: images.map(() => actualParams),
     revisedPrompts,
+    ...(imageUrls.some(Boolean) ? { imageUrls } : {}),
     ...(rawImageUrls.length ? { rawImageUrls } : {}),
   }
 }
@@ -567,6 +571,9 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
     r.revisedPrompts?.length ? r.revisedPrompts : r.images.map(() => undefined),
   )
   const rawImageUrls = successfulResults.flatMap((r) => r.rawImageUrls ?? [])
+  const imageUrls = successfulResults.flatMap((r) =>
+    r.imageUrls?.length ? r.imageUrls : r.images.map(() => undefined),
+  )
   const actualParams = mergeActualParams(
     successfulResults[0]?.actualParams ?? {},
     { n: images.length },
@@ -577,6 +584,7 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
     actualParams,
     actualParamsList,
     revisedPrompts,
+    ...(imageUrls.some(Boolean) ? { imageUrls } : {}),
     ...(rawImageUrls.length ? { rawImageUrls } : {}),
     ...(failedRequests.length ? { failedRequests } : {}),
   }
@@ -901,6 +909,7 @@ async function createCustomMultipartBody(mapping: CustomProviderSubmitMapping, o
 
 async function extractCustomImages(payload: unknown, result: CustomProviderResultMapping, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
   const images: string[] = []
+  const resolvedImageUrls: Array<string | undefined> = []
   const imageUrls = (result.imageUrlPaths ?? []).flatMap((path) =>
     getAllByPath(payload, path).filter((value): value is string => isHttpUrl(value) || isDataUrl(value)),
   )
@@ -909,10 +918,12 @@ async function extractCustomImages(payload: unknown, result: CustomProviderResul
     for (const path of result.b64JsonPaths ?? []) {
       for (const value of getAllByPath(payload, path)) {
         if (typeof value === 'string' && value.trim()) images.push(normalizeBase64Image(value, mime))
+        if (typeof value === 'string' && value.trim()) resolvedImageUrls.push(undefined)
       }
     }
     for (const url of imageUrls) {
       images.push(await fetchImageUrlAsDataUrl(url, mime, signal))
+      resolvedImageUrls.push(isHttpUrl(url) ? url : undefined)
     }
   } catch (err) {
     if (rawImageUrls.length > 0 && err instanceof Error) {
@@ -926,7 +937,7 @@ async function extractCustomImages(payload: unknown, result: CustomProviderResul
     ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw err
   }
-  return { images, ...(rawImageUrls.length ? { rawImageUrls } : {}) }
+  return { images, imageUrls: resolvedImageUrls, ...(rawImageUrls.length ? { rawImageUrls } : {}) }
 }
 
 async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: CallApiOptions, profile: ApiProfile, controller: AbortController, proxyConfig: ReturnType<typeof readClientDevProxyConfig>, useApiProxy: boolean): Promise<unknown> {

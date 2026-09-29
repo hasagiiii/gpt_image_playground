@@ -23,7 +23,6 @@ type adminProjectStore interface {
 	Get(context.Context, string, string) (*models.OnlineProject, []byte, error)
 	ListImages(context.Context, string, string) ([]models.ProjectImage, error)
 	GetImage(context.Context, string, string, string) (*models.ProjectImage, []byte, error)
-	MigrateImageURL(context.Context, string, string, string, string) error
 }
 
 type adminMaterialStore interface {
@@ -35,15 +34,10 @@ type AdminHandler struct {
 	projects  adminProjectStore
 	materials adminMaterialStore
 	isAdmin   func(context.Context, string) (bool, error)
-	uploader  projectImageUploader
 }
 
-func NewAdminHandler(users adminUserStore, projects adminProjectStore, materials adminMaterialStore, isAdmin func(context.Context, string) (bool, error), uploaders ...projectImageUploader) *AdminHandler {
-	var uploader projectImageUploader
-	if len(uploaders) > 0 {
-		uploader = uploaders[0]
-	}
-	return &AdminHandler{users: users, projects: projects, materials: materials, isAdmin: isAdmin, uploader: uploader}
+func NewAdminHandler(users adminUserStore, projects adminProjectStore, materials adminMaterialStore, isAdmin func(context.Context, string) (bool, error)) *AdminHandler {
+	return &AdminHandler{users: users, projects: projects, materials: materials, isAdmin: isAdmin}
 }
 
 func (h *AdminHandler) Register(api *gin.RouterGroup) {
@@ -161,7 +155,6 @@ func (h *AdminHandler) ListUserProjectImages(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": err.Error()})
 		return
 	}
-	images = migrateProjectImageURLs(c, userID, projectID, images, h.projects, h.uploader)
 	c.JSON(http.StatusOK, images)
 }
 

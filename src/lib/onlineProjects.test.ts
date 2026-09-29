@@ -208,7 +208,20 @@ describe('onlineProjects', () => {
     expect(form.get('task_id')).toBe('task-a')
     expect(form.get('source')).toBe('generated')
     expect(form.get('width')).toBe('1024')
+    expect(form.get('image_url')).toBe(null)
     expect(form.get('image')).toBeInstanceOf(Blob)
+
+    authFetch.mockReset()
+    authFetch.mockResolvedValueOnce(new Response(JSON.stringify({ image_id: 'image-a' }), { status: 201 }))
+    await uploadOnlineProjectImage('project-a', 'task-a', {
+      id: 'image-a',
+      dataUrl: 'data:image/png;base64,AAECAw==',
+      remoteUrl: 'https://cdn.example/generated.png',
+      source: 'generated',
+    })
+    const urlForm = authFetch.mock.calls[0][1]?.body as FormData
+    expect(urlForm.get('image_url')).toBe('https://cdn.example/generated.png')
+    expect(urlForm.get('image')).toBe(null)
   })
 
   it('uses the direct image URL when the project image already has one', async () => {

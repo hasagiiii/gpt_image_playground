@@ -145,6 +145,7 @@ async function parseFalResult(payload: FalApiResponse, params: TaskParams, custo
   const rawImageUrls = imageResults.map((r) => r.rawImageUrl).filter((u): u is string => Boolean(u))
   return {
     images: imageResults.map((result) => result.image),
+    imageUrls: imageResults.map((result) => result.rawImageUrl),
     actualParams,
     actualParamsList: imageResults.map((result) => result.actualParams),
     revisedPrompts: imageResults.map(() => undefined),

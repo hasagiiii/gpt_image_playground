@@ -3367,7 +3367,7 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageUrls: result.imageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
 
   updateTaskInStore(task.id, {
@@ -3437,7 +3437,7 @@ async function completeRecoveredCompositeTask(task: TaskRecord, result: Awaited<
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageUrls: result.imageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {
@@ -4069,7 +4069,7 @@ async function completeRecoveredImageStatusTask(task: TaskRecord, records: Image
   const latestAfterDownload = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latestAfterDownload || !canRecoverTaskImageStatus(latestAfterDownload)) return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, images)
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, images, { imageUrls: urls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {
@@ -5446,7 +5446,7 @@ function addTaskReferencedImageIds(target: Set<string>, task: TaskRecord) {
   for (const id of task.streamPartialImageIds || []) target.add(id)
 }
 
-async function storeTaskOutputImages(task: TaskRecord, images: string[], options: { alreadyStoredOnline?: boolean } = {}) {
+async function storeTaskOutputImages(task: TaskRecord, images: string[], options: { alreadyStoredOnline?: boolean; imageUrls?: Array<string | undefined> } = {}) {
   const outputIds: string[] = []
   const outputDataUrls: string[] = []
   const outputImageSizes: Array<{ width?: number; height?: number }> = []
@@ -5462,13 +5462,15 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[], options
   ])
 
   try {
-    for (const dataUrl of images) {
+    for (const [index, dataUrl] of images.entries()) {
+      const remoteUrl = options.imageUrls?.[index]
       let outputDataUrl = dataUrl
       if (task.transparentOutput) {
         const original = await storeImageWithSize(dataUrl, 'generated', { reservedIds })
+        if (remoteUrl) await putImage({ ...original, dataUrl, remoteUrl, source: 'generated' })
         reservedIds.add(original.id)
         storedImageIds.push(original.id)
-        storedProjectImages.push({ ...original, dataUrl, source: 'generated' })
+        storedProjectImages.push({ ...original, dataUrl, remoteUrl, source: 'generated' })
         cacheImage(original.id, dataUrl)
 
         try {
@@ -5485,9 +5487,11 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[], options
       }
 
       const stored = await storeImageWithSize(outputDataUrl, 'generated', { reservedIds })
+      const outputRemoteUrl = task.transparentOutput ? undefined : remoteUrl
+      if (outputRemoteUrl) await putImage({ ...stored, dataUrl: outputDataUrl, remoteUrl: outputRemoteUrl, source: 'generated' })
       reservedIds.add(stored.id)
       storedImageIds.push(stored.id)
-      storedProjectImages.push({ ...stored, dataUrl: outputDataUrl, source: 'generated' })
+      storedProjectImages.push({ ...stored, dataUrl: outputDataUrl, remoteUrl: outputRemoteUrl, source: 'generated' })
       cacheImage(stored.id, outputDataUrl)
       outputIds.push(stored.id)
       outputDataUrls.push(outputDataUrl)
@@ -5549,13 +5553,14 @@ async function persistTaskStreamPartialImage(taskId: string, dataUrl: string) {
 // Responses 的 input_image 只接受 data URL。历史数据里可能把 CDN 直链存成了
 // StoredImage.dataUrl，这里拉回真实字节并写回本地，避免每次引用都重新请求 CDN。
 async function readAgentImageDataUrl(id: string) {
+  const existing = await getImage(id)
   const cached = await ensureImageCached(id)
-  if (!cached || !/^https?:\/\//i.test(cached)) return cached
+  const source = cached || existing?.remoteUrl
+  if (!source || !/^https?:\/\//i.test(source)) return source
   try {
-    const dataUrl = await fetchImageUrlAsDataUrl(cached, 'image/png')
-    const existing = await getImage(id)
+    const dataUrl = await fetchImageUrlAsDataUrl(source, 'image/png')
     // 直链移到 remoteUrl 保留，展示场景仍可省流量；compositeFileUrls 不受影响。
-    await putImage({ ...(existing ?? { id }), id, dataUrl, remoteUrl: existing?.remoteUrl ?? cached })
+    await putImage({ ...(existing ?? { id }), id, dataUrl, remoteUrl: existing?.remoteUrl ?? source })
     cacheImage(id, dataUrl)
     return dataUrl
   } catch (err) {
@@ -7279,6 +7284,7 @@ async function executeTask(taskId: string) {
     // 存储输出图片
     const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, {
       alreadyStoredOnline: result.imagesStoredOnline && !task.transparentOutput,
+      imageUrls: result.imageUrls,
     })
     const isAsyncCustomTask = taskProvider !== 'fal' && taskProvider !== 'openai' && Boolean(customTaskInfo)
     const actualParamsList = await resolveImageSizeParamsList(
@@ -7592,7 +7598,7 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
     if (rawImageUrls.length === 0) throw new Error('当前失败图片没有可重新下载的链接')
     const mime = MIME_MAP[latest.params.output_format] || 'image/png'
     const dataUrls = await Promise.all(rawImageUrls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
-    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls)
+    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls, { imageUrls: rawImageUrls })
     const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
     const remainingOutputErrors = (latest.outputErrors ?? []).filter((item) => item.requestIndex !== outputError.requestIndex)
     const outputInsertIndex = outputError.requestIndex - (latest.outputErrors ?? []).filter((item) => item.requestIndex < outputError.requestIndex).length
@@ -7638,7 +7644,7 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
   const dataUrls = compositeRecovery.result?.images.length
     ? compositeRecovery.result.images
     : await Promise.all(rawImageUrls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls)
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls, { imageUrls: rawImageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
   await updateTaskInStore(latest.id, {
     outputImages: outputIds,
@@ -8439,7 +8445,7 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageUrls: result.imageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {

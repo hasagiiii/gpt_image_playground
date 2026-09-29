@@ -7,14 +7,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog/log"
-
 	"gpt-image-backend/internal/database"
 	"gpt-image-backend/internal/middleware"
 	"gpt-image-backend/internal/models"
@@ -32,7 +31,6 @@ type projectImageStore interface {
 
 type projectImageLegacyStore interface {
 	GetImage(ctx context.Context, userID, projectID, imageID string) (*models.ProjectImage, []byte, error)
-	MigrateImageURL(ctx context.Context, userID, projectID, imageID, imageURL string) error
 }
 
 type projectImageUploader interface {
@@ -85,21 +83,6 @@ func (h *ProjectImageHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": err.Error()})
 		return
 	}
-	if len(data) > 0 && strings.TrimSpace(image.ImageURL) == "" && h.uploader != nil {
-		fileName := filepath.Base(image.ImageID) + mimeExtension(image.MIMEType)
-		result, uploadErr := h.uploader.Upload(c.Request.Context(), c.GetString(middleware.ContextKeyProvider), fileName, image.MIMEType, data)
-		if uploadErr == nil && result != nil && strings.TrimSpace(result.URL) != "" {
-			imageURL := strings.TrimSpace(result.URL)
-			if migrateErr := legacyStore.MigrateImageURL(c.Request.Context(), userID, projectID, imageID, imageURL); migrateErr == nil {
-				c.Header("X-Project-Image-URL", imageURL)
-				log.Ctx(c.Request.Context()).Info().Str("project_id", projectID).Str("image_id", imageID).Msg("project image URL migration completed")
-			} else {
-				log.Ctx(c.Request.Context()).Warn().Err(migrateErr).Str("project_id", projectID).Str("image_id", imageID).Msg("project image URL migration failed")
-			}
-		} else if uploadErr != nil {
-			log.Ctx(c.Request.Context()).Warn().Err(uploadErr).Str("project_id", projectID).Str("image_id", imageID).Msg("project image upload migration failed")
-		}
-	}
 	if image.ImageURL != "" && len(data) == 0 {
 		c.Redirect(http.StatusFound, image.ImageURL)
 		return
@@ -147,35 +130,7 @@ func (h *ProjectImageHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": err.Error()})
 		return
 	}
-	if legacyStore, ok := h.images.(projectImageLegacyStore); ok {
-		images = migrateProjectImageURLs(c, userID, projectID, images, legacyStore, h.uploader)
-	}
 	c.JSON(http.StatusOK, images)
-}
-
-func migrateProjectImageURLs(c *gin.Context, userID, projectID string, images []models.ProjectImage, legacyStore projectImageLegacyStore, uploader projectImageUploader) []models.ProjectImage {
-	if uploader == nil {
-		return images
-	}
-	for index := range images {
-		if strings.TrimSpace(images[index].ImageURL) != "" {
-			continue
-		}
-		image, data, imageErr := legacyStore.GetImage(c.Request.Context(), userID, projectID, images[index].ImageID)
-		if imageErr != nil || image == nil || len(data) == 0 {
-			continue
-		}
-		fileName := filepath.Base(image.ImageID) + mimeExtension(image.MIMEType)
-		result, uploadErr := uploader.Upload(c.Request.Context(), c.GetString(middleware.ContextKeyProvider), fileName, image.MIMEType, data)
-		if uploadErr != nil || result == nil || strings.TrimSpace(result.URL) == "" {
-			continue
-		}
-		imageURL := strings.TrimSpace(result.URL)
-		if migrateErr := legacyStore.MigrateImageURL(c.Request.Context(), userID, projectID, image.ImageID, imageURL); migrateErr == nil {
-			images[index].ImageURL = imageURL
-		}
-	}
-	return images
 }
 
 func parseImageDimension(value string) (*int, error) {
@@ -221,40 +176,79 @@ func (h *ProjectImageHandler) Save(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": err.Error()})
 		return
 	}
-	header, err := c.FormFile("image")
-	if err != nil || header.Size <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "project image required"})
-		return
+	imageURL := strings.TrimSpace(c.PostForm("image_url"))
+	var data []byte
+	mimeType := strings.TrimSpace(c.PostForm("mime_type"))
+	imageSize := int64(0)
+	imageSHA256 := strings.TrimSpace(c.PostForm("image_sha256"))
+	if imageURL != "" {
+		parsedURL, parseErr := url.ParseRequestURI(imageURL)
+		if parseErr != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "valid image URL required"})
+			return
+		}
+		if !strings.HasPrefix(mimeType, "image/") {
+			mimeType = "image/png"
+		}
+		if imageSHA256 == "" {
+			digest := sha256.Sum256([]byte(imageURL))
+			imageSHA256 = hex.EncodeToString(digest[:])
+		}
+	} else {
+		header, formErr := c.FormFile("image")
+		if formErr != nil || header.Size <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "project image or image URL required"})
+			return
+		}
+		if header.Size > maxProjectImageBytes {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": http.StatusRequestEntityTooLarge, "message": "project image exceeds 64 MiB"})
+			return
+		}
+		file, openErr := header.Open()
+		if openErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "open project image failed"})
+			return
+		}
+		data, err = io.ReadAll(io.LimitReader(file, maxProjectImageBytes+1))
+		file.Close()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "read project image failed"})
+			return
+		}
+		if len(data) > maxProjectImageBytes {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": http.StatusRequestEntityTooLarge, "message": "project image exceeds 64 MiB"})
+			return
+		}
+		if mimeType == "" {
+			mimeType = strings.TrimSpace(header.Header.Get("Content-Type"))
+		}
+		detectedMimeType := http.DetectContentType(data)
+		if !strings.HasPrefix(mimeType, "image/") {
+			mimeType = detectedMimeType
+		}
+		if !strings.HasPrefix(mimeType, "image/") {
+			c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "uploaded file must be an image"})
+			return
+		}
+		if h.uploader == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "message": "project image URL upload unavailable"})
+			return
+		}
+		result, uploadErr := h.uploader.Upload(c.Request.Context(), c.GetString(middleware.ContextKeyProvider), filepath.Base(header.Filename), mimeType, data)
+		if uploadErr != nil || result == nil || strings.TrimSpace(result.URL) == "" {
+			c.JSON(http.StatusBadGateway, gin.H{"code": http.StatusBadGateway, "message": "project image URL upload failed"})
+			return
+		}
+		imageURL = strings.TrimSpace(result.URL)
+		imageSize = int64(len(data))
+		digest := sha256.Sum256(data)
+		imageSHA256 = hex.EncodeToString(digest[:])
 	}
-	if header.Size > maxProjectImageBytes {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": http.StatusRequestEntityTooLarge, "message": "project image exceeds 64 MiB"})
-		return
+	if imageSizeValue := strings.TrimSpace(c.PostForm("image_size")); imageSizeValue != "" {
+		if parsedSize, parseErr := strconv.ParseInt(imageSizeValue, 10, 64); parseErr == nil && parsedSize >= 0 {
+			imageSize = parsedSize
+		}
 	}
-	file, err := header.Open()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "open project image failed"})
-		return
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxProjectImageBytes+1))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "read project image failed"})
-		return
-	}
-	if len(data) > maxProjectImageBytes {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"code": http.StatusRequestEntityTooLarge, "message": "project image exceeds 64 MiB"})
-		return
-	}
-	mimeType := strings.TrimSpace(header.Header.Get("Content-Type"))
-	detectedMimeType := http.DetectContentType(data)
-	if !strings.HasPrefix(mimeType, "image/") {
-		mimeType = detectedMimeType
-	}
-	if !strings.HasPrefix(mimeType, "image/") {
-		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "uploaded file must be an image"})
-		return
-	}
-	digest := sha256.Sum256(data)
 	image, err := h.images.SaveImage(c.Request.Context(), userID, models.ProjectImage{
 		ProjectID: projectID,
 		ImageID:   imageID,
@@ -263,8 +257,10 @@ func (h *ProjectImageHandler) Save(c *gin.Context) {
 		MIMEType:  mimeType,
 		Width:     width,
 		Height:    height,
-		SHA256:    hex.EncodeToString(digest[:]),
-	}, data)
+		ImageURL:  imageURL,
+		ImageSize: imageSize,
+		SHA256:    imageSHA256,
+	}, nil)
 	if errors.Is(err, database.ErrProjectNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"code": http.StatusNotFound, "message": err.Error()})
 		return

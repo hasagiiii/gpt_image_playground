@@ -181,7 +181,7 @@ export async function callSeedreamLayers(options: SeedreamOptions): Promise<Call
     phase = 'download'
     try {
       const images = await Promise.all(layers.map((layer) => fetchImageUrlAsDataUrl(layer.url, MIME_MAP[layer.output_format ?? options.params.output_format] ?? 'image/png', signal)))
-      return { images, rawImageUrls: urls, imageLayers: layers, layerUsage: usage, actualParams: { ...options.params, n: images.length }, ...(actualCost !== undefined ? { actualCost } : {}) }
+      return { images, rawImageUrls: urls, imageUrls: urls, imageLayers: layers, layerUsage: usage, actualParams: { ...options.params, n: images.length }, ...(actualCost !== undefined ? { actualCost } : {}) }
     } catch (err) {
       if (err instanceof Error) Object.assign(err, { rawImageUrls: urls, imageLayers: layers, layerUsage: usage })
       throw err

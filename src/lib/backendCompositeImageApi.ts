@@ -207,6 +207,7 @@ async function readCompositeTaskResult(options: {
   return {
     images,
     rawImageUrls: urls,
+    imageUrls: urls,
     actualParams: { ...options.params, n: images.length },
     actualParamsList: images.map(() => ({ ...options.params, n: images.length })),
     revisedPrompts: images.map(() => undefined),

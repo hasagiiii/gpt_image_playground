@@ -174,6 +174,7 @@ type imageProviderRegistry interface {
 type ProjectGenerationHandler struct {
 	projects             projectGenerationStore
 	providers            imageProviderRegistry
+	uploader             projectImageUploader
 	client               *http.Client
 	upstreams            config.UpstreamConfig
 	idempotencyMu        sync.Mutex
@@ -200,6 +201,10 @@ func NewProjectGenerationHandler(projects projectGenerationStore, providers imag
 		upstreams:            upstreamConfig,
 		idempotencyResponses: make(map[string]*generationIdempotencyEntry),
 	}
+}
+
+func (h *ProjectGenerationHandler) SetUploader(uploader projectImageUploader) {
+	h.uploader = uploader
 }
 
 func generationIdempotencyKey(userID, projectID string, req projectGenerationRequest) string {
@@ -423,6 +428,7 @@ type upstreamImageResponse struct {
 type projectGenerationResponse struct {
 	Images           []string                  `json:"images"`
 	ImageIDs         []string                  `json:"image_ids"`
+	ImageURLs        []string                  `json:"image_urls"`
 	ActualParams     projectGenerationParams   `json:"actual_params"`
 	ActualParamsList []projectGenerationParams `json:"actual_params_list,omitempty"`
 	RevisedPrompts   []string                  `json:"revised_prompts"`
@@ -770,6 +776,7 @@ func (h *ProjectGenerationHandler) generateCodexImages(c *gin.Context, userID, p
 	result := projectGenerationResponse{
 		Images:           make([]string, 0, len(items)),
 		ImageIDs:         make([]string, 0, len(items)),
+		ImageURLs:        make([]string, 0, len(items)),
 		ActualParamsList: make([]projectGenerationParams, 0, len(items)),
 		RevisedPrompts:   make([]string, 0, len(items)),
 		ActualParams:     actualParams,
@@ -780,13 +787,14 @@ func (h *ProjectGenerationHandler) generateCodexImages(c *gin.Context, userID, p
 	mimeType := mimeTypes[actualParams.OutputFormat]
 	width, height := dimensionsFromSize(actualParams.Size)
 	for _, item := range items {
-		dataURL, imageID, err := h.saveGeneratedImage(ctx, userID, projectID, req.TaskID, mimeType, width, height, item)
+		dataURL, imageID, imageURL, err := h.saveGeneratedImage(ctx, userID, projectID, req.TaskID, mimeType, width, height, item, c.GetString(middleware.ContextKeyProvider))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": err.Error()})
 			return nil
 		}
 		result.Images = append(result.Images, dataURL)
 		result.ImageIDs = append(result.ImageIDs, imageID)
+		result.ImageURLs = append(result.ImageURLs, imageURL)
 		params := actualParams
 		params.N = 1
 		result.ActualParamsList = append(result.ActualParamsList, params)
@@ -816,49 +824,49 @@ func upstreamParams(params projectGenerationParams, upstream upstreamImageRespon
 	return actual
 }
 
-func readGenerationImage(ctx context.Context, client *http.Client, item upstreamImageItem, mimeType string) (string, []byte, error) {
+func readGenerationImage(ctx context.Context, client *http.Client, item upstreamImageItem, mimeType string) (string, []byte, string, error) {
 	if item.B64JSON != "" {
 		payload := strings.TrimSpace(item.B64JSON)
 		if strings.HasPrefix(payload, "data:") {
 			actualMIME, data, err := decodeImageDataURL(payload)
 			if err != nil {
-				return "", nil, err
+				return "", nil, "", err
 			}
-			return "data:" + actualMIME + ";base64," + base64.StdEncoding.EncodeToString(data), data, nil
+			return "data:" + actualMIME + ";base64," + base64.StdEncoding.EncodeToString(data), data, "", nil
 		}
 		data, err := base64.StdEncoding.DecodeString(payload)
 		if err != nil {
-			return "", nil, err
+			return "", nil, "", err
 		}
-		return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), data, nil
+		return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), data, "", nil
 	}
 	if item.URL == "" {
-		return "", nil, errors.New("upstream image data missing")
+		return "", nil, "", errors.New("upstream image data missing")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, item.URL, nil)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	resp, err := client.Do(request)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", nil, fmt.Errorf("download upstream image: HTTP %d", resp.StatusCode)
+		return "", nil, "", fmt.Errorf("download upstream image: HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxProjectImageBytes+1))
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	if len(data) > maxProjectImageBytes {
-		return "", nil, errors.New("upstream image exceeds 64 MiB")
+		return "", nil, "", errors.New("upstream image exceeds 64 MiB")
 	}
 	actualMIME := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if !strings.HasPrefix(actualMIME, "image/") {
 		actualMIME = mimeType
 	}
-	return "data:" + actualMIME + ";base64," + base64.StdEncoding.EncodeToString(data), data, nil
+	return "data:" + actualMIME + ";base64," + base64.StdEncoding.EncodeToString(data), data, item.URL, nil
 }
 
 type upstreamResponsesOutput struct {
@@ -953,21 +961,38 @@ func decodeResponsesImageResult(raw json.RawMessage) string {
 	return ""
 }
 
-func (h *ProjectGenerationHandler) saveGeneratedImage(ctx context.Context, userID, projectID, taskID, mimeType string, width, height *int, item upstreamImageItem) (string, string, error) {
-	dataURL, data, err := readGenerationImage(ctx, h.client, item, mimeType)
+func (h *ProjectGenerationHandler) saveGeneratedImage(ctx context.Context, userID, projectID, taskID, mimeType string, width, height *int, item upstreamImageItem, provider string) (string, string, string, error) {
+	dataURL, data, imageURL, err := readGenerationImage(ctx, h.client, item, mimeType)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	idDigest := sha256.Sum256([]byte(dataURL))
+	if imageURL == "" {
+		if h.uploader == nil {
+			return "", "", "", errors.New("project image URL upload unavailable")
+		}
+		result, uploadErr := h.uploader.Upload(ctx, provider, "generated"+mimeExtension(mimeType), mimeType, data)
+		if uploadErr != nil || result == nil || strings.TrimSpace(result.URL) == "" {
+			if uploadErr != nil {
+				return "", "", "", uploadErr
+			}
+			return "", "", "", errors.New("project image URL upload failed")
+		}
+		imageURL = strings.TrimSpace(result.URL)
+	}
+	idDigest := sha256.Sum256([]byte(imageURL))
+	if imageURL == "" {
+		idDigest = sha256.Sum256([]byte(dataURL))
+	}
 	imageDigest := sha256.Sum256(data)
 	imageID := hex.EncodeToString(idDigest[:])
 	if _, err := h.projects.SaveImage(ctx, userID, models.ProjectImage{
 		ProjectID: projectID, ImageID: imageID, TaskID: taskID, Source: "generated",
-		MIMEType: mimeType, Width: width, Height: height, SHA256: hex.EncodeToString(imageDigest[:]),
-	}, data); err != nil {
-		return "", "", err
+		MIMEType: mimeType, Width: width, Height: height, ImageURL: imageURL,
+		ImageSize: int64(len(data)), SHA256: hex.EncodeToString(imageDigest[:]),
+	}, nil); err != nil {
+		return "", "", "", err
 	}
-	return dataURL, imageID, nil
+	return dataURL, imageID, imageURL, nil
 }
 
 func (h *ProjectGenerationHandler) generateResponses(c *gin.Context, userID, projectID, baseURL string, req projectGenerationRequest) *projectGenerationResponse {
@@ -1039,7 +1064,7 @@ func (h *ProjectGenerationHandler) generateResponses(c *gin.Context, userID, pro
 		return nil
 	}
 	result := projectGenerationResponse{
-		Images: make([]string, 0, len(items)), ImageIDs: make([]string, 0, len(items)),
+		Images: make([]string, 0, len(items)), ImageIDs: make([]string, 0, len(items)), ImageURLs: make([]string, 0, len(items)),
 		ActualParamsList: make([]projectGenerationParams, 0, len(items)),
 		RevisedPrompts:   make([]string, 0, len(items)), ActualParams: items[0].params,
 		TaskRecordQueued: len(req.Task) > 0,
@@ -1049,13 +1074,14 @@ func (h *ProjectGenerationHandler) generateResponses(c *gin.Context, userID, pro
 	for _, item := range items {
 		mimeType := mimeTypes[item.params.OutputFormat]
 		width, height := dimensionsFromSize(item.params.Size)
-		dataURL, imageID, err := h.saveGeneratedImage(c.Request.Context(), userID, projectID, req.TaskID, mimeType, width, height, item.image)
+		dataURL, imageID, imageURL, err := h.saveGeneratedImage(c.Request.Context(), userID, projectID, req.TaskID, mimeType, width, height, item.image, c.GetString(middleware.ContextKeyProvider))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": err.Error()})
 			return nil
 		}
 		result.Images = append(result.Images, dataURL)
 		result.ImageIDs = append(result.ImageIDs, imageID)
+		result.ImageURLs = append(result.ImageURLs, imageURL)
 		result.ActualParamsList = append(result.ActualParamsList, item.params)
 		result.RevisedPrompts = append(result.RevisedPrompts, item.image.RevisedPrompt)
 	}
@@ -1279,6 +1305,7 @@ func (h *ProjectGenerationHandler) Generate(c *gin.Context) {
 	result := projectGenerationResponse{
 		Images:           make([]string, 0, len(upstream.Data)),
 		ImageIDs:         make([]string, 0, len(upstream.Data)),
+		ImageURLs:        make([]string, 0, len(upstream.Data)),
 		ActualParamsList: make([]projectGenerationParams, 0, len(upstream.Data)),
 		RevisedPrompts:   make([]string, 0, len(upstream.Data)),
 		ActualParams:     req.Params,
@@ -1302,13 +1329,14 @@ func (h *ProjectGenerationHandler) Generate(c *gin.Context) {
 	result.ActualParams.N = len(upstream.Data)
 	width, height := dimensionsFromSize(result.ActualParams.Size)
 	for _, item := range upstream.Data {
-		dataURL, imageID, err := h.saveGeneratedImage(c.Request.Context(), userID, projectID, req.TaskID, mimeType, width, height, item)
+		dataURL, imageID, imageURL, err := h.saveGeneratedImage(c.Request.Context(), userID, projectID, req.TaskID, mimeType, width, height, item, c.GetString(middleware.ContextKeyProvider))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": http.StatusInternalServerError, "message": err.Error()})
 			return
 		}
 		result.Images = append(result.Images, dataURL)
 		result.ImageIDs = append(result.ImageIDs, imageID)
+		result.ImageURLs = append(result.ImageURLs, imageURL)
 		result.ActualParamsList = append(result.ActualParamsList, result.ActualParams)
 		result.RevisedPrompts = append(result.RevisedPrompts, item.RevisedPrompt)
 	}

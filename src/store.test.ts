@@ -4654,11 +4654,11 @@ describe('agent batch reference resolution', () => {
     expect(batchArgs.referenceIds).toEqual(['round-3-reference-1'])
   })
 
-  // Responses 的 input_image 只接受 data URL；历史数据里可能把 CDN 直链存成了 dataUrl，
-  // 必须拉回字节并写回本地，避免每次引用都重新请求 CDN
-  it('converts remote reference urls to data urls and caches them locally', async () => {
-    const remoteImage = { id: 'image-remote', dataUrl: 'https://cdn.example/remote.png' }
-    await putImage({ id: remoteImage.id, dataUrl: remoteImage.dataUrl, source: 'upload' })
+  // Responses 的 input_image 只接受 data URL；本地原图缺失时从 remoteUrl 回源并缓存。
+  it('downloads remote references when local image data is missing', async () => {
+    const remoteUrl = 'https://cdn.example/remote.png'
+    const remoteImage = { id: 'image-remote', dataUrl: '' }
+    await putImage({ id: remoteImage.id, dataUrl: '', remoteUrl, source: 'upload' })
     useStore.setState({ inputImages: [remoteImage] })
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(new Blob([new Uint8Array([9, 9, 9])], { type: 'image/png' }), { status: 200 }),
@@ -4695,7 +4695,8 @@ describe('agent batch reference resolution', () => {
       // 直链保留在 remoteUrl，dataUrl 换成真实字节，后续引用不再打 CDN
       const stored = await getImage(remoteImage.id)
       expect(stored?.dataUrl.startsWith('data:image/png;base64,')).toBe(true)
-      expect(stored?.remoteUrl).toBe(remoteImage.dataUrl)
+      expect(stored?.remoteUrl).toBe(remoteUrl)
+      expect(fetchMock).toHaveBeenCalledWith(remoteUrl, expect.anything())
     } finally {
       fetchMock.mockRestore()
     }

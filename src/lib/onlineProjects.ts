@@ -243,14 +243,19 @@ export async function downloadOnlineProject(id: string): Promise<Uint8Array> {
 }
 
 export async function uploadOnlineProjectImage(projectId: string, taskId: string | undefined, image: StoredImage): Promise<OnlineProjectImageResponse> {
-  const blob = await dataUrlToBlob(image.dataUrl)
   const form = new FormData()
   form.set('image_id', image.id)
   if (taskId) form.set('task_id', taskId)
   if (image.source) form.set('source', image.source)
   if (image.width) form.set('width', String(image.width))
   if (image.height) form.set('height', String(image.height))
-  form.set('image', blob, image.id)
+  const imageUrl = image.remoteUrl || (/^https?:\/\//i.test(image.dataUrl) ? image.dataUrl : '')
+  if (imageUrl) {
+    form.set('image_url', imageUrl)
+  } else {
+    const blob = await dataUrlToBlob(image.dataUrl)
+    form.set('image', blob, image.id)
+  }
   const resp = await authFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/images`, {
     method: 'POST',
     body: form,

@@ -6,6 +6,7 @@ import { getOnlineProjectRecord } from './onlineProjects'
 interface BackendGenerationResponse {
   images?: unknown
   image_ids?: unknown
+  image_urls?: unknown
   actual_params?: unknown
   actual_params_list?: unknown
   revised_prompts?: unknown
@@ -161,6 +162,9 @@ export async function callBackendImageApi(options: {
   const imageIds = Array.isArray(data?.image_ids)
     ? data.image_ids.filter((item): item is string => typeof item === 'string')
     : undefined
+  const imageUrls = Array.isArray(data?.image_urls)
+    ? data.image_urls.map((item) => typeof item === 'string' ? item : undefined)
+    : undefined
 
   return {
     images,
@@ -169,6 +173,7 @@ export async function callBackendImageApi(options: {
     revisedPrompts,
     imagesStoredOnline: true,
     imageIds,
+    imageUrls,
     taskRecordQueued: data?.task_record_queued === true,
   }
 }

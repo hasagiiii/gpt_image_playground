@@ -173,7 +173,9 @@ func main() {
 	handlers.NewMaterialHandler(materialService).Register(api)
 	fileAPIHandler.Register(api)
 	handlers.NewCompositeModelHandler(registry, cfg.Upstreams.CompositeAPI).Register(api)
-	handlers.NewProjectGenerationHandler(projectRepo, registry, cfg.Upstreams).Register(api)
+	projectGenerationHandler := handlers.NewProjectGenerationHandler(projectRepo, registry, cfg.Upstreams)
+	projectGenerationHandler.SetUploader(fileAPIHandler)
+	projectGenerationHandler.Register(api)
 	handlers.NewAnnouncementHandler(announcementRepo, func(ctx context.Context, userID string) (bool, error) {
 		user, err := userRepo.FindByID(ctx, userID)
 		if err != nil {
@@ -187,7 +189,7 @@ func main() {
 			return false, err
 		}
 		return authSvc.IsAdmin(user), nil
-	}, fileAPIHandler).Register(api)
+	}).Register(api)
 
 	// 前端 SPA fallback：所有 API 路由之后挂载，仅接管未匹配路由。
 	// 带 -tags embed 构建时服务嵌入的前端产物并注入运行时配置；否则为空 FS（本地开发交给 vite）。
