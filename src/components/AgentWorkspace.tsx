@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { ALL_PROJECTS_ID, LOCAL_PROJECT_ID, deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
+import { LOCAL_PROJECT_ID, deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { getAgentConversationTitle, getProjectAgentConversations } from '../lib/agentConversationScope'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
@@ -332,7 +332,7 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
   const conversationsLoaded = readOnlyData ? true : storedConversationsLoaded
   const tasks = readOnlyData?.tasks ?? storedTasks
   const scopedConversations = useMemo(
-    () => readOnlyData ? conversations : getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
+    () => readOnlyData ? conversations : getProjectAgentConversations(conversations, tasks, activeProjectId, LOCAL_PROJECT_ID),
     [activeProjectId, conversations, readOnlyData, tasks],
   )
   const [readOnlyConversationId, setReadOnlyConversationId] = useState<string | null>(null)

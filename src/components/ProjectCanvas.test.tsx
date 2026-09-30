@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../store', () => ({
   ALL_FAVORITES_COLLECTION_ID: '__all_favorites__',
-  ALL_PROJECTS_ID: '__all_projects__',
   LOCAL_PROJECT_ID: '__local_project__',
   useStore: Object.assign(
     (selector: (state: Record<string, unknown>) => unknown) => selector(mocks.state.current),

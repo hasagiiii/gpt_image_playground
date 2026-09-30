@@ -1,5 +1,5 @@
 import { useMemo, useRef, useCallback } from 'react'
-import { ALL_FAVORITES_COLLECTION_ID, ALL_PROJECTS_ID, LOCAL_PROJECT_ID, getTaskFavoriteCollectionIds, useStore, reuseConfig, editOutputs, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { ALL_FAVORITES_COLLECTION_ID, LOCAL_PROJECT_ID, getTaskFavoriteCollectionIds, useStore, reuseConfig, editOutputs, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { useDragSelect } from '../hooks/useDragSelect'
 import TaskCard from './TaskCard'
 
@@ -39,7 +39,7 @@ export default function TaskGrid() {
     
     return sorted.filter((t) => {
       if (activeProjectId === LOCAL_PROJECT_ID && t.projectId) return false
-      if (activeProjectId && activeProjectId !== ALL_PROJECTS_ID && activeProjectId !== LOCAL_PROJECT_ID && t.projectId !== activeProjectId) return false
+      if (activeProjectId && activeProjectId !== LOCAL_PROJECT_ID && t.projectId !== activeProjectId) return false
       if (filterFavorite) {
         if (!t.isFavorite) return false
         if (activeFavoriteCollectionId && activeFavoriteCollectionId !== ALL_FAVORITES_COLLECTION_ID && !getTaskFavoriteCollectionIds(t).includes(activeFavoriteCollectionId)) return false

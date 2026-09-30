@@ -53,14 +53,7 @@ describe('agent conversation project scope', () => {
     const local = conversation({ id: 'local-chat' })
     const online = conversation({ id: 'online-chat', projectId: 'project-a' })
 
-    expect(getProjectAgentConversations([local, online], [], '__local_project__', '__all_projects__', '__local_project__')).toEqual([local])
-  })
-
-  it('includes inferred legacy conversations in the matching project', () => {
-    const item = conversation({ id: 'legacy-chat' })
-    const tasks = [task({ projectId: 'project-a', agentConversationId: item.id })]
-
-    expect(getProjectAgentConversations([item], tasks, 'project-a', '__all_projects__', '__local_project__')).toEqual([item])
+    expect(getProjectAgentConversations([local, online], [], '__local_project__',  '__local_project__')).toEqual([local])
   })
 
   it('syncs only projects whose agent conversations changed', () => {

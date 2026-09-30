@@ -84,10 +84,10 @@ import { ensureProjectCanvas, normalizeProjectCanvas, removeCanvasFavoriteCollec
 import { layoutImageLayers } from './lib/imageLayerLayout'
 import { getTaskOutputImageSlots, removeTaskOutputImage as removeTaskOutputImageRecord } from './lib/singleImageOperations'
 import { playCompletionSound } from './lib/completionSound'
+import { getProjectTaskSnapshot, LOCAL_PROJECT_ID, taskBelongsToProject } from './lib/projectTasks'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
-export const ALL_PROJECTS_ID = '__all_projects__'
-export const LOCAL_PROJECT_ID = '__local_project__'
+export { LOCAL_PROJECT_ID }
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_NAME = '默认'
 
@@ -220,14 +220,6 @@ function cacheImage(id: string, dataUrl: string) {
     if (oldestKey == null) break
     imageCache.delete(oldestKey)
   }
-}
-
-function taskBelongsToProject(task: TaskRecord, projectId: string) {
-  return projectId === LOCAL_PROJECT_ID ? !task.projectId : task.projectId === projectId
-}
-
-function getProjectTaskSnapshot(tasks: TaskRecord[], projectId: string) {
-  return tasks.filter((task) => taskBelongsToProject(task, projectId))
 }
 
 function getTaskOutputIds(tasks: TaskRecord[]) {
@@ -802,7 +794,7 @@ function normalizeFavoriteCollections(value: unknown): FavoriteCollection[] {
     if (!isRecord(item)) continue
     if (typeof item.id !== 'string' || !item.id.trim()) continue
     const id = item.id
-    const projectId = typeof item.projectId === 'string' && item.projectId && item.projectId !== ALL_PROJECTS_ID && item.projectId !== LOCAL_PROJECT_ID
+    const projectId = typeof item.projectId === 'string' && item.projectId && item.projectId !== LOCAL_PROJECT_ID
       ? item.projectId
       : undefined
     const scopedId = `${projectId ?? ''}\n${id}`
@@ -846,7 +838,7 @@ function resolveDefaultFavoriteCollectionId(collections: FavoriteCollection[], p
 }
 
 export function getFavoriteScopeProjectId(activeProjectId: string | null) {
-  return activeProjectId && activeProjectId !== ALL_PROJECTS_ID && activeProjectId !== LOCAL_PROJECT_ID
+  return activeProjectId && activeProjectId !== LOCAL_PROJECT_ID
     ? activeProjectId
     : undefined
 }
@@ -2528,7 +2520,7 @@ async function deleteOnlineTaskRecord(task: TaskRecord) {
 
 function getActiveTaskProjectId() {
   const id = useStore.getState().activeProjectId
-  return id && id !== ALL_PROJECTS_ID && id !== LOCAL_PROJECT_ID ? id : undefined
+  return id && id !== LOCAL_PROJECT_ID ? id : undefined
 }
 
 // 内容版本号只由本地变更推进，用于判断同步期间是否又发生改动。
@@ -4318,7 +4310,7 @@ async function loadOnlineProject(
   const thumbnails: StoredImageThumbnail[] = []
   let favoriteCollections: FavoriteCollection[] = []
   let contentLoaded = false
-  const shouldLoadContents = activeProjectId === null || activeProjectId === ALL_PROJECTS_ID || activeProjectId === response.id || cached?.id === activeProjectId
+  const shouldLoadContents = activeProjectId === null || activeProjectId === response.id || cached?.id === activeProjectId
   const oversized = shouldLoadContents && response.archive_size > OVERSIZED_ARCHIVE_BYTES
   // 归档 SHA 相同时也可能只同步了画布，先检查本地任务是否能支撑画布中的 item。
   const cachedCanvasItemIds = Object.keys(cached?.canvas?.items ?? {})
@@ -4331,7 +4323,7 @@ async function loadOnlineProject(
   })
   const shouldRefreshArchive = shouldLoadContents && cached?.remoteArchiveSha256 !== response.archive_sha256
   const shouldRefreshArchiveForCanvas = shouldLoadContents && hasUnmatchedCanvasItems
-  const shouldRefreshCanvas = shouldRefreshArchive && activeProjectId !== null && activeProjectId !== ALL_PROJECTS_ID
+  const shouldRefreshCanvas = shouldRefreshArchive && activeProjectId !== null
   console.info('[项目画布] 本地缓存信息', {
     projectId: response.id,
     localArchiveSha256: cached?.remoteArchiveSha256 ?? null,
@@ -4570,11 +4562,11 @@ async function initializeStore() {
   }
   const preferredProjectId = useStore.getState().activeProjectId
   const hasLegacyTasks = storedTasks.some((task) => !task.projectId)
-  const activeProjectId = preferredProjectId === ALL_PROJECTS_ID || (preferredProjectId === LOCAL_PROJECT_ID && hasLegacyTasks) || projects.some((project) => project.id === preferredProjectId)
+  const activeProjectId = (preferredProjectId === LOCAL_PROJECT_ID && hasLegacyTasks) || projects.some((project) => project.id === preferredProjectId)
     ? preferredProjectId
     : null
   const isActiveProjectRecord = (projectId?: string) => {
-    if (activeProjectId === null || activeProjectId === ALL_PROJECTS_ID) return true
+    if (activeProjectId === null) return true
     if (activeProjectId === LOCAL_PROJECT_ID) return !projectId
     return projectId === activeProjectId
   }

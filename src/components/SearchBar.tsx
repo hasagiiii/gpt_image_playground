@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ALL_FAVORITES_COLLECTION_ID, ALL_PROJECTS_ID, LOCAL_PROJECT_ID, clearFailedTasks, getImageFavoriteCollectionIds, useStore, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { ALL_FAVORITES_COLLECTION_ID, LOCAL_PROJECT_ID, clearFailedTasks, getImageFavoriteCollectionIds, useStore, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import Select from './Select'
 import { CollectionManageIcon, FavoriteIcon, TrashIcon } from './icons'
@@ -58,7 +58,7 @@ export default function SearchBar({ className = 'mt-6 mb-4' }: { className?: str
   const activeProjectId = useStore((s) => s.activeProjectId)
   const openManageCollectionsModal = useStore((s) => s.openManageCollectionsModal)
   const [favoriteMenuOpen, setFavoriteMenuOpen] = useState(false)
-  const favoriteProjectId = activeProjectId && activeProjectId !== ALL_PROJECTS_ID && activeProjectId !== LOCAL_PROJECT_ID ? activeProjectId : undefined
+  const favoriteProjectId = activeProjectId && activeProjectId !== LOCAL_PROJECT_ID ? activeProjectId : undefined
   const favoriteCollections = useMemo(
     () => allFavoriteCollections.filter((collection) => collection.projectId === favoriteProjectId),
     [allFavoriteCollections, favoriteProjectId],

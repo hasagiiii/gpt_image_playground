@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { ALL_FAVORITES_COLLECTION_ID, ALL_PROJECTS_ID, LOCAL_PROJECT_ID, deleteFavoriteCollection, getFavoriteCollectionsForProject, getFavoriteScopeProjectId, getImageFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { ALL_FAVORITES_COLLECTION_ID, LOCAL_PROJECT_ID, deleteFavoriteCollection, getFavoriteCollectionsForProject, getFavoriteScopeProjectId, getImageFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { useAuth } from '../auth/AuthContext'
 import { getOIDCIssuer } from '../auth/api'
 import { estimateModelPricing, fetchApiKeys, fetchBalance, fetchModels, extractBalance, invalidateApiKeysCache, type ModelInfo, type ApiKeyItem } from '../auth/oidcResource'
@@ -729,7 +729,7 @@ export default function InputBar({ embeddedAgent = false, hideApiKeyBalance = fa
     
     return sorted.filter((t) => {
       if (activeProjectId === LOCAL_PROJECT_ID && t.projectId) return false
-      if (activeProjectId && activeProjectId !== ALL_PROJECTS_ID && activeProjectId !== LOCAL_PROJECT_ID && t.projectId !== activeProjectId) return false
+      if (activeProjectId && activeProjectId !== LOCAL_PROJECT_ID && t.projectId !== activeProjectId) return false
       if (filterFavorite) {
         const matchesFavorite = t.outputImages.some((imageId) => {
           const ids = getImageFavoriteCollectionIds(imageId, t)

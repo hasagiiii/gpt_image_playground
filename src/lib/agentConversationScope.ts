@@ -36,10 +36,9 @@ export function getProjectAgentConversations(
   conversations: AgentConversation[],
   tasks: TaskRecord[],
   projectId: string | null,
-  allProjectsId: string,
   localProjectId: string,
 ) {
-  if (!projectId || projectId === allProjectsId) return conversations
+  if (!projectId) return conversations
 
   const projectIds = getAgentConversationProjectIds(conversations, tasks)
   if (projectId === localProjectId) {

@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import { INVALID_IMAGE_LAYER_DECOMPOSITION_CODE, type ProjectCanvasCrop, type ProjectCanvasItem, type ProjectCanvasState, type ProjectCanvasViewport, type TaskOutputError, type TaskRecord } from '../types'
 import {
   ALL_FAVORITES_COLLECTION_ID,
-  ALL_PROJECTS_ID,
   LOCAL_PROJECT_ID,
   editOutputImage,
   ensureImageCached,
@@ -35,6 +34,7 @@ import {
 } from '../lib/projectCanvas'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getTaskIds } from '../lib/taskIds'
+import { getProjectTaskSnapshot } from '../lib/projectTasks'
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { downloadImageIds, exportImage, type ImageExportFormat } from '../lib/downloadImages'
 import { uploadMaterialImage } from '../lib/materialApi'
@@ -1075,12 +1075,7 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     }
   }, [canvasHeaderCollapsed])
 
-  const projectTasks = useMemo(() => [...tasks]
-    .filter((task) => {
-      if (activeProjectId === LOCAL_PROJECT_ID) return !task.projectId
-      if (activeProjectId && activeProjectId !== ALL_PROJECTS_ID) return task.projectId === activeProjectId
-      return true
-    })
+  const projectTasks = useMemo(() => getProjectTaskSnapshot(tasks, activeProjectId)
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)), [activeProjectId, tasks])
   const projectImageIds = useMemo(() => projectTasks.flatMap((task) => task.outputImages), [projectTasks])
   const imageZById = useMemo(() => {

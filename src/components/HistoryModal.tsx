@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
-import { ALL_PROJECTS_ID, LOCAL_PROJECT_ID, removeMultipleTasks, useStore } from '../store'
+import { LOCAL_PROJECT_ID, removeMultipleTasks, useStore } from '../store'
 import type { AgentConversation, TaskRecord } from '../types'
 import { getAgentConversationTitle, getProjectAgentConversations } from '../lib/agentConversationScope'
 import { useTooltip } from '../hooks/useTooltip'
@@ -127,7 +127,7 @@ export default function HistoryModal({
   const activeConversationId = dataOverride ? dataOverride.activeConversationId : storedActiveConversationId
   const tasks = dataOverride?.tasks ?? storedTasks
   const scopedConversations = useMemo(
-    () => dataOverride ? conversations : getProjectAgentConversations(conversations, tasks, activeProjectId, ALL_PROJECTS_ID, LOCAL_PROJECT_ID),
+    () => dataOverride ? conversations : getProjectAgentConversations(conversations, tasks, activeProjectId, LOCAL_PROJECT_ID),
     [activeProjectId, conversations, dataOverride, tasks],
   )
   useEffect(() => {

@@ -17,7 +17,6 @@ vi.mock('../store', () => {
     { getState: () => mocks.state.current },
   )
   return {
-    ALL_PROJECTS_ID: '__all_projects__',
     LOCAL_PROJECT_ID: '__local_project__',
     useStore,
     getActiveAgentRounds: (conversation: AgentConversation) => conversation.rounds,
