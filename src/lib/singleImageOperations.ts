@@ -19,6 +19,8 @@ export function removeTaskOutputImage(task: TaskRecord, imageId: string) {
   const originalImageId = task.transparentOriginalImages?.[outputIndex] || undefined
   const actualParamsByImage = task.actualParamsByImage ? { ...task.actualParamsByImage } : undefined
   const revisedPromptByImage = task.revisedPromptByImage ? { ...task.revisedPromptByImage } : undefined
+  const outputImageUrls = task.outputImageUrls ? { ...task.outputImageUrls } : undefined
+  if (outputImageUrls) delete outputImageUrls[imageId]
   if (actualParamsByImage) delete actualParamsByImage[imageId]
   if (revisedPromptByImage) delete revisedPromptByImage[imageId]
   const rawImageUrls = task.rawImageUrls?.filter((_, index) => index !== outputIndex)
@@ -31,6 +33,7 @@ export function removeTaskOutputImage(task: TaskRecord, imageId: string) {
     task: {
       ...task,
       outputImages,
+      outputImageUrls: outputImageUrls && Object.keys(outputImageUrls).length ? outputImageUrls : undefined,
       ...(task.imageLayers ? { imageLayers: task.imageLayers.filter((_, index) => index !== outputIndex) } : {}),
       outputImageSlots,
       transparentOriginalImages: transparentOriginalImages?.length ? transparentOriginalImages : undefined,

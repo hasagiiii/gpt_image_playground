@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { LOCAL_PROJECT_ID, initStore, useStore } from './store'
+import { isLocalProject, LOCAL_IMAGE_CREATION_ERROR } from './lib/projectTasks'
 import { activateFirstImportedProfile, buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
 import { isDefaultConfigOnlyEnabled, mergeImportedSettings } from './lib/apiProfiles'
 import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
@@ -37,6 +38,7 @@ export default function App() {
   const setSettings = useStore((s) => s.setSettings)
   const appMode = useStore((s) => s.appMode)
   const activeProjectId = useStore((s) => s.activeProjectId)
+  const localProject = useStore((s) => s.activeProjectId !== null && isLocalProject(s.activeProjectId, s.projects))
   const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(APP_SIDEBAR_COLLAPSED_KEY) === 'true')
   const [view, setView] = useState<AppView>(() => getAppViewFromUrl())
@@ -177,10 +179,13 @@ export default function App() {
               className={`${appMode === 'agent' ? 'hidden xl:block' : ''} relative min-h-0 min-w-0`}
             >
               <div className="relative h-full min-h-[320px] w-full">
-                {activeProjectId === LOCAL_PROJECT_ID && (
+                {localProject && (
                   <div className="pointer-events-none absolute inset-x-3 top-20 z-40 flex justify-center sm:inset-x-6 sm:top-24">
                     <div className="pointer-events-auto w-full max-w-3xl">
-                      <LegacyProjectToolbar />
+                      <div className="rounded-lg bg-white/95 p-3 text-sm text-gray-600 shadow-sm dark:bg-gray-900/95 dark:text-gray-300">
+                        <p>{LOCAL_IMAGE_CREATION_ERROR}</p>
+                        {activeProjectId === LOCAL_PROJECT_ID && <LegacyProjectToolbar />}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -191,8 +196,8 @@ export default function App() {
             </main>
             <div data-no-drag-select className={`${appMode === 'gallery' ? 'hidden xl:block' : ''} relative min-w-0 border-gray-200 transition-[transform,opacity] duration-300 ease-in-out xl:border-l xl:fixed xl:right-0 xl:top-14 xl:bottom-0 xl:z-30 xl:w-[420px] xl:overflow-hidden dark:border-white/[0.08] ${agentPanelCollapsed ? 'pointer-events-none translate-x-full opacity-0' : 'translate-x-0 opacity-100'}`}>
               <AgentWorkspace embedded onCollapse={() => setAgentPanelCollapsed(true)} />
-              {appMode === 'agent' && <InputBar hideApiKeyBalance hideModeToggle />}
-              {appMode === 'gallery' && (
+              {!localProject && appMode === 'agent' && <InputBar hideApiKeyBalance hideModeToggle />}
+              {!localProject && appMode === 'gallery' && (
                 <div className="hidden xl:block">
                   <InputBar embeddedAgent hideApiKeyBalance hideModeToggle moveModelToAttachment />
                 </div>
@@ -214,7 +219,7 @@ export default function App() {
           )}
         </div>
       )}
-      {view === 'workspace' && activeProjectId !== null && appMode !== 'agent' && <InputBar hideApiKeyBalance hideModeToggle moveModelToAttachment hideModeration sidebarCollapsed={sidebarCollapsed} agentPanelCollapsed={agentPanelCollapsed} />}
+      {view === 'workspace' && activeProjectId !== null && !localProject && appMode !== 'agent' && <InputBar hideApiKeyBalance hideModeToggle moveModelToAttachment hideModeration sidebarCollapsed={sidebarCollapsed} agentPanelCollapsed={agentPanelCollapsed} />}
       <DetailModal />
       <Lightbox />
       <SettingsModal />

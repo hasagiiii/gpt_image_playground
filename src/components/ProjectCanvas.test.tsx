@@ -65,6 +65,7 @@ vi.mock('../lib/materialApi', () => ({
 }))
 
 import ProjectCanvas from './ProjectCanvas'
+import { ensureImageCached } from '../store'
 
 function createTask(): TaskRecord {
   return {
@@ -122,6 +123,7 @@ describe('ProjectCanvas interactions', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    vi.mocked(ensureImageCached).mockResolvedValue('data:image/png;base64,AA==')
     mocks.thumbnailSubscribers.clear()
     mocks.state.current = {
       tasks: [createTask()],
@@ -172,6 +174,22 @@ describe('ProjectCanvas interactions', () => {
 
     act(() => canvas.dispatchEvent(pointerEvent('pointerdown', 2, 700, 500)))
     expect(host.querySelector('[aria-label="收藏"]')).toBeNull()
+  })
+
+  it.each(['missing', 'error'])('图片缓存 %s 时直接展示任务 URL，地址晚到后也能恢复', async (mode) => {
+    if (mode === 'error') vi.mocked(ensureImageCached).mockRejectedValue(new Error('缓存不可用'))
+    else vi.mocked(ensureImageCached).mockResolvedValue(undefined)
+    const task = { ...createTask(), outputImages: ['missing-image'] }
+    mocks.state.current = { ...mocks.state.current, tasks: [task] }
+    await act(async () => root.render(<ProjectCanvas />))
+    mocks.state.current = { ...mocks.state.current, tasks: [{ ...task, outputImageUrls: { 'missing-image': 'https://cdn.example/missing.png' } }] }
+    await act(async () => root.render(<ProjectCanvas />))
+    const img = host.querySelector<HTMLImageElement>('[data-node-key="missing-image"] img')!
+    expect(img.getAttribute('src')).toBe('https://cdn.example/missing.png')
+    Object.defineProperties(img, { naturalWidth: { value: 1200 }, naturalHeight: { value: 800 } })
+    await act(async () => img.dispatchEvent(new Event('load', { bubbles: true })))
+    const frame = host.querySelector<HTMLElement>('[data-node-key="missing-image"]')!.firstElementChild as HTMLElement
+    expect(parseFloat(frame.style.height)).toBeGreaterThan(0)
   })
 
   it('图片外框不填充底色，保留透明区域和下层图片', () => {

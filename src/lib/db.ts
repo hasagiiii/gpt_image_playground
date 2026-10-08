@@ -335,13 +335,14 @@ export interface StoreImageResult {
 }
 
 export interface StoreImageOptions {
-  /** 提交已有输入图片时沿用它的稳定 ID。 */
+  /** 沿用后端返回或已有输入图片的稳定 ID，不重新分配。 */
   preferredId?: string
   /** 当前项目画布和本批次输出中不可复用的 ID。 */
   reservedIds?: ReadonlySet<string>
+  thumbnail?: Partial<Omit<StoredImageThumbnail, 'id'>>
 }
 
-/** 使用 Nano ID 存储图片，返回 image ID 及图片真实宽高。 */
+/** 保存图片；生成结果沿用后端 ID，输入草稿可分配本地 ID。 */
 export async function storeImage(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload', options?: StoreImageOptions): Promise<string> {
   return (await storeImageWithSize(dataUrl, source, options)).id
 }
@@ -366,6 +367,7 @@ export async function storeImageReference(id: string, url: string, source: NonNu
 export async function storeImageWithSize(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload', options: StoreImageOptions = {}): Promise<StoreImageResult> {
   const reservedIds = options.reservedIds ?? new Set<string>()
   let id = options.preferredId?.trim() || ''
+  if (source === 'generated' && !id) throw new Error('生成图片缺少后端 ID')
   let existing: StoredImage | undefined
   if (id) {
     existing = await getImage(id)
@@ -383,7 +385,7 @@ export async function storeImageWithSize(dataUrl: string, source: NonNullable<St
     if (!available) throw new Error('图片 ID 冲突，已重试 3 次，生成失败')
   }
   if (!existing) {
-    const thumbnail = await safeCreateImageThumbnail(dataUrl)
+    const thumbnail = options.thumbnail ?? await safeCreateImageThumbnail(dataUrl)
     await putImage({
       id,
       dataUrl,
@@ -457,7 +459,7 @@ async function createImageThumbnail(dataUrl: string): Promise<Omit<StoredImageTh
   }
 }
 
-async function safeCreateImageThumbnail(dataUrl: string): Promise<Partial<Omit<StoredImageThumbnail, 'id'>>> {
+export async function safeCreateImageThumbnail(dataUrl: string): Promise<Partial<Omit<StoredImageThumbnail, 'id'>>> {
   try {
     return await createImageThumbnail(dataUrl)
   } catch {

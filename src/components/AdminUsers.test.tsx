@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   listAdminUserMaterials: vi.fn(),
   downloadAdminUserProject: vi.fn(),
   listAdminUserProjectImages: vi.fn(),
-  downloadAdminUserProjectImage: vi.fn(),
   readOnlineProjectArchive: vi.fn(),
 }))
 
@@ -29,14 +28,14 @@ vi.mock('../lib/projectRoute', () => ({
   updateAdminUsersUrl: vi.fn(),
 }))
 
-vi.mock('../lib/admin', () => ({
+vi.mock('../lib/admin', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../lib/admin')>(),
   createAdminProject: vi.fn(),
   listAdminUsers: mocks.listAdminUsers,
   listAdminUserProjects: mocks.listAdminUserProjects,
   listAdminUserMaterials: mocks.listAdminUserMaterials,
   downloadAdminUserProject: mocks.downloadAdminUserProject,
   listAdminUserProjectImages: mocks.listAdminUserProjectImages,
-  downloadAdminUserProjectImage: mocks.downloadAdminUserProjectImage,
 }))
 
 vi.mock('../lib/onlineProjects', () => ({
@@ -78,7 +77,7 @@ describe('AdminUsers', () => {
   it('按最后修改时间降序展示用户，并使用 24 小时制', async () => {
     mocks.listAdminUsers.mockResolvedValue([
       { id: 'older', oidc_provider: 'oidc', name: '早先用户', created_at: '2026-01-01T00:00:00+08:00', updated_at: '2026-01-01T00:00:00+08:00', last_login_at: '2026-09-03T09:00:00+08:00', last_project_updated_at: '2026-09-02T09:00:00+08:00' },
-      { id: 'newer', oidc_provider: 'oidc', name: '最新用户', created_at: '2026-01-01T00:00:00+08:00', updated_at: '2026-01-01T00:00:00+08:00', last_login_at: '2026-09-03T10:00:00+08:00', last_project_updated_at: '2026-09-03T23:05:06+08:00' },
+      { id: 'newer', oidc_provider: 'oidc', name: '最新用户', created_at: '2026-01-01T00:00:00+08:00', updated_at: '2026-01-01T00:00:00+08:00', last_login_at: '2026-09-03T10:00:00+08:00', last_project_updated_at: '2026-09-03T23:05:06' },
       { id: 'empty', oidc_provider: 'oidc', name: '无项目用户', created_at: '2026-01-01T00:00:00+08:00', updated_at: '2026-01-01T00:00:00+08:00' },
     ])
 
@@ -142,9 +141,7 @@ describe('AdminUsers', () => {
       },
       tasks: [],
       agentConversations: [{ id: 'target-conversation', title: '对方会话', createdAt: 1, updatedAt: 2, rounds: [], messages: [] }],
-      images: [],
     })
-    mocks.downloadAdminUserProjectImage.mockResolvedValue({ id: 'image-a', dataUrl: 'data:image/png;base64,AA==' })
 
     await act(async () => root.render(<AdminUsers />))
     await flushEffects()
@@ -159,6 +156,7 @@ describe('AdminUsers', () => {
     resolveImages([{
       project_id: 'project-a',
       image_id: 'image-a',
+      image_url: 'https://images.example/image-a.png',
       mime_type: 'image/png',
       image_size: 1,
       image_sha256: 'image-sha',
@@ -170,7 +168,7 @@ describe('AdminUsers', () => {
     expect(host.querySelector('[data-image-count]')?.textContent).toBe('1 张图片')
   })
 
-  it('补齐归档任务引用但图片列表未返回的参考图 URL', async () => {
+  it('图片列表为空时不从归档任务引用虚构图片 URL', async () => {
     mocks.selection = { userId: 'user-a', projectId: 'project-a' }
     mocks.listAdminUserProjects.mockResolvedValue([{
       id: 'project-a',
@@ -193,12 +191,11 @@ describe('AdminUsers', () => {
       },
       tasks: [{ inputImageIds: ['reference-a'], outputImages: [] }],
       agentConversations: [],
-      images: [],
     })
     await act(async () => root.render(<AdminUsers />))
     await flushEffects()
 
-    expect(host.querySelector('[data-image-count]')?.textContent).toBe('1 张图片')
+    expect(host.querySelector('[data-image-count]')?.textContent).toBe('0 张图片')
   })
 
   it('可以只读查看指定用户的素材列表', async () => {

@@ -10,7 +10,7 @@ import { getPersistableAgentConversations, getPersistableTask } from './persista
 
 const LEGACY_PROJECT_UPLOAD_ID_KEY = 'gpt-image-playground:legacy-project-upload-id'
 
-function fetchOnlineProjectResource(path: string) {
+export function fetchOnlineProjectResource(path: string) {
   // 时间戳同时绕过仍在控制页面的旧版 Service Worker Cache Storage。
   return authFetch(`${path}?_=${Date.now()}`, { cache: 'no-store' })
 }
@@ -242,9 +242,9 @@ export async function downloadOnlineProject(id: string): Promise<Uint8Array> {
   return new Uint8Array(await resp.arrayBuffer())
 }
 
-export async function uploadOnlineProjectImage(projectId: string, taskId: string | undefined, image: StoredImage): Promise<OnlineProjectImageResponse> {
+export async function uploadOnlineProjectImage(projectId: string, taskId: string | undefined, image: Omit<StoredImage, 'id'> & { id?: string }): Promise<OnlineProjectImageResponse> {
   const form = new FormData()
-  form.set('image_id', image.id)
+  if (image.id) form.set('image_id', image.id)
   if (taskId) form.set('task_id', taskId)
   if (image.source) form.set('source', image.source)
   if (image.width) form.set('width', String(image.width))
@@ -254,7 +254,7 @@ export async function uploadOnlineProjectImage(projectId: string, taskId: string
     form.set('image_url', imageUrl)
   } else {
     const blob = await dataUrlToBlob(image.dataUrl)
-    form.set('image', blob, image.id)
+    form.set('image', blob, image.id ?? 'generated-image')
   }
   const resp = await authFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/images`, {
     method: 'POST',
@@ -264,7 +264,11 @@ export async function uploadOnlineProjectImage(projectId: string, taskId: string
     const data = await resp.json().catch(() => null) as { message?: string } | null
     throw new Error(data?.message || `项目图片保存失败：HTTP ${resp.status}`)
   }
-  return await resp.json() as OnlineProjectImageResponse
+  const saved = await resp.json() as OnlineProjectImageResponse | null
+  if (!saved || typeof saved.image_id !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(saved.image_id)) {
+    throw new Error('项目图片保存接口没有返回有效的图片 ID')
+  }
+  return saved
 }
 
 export async function listOnlineProjectImages(projectId: string): Promise<OnlineProjectImageResponse[]> {
@@ -436,15 +440,9 @@ export function readOnlineProjectArchive(bytes: Uint8Array): {
   agentConversations: AgentConversation[]
   favoriteCollections: FavoriteCollection[]
   defaultFavoriteCollectionId: string | null
-  images: StoredImage[]
   thumbnails: StoredImageThumbnail[]
 } {
   const { manifest, files } = readExportZip(bytes)
-  const images = Object.entries(manifest.imageFiles ?? {}).flatMap(([id, info]) => {
-    const dataUrl = readExportZipFileAsDataUrl(files, info.path)
-    if (!dataUrl) return []
-    return [{ id, dataUrl, createdAt: info.createdAt, source: info.source, width: info.width, height: info.height }]
-  })
   const thumbnails = Object.entries(manifest.thumbnailFiles ?? {}).flatMap(([id, info]) => {
     const thumbnailDataUrl = readExportZipFileAsDataUrl(files, info.path)
     if (!thumbnailDataUrl) return []
@@ -456,7 +454,6 @@ export function readOnlineProjectArchive(bytes: Uint8Array): {
     agentConversations: manifest.agentConversations ?? [],
     favoriteCollections: manifest.favoriteCollections ?? [],
     defaultFavoriteCollectionId: manifest.defaultFavoriteCollectionId ?? null,
-    images,
     thumbnails,
   }
 }

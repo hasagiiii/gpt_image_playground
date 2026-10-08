@@ -12,7 +12,7 @@ vi.mock('./db', () => ({
   getAllImages: async () => images,
 }))
 
-import { buildLegacyProjectArchive, buildOnlineProjectArchive, deleteOnlineProject, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjects, saveOnlineProjectCanvas, saveOnlineProjectTask, uploadOnlineProjectImage } from './onlineProjects'
+import { buildLegacyProjectArchive, buildOnlineProjectArchive, deleteOnlineProject, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjects, readOnlineProjectArchive, saveOnlineProjectCanvas, saveOnlineProjectTask, uploadOnlineProjectImage } from './onlineProjects'
 
 function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   return {
@@ -179,6 +179,10 @@ describe('onlineProjects', () => {
     expect(parsed.manifest.favoriteCollections?.map((item) => item.id)).toEqual(['favorite-a'])
     expect(parsed.manifest.defaultFavoriteCollectionId).toBe('favorite-a')
     expect(parsed.manifest.imageFiles).toEqual({})
+    const loaded = readOnlineProjectArchive(new Uint8Array(await archive.arrayBuffer()))
+    expect(loaded).not.toHaveProperty('images')
+    expect(loaded.project?.id).toBe(project.id)
+    expect(loaded.tasks.map((item) => item.id)).toEqual(['project-task'])
   })
 
   it('uploads a generated image as an independent project record', async () => {
@@ -222,6 +226,24 @@ describe('onlineProjects', () => {
     const urlForm = authFetch.mock.calls[0][1]?.body as FormData
     expect(urlForm.get('image_url')).toBe('https://cdn.example/generated.png')
     expect(urlForm.get('image')).toBe(null)
+  })
+
+  it('omits the ID for new generated images and uses the backend assigned ID', async () => {
+    authFetch.mockResolvedValueOnce(new Response(JSON.stringify({ image_id: 'backend-assigned-id' }), { status: 201 }))
+    const result = await uploadOnlineProjectImage('project-a', 'task-a', {
+      dataUrl: 'data:image/png;base64,AAECAw==', source: 'generated',
+    })
+    const form = authFetch.mock.calls[0][1]?.body as FormData
+    expect(form.has('image_id')).toBe(false)
+    expect(form.get('image')).toBeInstanceOf(Blob)
+    expect(result.image_id).toBe('backend-assigned-id')
+  })
+
+  it('rejects a saved image response without an ID', async () => {
+    authFetch.mockResolvedValueOnce(new Response('{}', { status: 201 }))
+    await expect(uploadOnlineProjectImage('project-a', 'task-a', {
+      dataUrl: 'https://cdn.example/a.png', source: 'generated',
+    })).rejects.toThrow('没有返回有效的图片 ID')
   })
 
   it('uses the direct image URL when the project image already has one', async () => {

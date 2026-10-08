@@ -1325,7 +1325,9 @@ export default function AgentWorkspace({ embedded = false, onCollapse, readOnly 
                               <CopyIcon className="w-4 h-4" />
                             </AgentActionButton>
                             <AgentActionButton tooltip="重新生成" disabled={readOnly} className={`rounded-md p-1.5 text-gray-400 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readOnly ? '' : 'hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10'} ${readOnlyActionClass}`} onClick={() => {
-                              if (conversation && round) void regenerateAgentAssistantMessage(conversation.id, round.id);
+                              if (conversation && round) void regenerateAgentAssistantMessage(conversation.id, round.id).catch((err) => {
+                                useStore.getState().showToast(err instanceof Error ? err.message : '重新生成失败', 'error')
+                              })
                             }}>
                               <RefreshIcon className="w-4 h-4" />
                             </AgentActionButton>

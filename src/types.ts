@@ -269,6 +269,8 @@ export interface TaskRecord {
   maskImageId?: string | null
   /** 输出图片的 image store id 列表 */
   outputImages: string[]
+  /** 按后端图片 ID 保存直链，缓存缺失时仍可展示。 */
+  outputImageUrls?: Record<string, string>
   /** Agent 引用使用的稳定输出槽位；删除单图时保留 null，避免后续引用编号漂移 */
   outputImageSlots?: Array<string | null>
   /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */

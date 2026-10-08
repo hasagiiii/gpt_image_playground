@@ -152,6 +152,7 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
   const pinchRef = useRef<{ distance: number; screenCenter: { x: number; y: number }; canvasCenter: { x: number; y: number }; viewport: ProjectCanvasState['viewport'] } | null>(null)
   const [viewport, setViewport] = useState(project.canvas?.viewport ?? { x: 0, y: 0, scale: 1 })
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
+  const [imageDimensions, setImageDimensions] = useState<Record<string, { dataUrl: string; width: number; height: number }>>({})
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
   const [infoImageId, setInfoImageId] = useState<string | null>(null)
   const [agentDetailTask, setAgentDetailTask] = useState<TaskRecord | null>(null)
@@ -207,6 +208,18 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
     }))
     return { ...ensured, items }
   }, [errorNodeById, errorNodeIds, outputImageIds, project.canvas, tasks])
+
+  useEffect(() => {
+    console.info('[只读画布] 画布投影', {
+      projectId: project.id,
+      persistedViewport: project.canvas?.viewport,
+      derivedViewport: canvas.viewport,
+      persistedItems: Object.fromEntries(Object.entries(project.canvas?.items ?? {}).map(([id, item]) => [id, { x: item.x, y: item.y, width: item.width, z: item.z, rotation: item.rotation, aspectRatio: item.operator?.aspectRatio }])),
+      derivedItems: Object.fromEntries(Object.entries(canvas.items).map(([id, item]) => [id, { x: item.x, y: item.y, width: item.width, z: item.z, rotation: item.rotation, aspectRatio: item.operator?.aspectRatio }])),
+      outputImageIds,
+      taskIds: tasks.map((task) => task.id),
+    })
+  }, [canvas, outputImageIds, project.canvas, project.id, tasks])
   const taskByImageId = useMemo(() => {
     const map = new Map<string, TaskRecord>()
     for (const task of tasks) {
@@ -220,7 +233,8 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
       .filter(([id]) => liveNodeIds.has(id))
       .map(([id, item]) => {
         const errorNode = errorNodeById.get(id)
-        const image = images[id]
+        const loaded = imageDimensions[id]
+        const image = loaded && loaded.dataUrl === images[id]?.dataUrl ? { ...images[id], ...loaded } : images[id]
         const dimensions = image?.width && image?.height ? { width: image.width, height: image.height } : errorNode?.dimensions
         return {
           id,
@@ -237,7 +251,62 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
         }
       })
       .sort((a, b) => a.item.z - b.item.z || a.id.localeCompare(b.id))
-  }, [canvas.items, errorNodeById, errorNodeIds, images, outputImageIds, taskByImageId])
+  }, [canvas.items, errorNodeById, errorNodeIds, imageDimensions, images, outputImageIds, taskByImageId])
+
+  useEffect(() => {
+    console.info('[只读画布] 节点几何', {
+      projectId: project.id,
+      viewport,
+      nodes: nodes.map((node) => ({
+        id: node.id,
+        x: node.item.x,
+        y: node.item.y,
+        width: node.item.width,
+        height: getCanvasItemHeight(node.item, node.ratio),
+        ratio: node.ratio,
+        savedAspectRatio: node.item.operator?.aspectRatio,
+        imageWidth: node.image?.width,
+        imageHeight: node.image?.height,
+        source: node.item.operator?.aspectRatio ? 'canvas.operator.aspectRatio' : node.image?.width && node.image?.height ? 'image.metadata' : 'fallback.1:1',
+      })),
+    })
+  }, [nodes, project.id])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const containerRect = container.getBoundingClientRect()
+    const domNodes = nodes.map((node) => {
+      const element = Array.from(container.querySelectorAll<HTMLElement>('[data-canvas-node]')).find((candidate) => candidate.dataset.nodeKey === node.id)
+      if (!element) return { id: node.id, rendered: false }
+      const frame = element.firstElementChild as HTMLElement | null
+      const rect = element.getBoundingClientRect()
+      const frameRect = frame?.getBoundingClientRect()
+      const frameHeight = getCanvasItemHeight(node.item, node.ratio)
+      return {
+        id: node.id,
+        rendered: true,
+        expected: {
+          left: viewport.x + node.item.x * viewport.scale,
+          top: viewport.y + node.item.y * viewport.scale,
+          width: node.item.width * viewport.scale,
+          height: frameHeight * viewport.scale,
+        },
+        nodeRect: { left: rect.left - containerRect.left, top: rect.top - containerRect.top, width: rect.width, height: rect.height },
+        frameRect: frameRect ? { left: frameRect.left - containerRect.left, top: frameRect.top - containerRect.top, width: frameRect.width, height: frameRect.height } : null,
+        css: { left: element.style.left, top: element.style.top, width: element.style.width, transform: element.style.transform },
+      }
+    })
+    console.info('[只读画布] DOM几何', {
+      projectId: project.id,
+      container: { left: containerRect.left, top: containerRect.top, width: containerRect.width, height: containerRect.height },
+      viewport,
+      worldTransform: container.querySelector<HTMLElement>('.origin-top-left')?.style.transform,
+      nodeCount: nodes.length,
+      visibleNodeCount: domNodes.filter((node) => node.rendered).length,
+      domNodes,
+    })
+  }, [containerSize, nodes, project.id, viewport])
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node] as const)), [nodes])
   const selectedNode = selectedImageId ? nodeById.get(selectedImageId) ?? null : null
   const selectedItem = selectedNode?.item
@@ -684,6 +753,36 @@ export default function AdminCanvasViewer({ project, tasks, agentConversations, 
                       alt={label}
                       className={crop ? 'absolute max-w-none' : node.item.operator?.aspectRatio ? 'block h-full w-full object-fill' : 'block h-auto w-full object-contain'}
                       draggable={false}
+                      onLoad={(event) => {
+                        const el = event.currentTarget
+                        console.info('[只读画布] 图片加载完成', {
+                          projectId: project.id,
+                          imageId: node.id,
+                          src: node.image?.dataUrl,
+                          naturalWidth: el.naturalWidth,
+                          naturalHeight: el.naturalHeight,
+                          metadataWidth: node.image?.width,
+                          metadataHeight: node.image?.height,
+                          item: { x: node.item.x, y: node.item.y, width: node.item.width, aspectRatio: node.item.operator?.aspectRatio },
+                        })
+                        if (!el.naturalWidth || !el.naturalHeight) return
+                        // 他人图片可能没有尺寸元数据，和正式画布一样以实际加载尺寸恢复几何。
+                        const dimensions = { dataUrl: node.image!.dataUrl, width: el.naturalWidth, height: el.naturalHeight }
+                        setImageDimensions((current) => {
+                          const previous = current[node.id]
+                          if (previous?.dataUrl === dimensions.dataUrl && previous.width === dimensions.width && previous.height === dimensions.height) return current
+                          return { ...current, [node.id]: dimensions }
+                        })
+                      }}
+                      onError={() => {
+                        console.warn('[只读画布] 图片加载失败', {
+                          projectId: project.id,
+                          imageId: node.id,
+                          src: node.image?.dataUrl,
+                          metadataWidth: node.image?.width,
+                          metadataHeight: node.image?.height,
+                        })
+                      }}
                       style={crop
                         ? {
                           width: `${100 / crop.width}%`,

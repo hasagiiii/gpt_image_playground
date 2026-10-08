@@ -34,6 +34,7 @@ import {
 } from '../lib/projectCanvas'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { getTaskIds } from '../lib/taskIds'
+import { getTaskImageUrl } from '../lib/taskImageUrl'
 import { getProjectTaskSnapshot } from '../lib/projectTasks'
 import { getCanvasConnectionPoint, type CanvasConnection } from '../lib/canvasConnections'
 import { downloadImageIds, exportImage, type ImageExportFormat } from '../lib/downloadImages'
@@ -156,8 +157,11 @@ function summarizeCanvasState(state: ProjectCanvasState | null | undefined) {
     x: item.x,
     y: item.y,
     width: item.width,
+    z: item.z,
     rotation: item.rotation,
     operatorRotation: item.operator?.rotation,
+    aspectRatio: item.operator?.aspectRatio,
+    crop: item.operator?.crop ? { ...item.operator.crop } : undefined,
   }]))
 }
 
@@ -247,7 +251,8 @@ function CanvasEdgeIndicator({ node, item, ratio, viewport, containerSize, onCli
   containerSize: { width: number; height: number }
   onClick: () => void
 }) {
-  const [src, setSrc] = useState(node.previewSrc ?? '')
+  const imageUrl = node.imageId ? getTaskImageUrl(node.task, node.imageId) : undefined
+  const [src, setSrc] = useState(node.previewSrc ?? imageUrl ?? '')
   const imageHeight = item.width / Math.max(0.01, ratio)
 
   useEffect(() => {
@@ -259,6 +264,7 @@ function CanvasEdgeIndicator({ node, item, ratio, viewport, containerSize, onCli
       setSrc('')
       return
     }
+    setSrc(imageUrl ?? '')
     let cancelled = false
     const unsubscribe = subscribeImageThumbnail(node.imageId, (thumbnail) => {
       if (!cancelled) setSrc(thumbnail.dataUrl)
@@ -270,7 +276,7 @@ function CanvasEdgeIndicator({ node, item, ratio, viewport, containerSize, onCli
       cancelled = true
       unsubscribe()
     }
-  }, [node.imageId, node.previewSrc])
+  }, [imageUrl, node.imageId, node.previewSrc])
 
   if (containerSize.width <= 0 || containerSize.height <= 0 || isCanvasRectVisible(item, imageHeight, viewport, containerSize, 0)) return null
 
@@ -379,7 +385,8 @@ function CanvasImageNode({
   interactionActive: boolean
   searchQuery: string
 }) {
-  const [src, setSrc] = useState(node.previewSrc ?? '')
+  const imageUrl = node.imageId ? getTaskImageUrl(node.task, node.imageId) : undefined
+  const [src, setSrc] = useState(node.previewSrc ?? imageUrl ?? '')
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(node.placeholderDimensions ?? null)
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState(item.name ?? node.imageId ?? '')
@@ -458,12 +465,19 @@ function CanvasImageNode({
 
     let cancelled = false
     let fullDataUrl: string | undefined
+    setSrc(imageUrl ?? '')
     let fullRequested = false
     const loadFullImage = async () => {
       if (fullRequested) return
       fullRequested = true
-      const dataUrl = await ensureImageCached(node.imageId!)
-      if (!dataUrl) return
+      const dataUrl = await ensureImageCached(node.imageId!).catch((err) => {
+        console.warn('[项目画布] 图片缓存读取失败', err)
+        return undefined
+      }) || imageUrl
+      if (!dataUrl) {
+        console.warn('[项目画布] 图片缓存和远程 URL 均不可用', { projectId: node.task.projectId ?? LOCAL_PROJECT_ID, taskId: node.task.id, imageId: node.imageId })
+        return
+      }
       fullDataUrl = dataUrl
       if (!cancelled) setSrc(dataUrl)
     }
@@ -485,7 +499,7 @@ function CanvasImageNode({
       cancelled = true
       unsubscribe()
     }
-  }, [node.imageId, node.previewSrc])
+  }, [imageUrl, node.imageId, node.previewSrc])
 
   const failureEndpoint = node.failure?.endpoint ?? node.failureEndpoint ?? node.task.failureEndpoint
   const imageDownloadFailure = isImageDownloadFailureError(failureEndpoint, node.error)
@@ -678,6 +692,33 @@ function CanvasImageNode({
           data-output-image-ids={node.imageId}
           draggable={false}
           alt=""
+          onLoad={(event) => {
+            const el = event.currentTarget
+            if (!dimensions && el.naturalWidth && el.naturalHeight) updateDimensions(el.naturalWidth, el.naturalHeight)
+            console.info('[项目画布] 图片加载完成', {
+              projectId: node.task.projectId ?? LOCAL_PROJECT_ID,
+              taskId: node.task.id,
+              imageId: node.imageId,
+              nodeKey: node.key,
+              src: src.startsWith('data:') ? `${src.slice(0, src.indexOf(',') + 1)}…(${src.length} 字符)` : src,
+              naturalWidth: el.naturalWidth,
+              naturalHeight: el.naturalHeight,
+              metadataWidth: dimensions?.width,
+              metadataHeight: dimensions?.height,
+              item: { x: item.x, y: item.y, width: item.width, aspectRatio: item.operator?.aspectRatio },
+            })
+          }}
+          onError={() => {
+            console.warn('[项目画布] 图片加载失败', {
+              projectId: node.task.projectId ?? LOCAL_PROJECT_ID,
+              taskId: node.task.id,
+              imageId: node.imageId,
+              nodeKey: node.key,
+              src: src.startsWith('data:') ? `${src.slice(0, src.indexOf(',') + 1)}…(${src.length} 字符)` : src,
+              metadataWidth: dimensions?.width,
+              metadataHeight: dimensions?.height,
+            })
+          }}
           className={cropEditing || crop ? 'absolute max-w-none' : item.operator?.aspectRatio ? 'block h-full w-full object-fill' : 'block h-auto w-full object-contain'}
           style={cropEditing && dimensions
             ? { width: '100%', height: '100%', left: 0, top: 0, objectFit: 'fill', ...(flipX || flipY ? { transform: `scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})` } : {}) }
@@ -1137,6 +1178,25 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
         projectId: canvasProjectId,
         source: cachedCanvas ? 'localStorage.projectCanvasCache' : activeProject?.canvas ? 'IndexedDB.project' : 'memory/default',
         canvas: sourceCanvas,
+      })
+      console.info('[项目画布] 初始化视口', {
+        projectId: canvasProjectId,
+        source: cachedCanvas ? 'localStorage.projectCanvasCache' : activeProject?.canvas ? 'IndexedDB.project' : 'memory/default',
+        sourceViewport: { ...sourceCanvas.viewport },
+        viewport: { ...next.viewport },
+        preserveLocalViewport,
+      })
+      console.info('[项目画布] 画布投影', {
+        projectId: canvasProjectId,
+        persistedViewport: activeProject?.canvas?.viewport,
+        cachedViewport: cachedCanvas?.viewport,
+        derivedViewport: { ...next.viewport },
+        persistedItems: summarizeCanvasState(activeProject?.canvas),
+        cachedItems: summarizeCanvasState(cachedCanvas),
+        derivedItems: summarizeCanvasState(next),
+        outputImageIds: [...projectImageIds],
+        taskIds: projectTasks.map((task) => task.id),
+        taskImages: projectTasks.map((task) => ({ taskId: task.id, status: task.status, outputImageIds: [...task.outputImages] })),
       })
       console.info('[画布历史] 同步画布', {
         projectId: canvasProjectId,
@@ -1779,6 +1839,69 @@ export default function ProjectCanvas({ agentPanelCollapsed = false, canvasHeade
     const ratio = ratios[node.key] ?? 1
     return isCanvasRectVisible(item, item.width / ratio, canvas.viewport, containerSize)
   }), [canvas.viewport, containerSize, nodeItems, nodes, ratios, selectedKey])
+
+  useEffect(() => {
+    // 交互结束后再读取 DOM，避免拖动、缩放时反复测量和刷屏。
+    const timer = window.setTimeout(() => {
+      const container = containerRef.current
+      if (!container) return
+      const viewport = canvas.viewport
+      const containerRect = container.getBoundingClientRect()
+      const elements = new Map(Array.from(container.querySelectorAll<HTMLElement>('[data-canvas-node]')).map((el) => [el.dataset.nodeKey, el]))
+      const geometry = nodes.map((node) => {
+        const item = nodeItems[node.key]
+        const dimensions = imageDimensions[node.key] ?? node.placeholderDimensions
+        const ratio = ratios[node.key] ?? (dimensions ? dimensions.width / Math.max(1, dimensions.height) : 1)
+        const crop = item.operator?.crop
+        const height = crop ? item.width * crop.height / (ratio * crop.width) : item.width / ratio
+        return {
+          id: node.key,
+          imageId: node.imageId,
+          taskId: node.task.id,
+          status: node.status,
+          x: item.x,
+          y: item.y,
+          width: item.width,
+          height,
+          rotation: item.rotation ?? item.operator?.rotation ?? 0,
+          ratio,
+          savedAspectRatio: item.operator?.aspectRatio,
+          imageWidth: dimensions?.width,
+          imageHeight: dimensions?.height,
+          source: item.operator?.aspectRatio ? 'canvas.operator.aspectRatio' : naturalRatios[node.key] ? 'image.metadata' : node.placeholderDimensions ? 'placeholder.dimensions' : 'fallback.1:1',
+          itemSource: transientNodeItems[node.key] ? 'transient' : canvas.items[node.key] ? 'canvas.items' : 'fallback',
+        }
+      })
+      console.info('[项目画布] 节点几何', { projectId: canvasProjectId, viewport, nodes: geometry })
+      const domNodes = geometry.map((node) => {
+        const el = elements.get(node.id)
+        if (!el) return { id: node.id, rendered: false }
+        const rect = el.getBoundingClientRect()
+        const frameRect = el.firstElementChild?.getBoundingClientRect()
+        const img = el.querySelector('img')
+        return {
+          id: node.id,
+          rendered: true,
+          expected: { left: viewport.x + node.x * viewport.scale, top: viewport.y + node.y * viewport.scale, width: node.width * viewport.scale, height: node.height * viewport.scale },
+          nodeRect: { left: rect.left - containerRect.left, top: rect.top - containerRect.top, width: rect.width, height: rect.height },
+          frameRect: frameRect ? { left: frameRect.left - containerRect.left, top: frameRect.top - containerRect.top, width: frameRect.width, height: frameRect.height } : null,
+          image: img ? { complete: img.complete, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight } : null,
+          css: { left: el.style.left, top: el.style.top, width: el.style.width, transform: el.style.transform },
+        }
+      })
+      console.info('[项目画布] DOM几何', {
+        projectId: canvasProjectId,
+        container: { left: containerRect.left, top: containerRect.top, width: containerRect.width, height: containerRect.height },
+        viewport,
+        worldTransform: container.querySelector<HTMLElement>('.origin-top-left')?.style.transform,
+        nodeCount: nodes.length,
+        visibleNodeCount: domNodes.filter((node) => node.rendered).length,
+        domNodes,
+      })
+    }, 150)
+    return () => window.clearTimeout(timer)
+  }, [canvas.items, canvas.viewport, canvasProjectId, containerSize, imageDimensions, naturalRatios, nodeItems, nodes, ratios, transientNodeItems, visibleNodes])
+
   const selectedNode = nodes.find((node) => node.key === selectedKey)
   const selectedItem = selectedKey ? nodeItems[selectedKey] : undefined
   const selectedDimensions = selectedKey ? imageDimensions[selectedKey] : undefined

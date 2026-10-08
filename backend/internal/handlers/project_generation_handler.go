@@ -525,6 +525,13 @@ func buildGenerationTaskRecord(req projectGenerationRequest, result *projectGene
 	}
 
 	task["outputImages"] = result.ImageIDs
+	outputImageURLs := make(map[string]string, len(result.ImageIDs))
+	for index, imageID := range result.ImageIDs {
+		if index < len(result.ImageURLs) && result.ImageURLs[index] != "" {
+			outputImageURLs[imageID] = result.ImageURLs[index]
+		}
+	}
+	task["outputImageUrls"] = outputImageURLs
 	task["actualParams"] = result.ActualParams
 	actualParamsByImage := make(map[string]projectGenerationParams, len(result.ImageIDs))
 	for index, imageID := range result.ImageIDs {
@@ -979,12 +986,8 @@ func (h *ProjectGenerationHandler) saveGeneratedImage(ctx context.Context, userI
 		}
 		imageURL = strings.TrimSpace(result.URL)
 	}
-	idDigest := sha256.Sum256([]byte(imageURL))
-	if imageURL == "" {
-		idDigest = sha256.Sum256([]byte(dataURL))
-	}
 	imageDigest := sha256.Sum256(data)
-	imageID := hex.EncodeToString(idDigest[:])
+	imageID := generatedProjectImageID(imageURL)
 	if _, err := h.projects.SaveImage(ctx, userID, models.ProjectImage{
 		ProjectID: projectID, ImageID: imageID, TaskID: taskID, Source: "generated",
 		MIMEType: mimeType, Width: width, Height: height, ImageURL: imageURL,

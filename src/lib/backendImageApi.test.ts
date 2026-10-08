@@ -42,6 +42,49 @@ describe('callBackendImageApi', () => {
     vi.mocked(authFetch).mockReset()
   })
 
+  it.each([
+    undefined,
+    [],
+    ['image-a'],
+    ['image-a', null],
+    ['image-a', ''],
+    ['image-a', '   '],
+    ['image-a', 'image-b', 'image-c'],
+  ])('rejects missing or misaligned backend image IDs: %j', async (imageIds) => {
+    vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      images: ['data:image/png;base64,AA==', 'data:image/png;base64,AQ=='],
+      image_ids: imageIds,
+    }), { status: 200 }))
+
+    await expect(callBackendImageApi({
+      project: project(),
+      task: task(),
+      apiKey: 'oidc-key',
+      provider: 'openai',
+      model: 'gpt-image-2',
+      apiMode: 'images',
+      allowPromptRewrite: false,
+      prompt: '生成两张图片',
+      params: { ...DEFAULT_PARAMS, n: 2 },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('图片 ID 缺失或与图片数量不一致')
+  })
+
+  it('preserves image, ID and URL order for multi-image results', async () => {
+    vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      images: ['data:image/png;base64,AQ==', 'data:image/png;base64,AA=='],
+      image_ids: ['backend-b', 'backend-a'],
+      image_urls: ['https://cdn.example/b.png', 'https://cdn.example/a.png'],
+    }), { status: 200 }))
+    const result = await callBackendImageApi({
+      project: project(), task: task(), apiKey: 'oidc-key', provider: 'openai', model: 'gpt-image-2',
+      apiMode: 'images', allowPromptRewrite: false, prompt: '生成两张图片', params: { ...DEFAULT_PARAMS, n: 2 }, inputImageDataUrls: [],
+    })
+    expect(result.imageIds).toEqual(['backend-b', 'backend-a'])
+    expect(result.images).toEqual(['data:image/png;base64,AQ==', 'data:image/png;base64,AA=='])
+    expect(result.imageUrls).toEqual(['https://cdn.example/b.png', 'https://cdn.example/a.png'])
+  })
+
   it('sends project generation to the authenticated backend', async () => {
     vi.mocked(authFetch).mockResolvedValueOnce(new Response(JSON.stringify({
       images: ['data:image/png;base64,AAECAw=='],
@@ -159,7 +202,7 @@ describe('callBackendImageApi', () => {
       .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }))
       .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }))
       .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ images: ['data:image/png;base64,AAECAw=='] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ images: ['data:image/png;base64,AAECAw=='], image_ids: ['image-a'] }), { status: 200 }))
 
     const result = await callBackendImageApi({
       project: { ...project(), id: 'project-a', remoteId: 'project-a' },

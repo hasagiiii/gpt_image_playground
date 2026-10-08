@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { ensureImageCached, useStore } from '../store'
+import { canAddProjectImages, ensureImageCached, useStore } from '../store'
 import { canvasToBlob, loadImage } from '../lib/canvasImage'
 import { blobToDataUrl } from '../lib/dataUrl'
 import { storeImage } from '../lib/db'
@@ -773,6 +773,7 @@ export default function MaskEditorModal() {
   }
 
   const handleSave = async () => {
+    if (!canAddProjectImages(useStore.getState().activeProjectId)) return
     const canvas = maskCanvasRef.current
     const savingSessionId = activeSessionIdRef.current
     if (!canvas || !sourceDataUrl || !imageId || !isReady || isSaving || !savingSessionId) return

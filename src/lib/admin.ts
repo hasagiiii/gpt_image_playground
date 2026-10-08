@@ -1,7 +1,7 @@
 import type { Project, StoredImage } from '../types'
 import { authFetch } from '../auth/api'
 import type { MaterialList } from './materialApi'
-import type { OnlineProjectImageResponse, OnlineProjectResponse } from './onlineProjects'
+import { fetchOnlineProjectResource, type OnlineProjectImageResponse, type OnlineProjectResponse } from './onlineProjects'
 
 export interface AdminUser {
   id: string
@@ -28,7 +28,7 @@ export async function listAdminUsers(): Promise<AdminUser[]> {
 }
 
 export async function listAdminUserProjects(userId: string): Promise<OnlineProjectResponse[]> {
-  const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects`, { cache: 'no-store' })
+  const resp = await fetchOnlineProjectResource(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects`)
   if (!resp.ok) throw new Error(await readError(resp, '用户画布列表加载失败'))
   const data = await resp.json() as { projects?: unknown }
   return Array.isArray(data.projects) ? data.projects as OnlineProjectResponse[] : []
@@ -47,13 +47,13 @@ export async function listAdminUserMaterials(userId: string, options: { page?: n
 }
 
 export async function downloadAdminUserProject(userId: string, projectId: string): Promise<Uint8Array> {
-  const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}`, { cache: 'no-store' })
+  const resp = await fetchOnlineProjectResource(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}`)
   if (!resp.ok) throw new Error(await readError(resp, '用户画布加载失败'))
   return new Uint8Array(await resp.arrayBuffer())
 }
 
 export async function listAdminUserProjectImages(userId: string, projectId: string): Promise<OnlineProjectImageResponse[]> {
-  const resp = await authFetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images`, { cache: 'no-store' })
+  const resp = await fetchOnlineProjectResource(`/api/v1/admin/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/images`)
   if (!resp.ok) throw new Error(await readError(resp, '用户画布图片列表加载失败'))
   const data = await resp.json() as unknown
   return Array.isArray(data) ? data as OnlineProjectImageResponse[] : []

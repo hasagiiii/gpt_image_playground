@@ -55,7 +55,6 @@ import {
   hashDataUrl,
   storeImage,
   storeImageReference,
-  storeImageWithSize,
 } from './lib/db'
 import { createRequestId, getAccessToken, isAuthEnabled } from './auth/api'
 import { buildLegacyProjectArchive, buildOnlineProjectArchive, clearLegacyProjectUploadId, createOnlineProject, deleteOnlineProject, deleteOnlineProjectImage, deleteOnlineProjectTask, downloadOnlineProject, downloadOnlineProjectImage, getAgentConversationReferencedImageIds, getLegacyProjectUploadId, getOnlineProjectCanvas, getTaskReferencedImageIds, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
@@ -63,6 +62,9 @@ import { getPersistableAgentConversation, getPersistableAgentConversations, getP
 import type { OnlineProjectResponse } from './lib/onlineProjects'
 import { callImageApi } from './lib/api'
 import { callBackendImageApi } from './lib/backendImageApi'
+import { storeGeneratedImage } from './lib/generatedImages'
+import { restoreOnlineImage } from './lib/onlineImageCache'
+import { getTaskImageUrl } from './lib/taskImageUrl'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
 import { callSeedreamLayers, DEFAULT_LAYER_PROMPT, SEEDREAM_LAYER_MODEL } from './lib/seedreamLayers'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
@@ -84,7 +86,7 @@ import { ensureProjectCanvas, normalizeProjectCanvas, removeCanvasFavoriteCollec
 import { layoutImageLayers } from './lib/imageLayerLayout'
 import { getTaskOutputImageSlots, removeTaskOutputImage as removeTaskOutputImageRecord } from './lib/singleImageOperations'
 import { playCompletionSound } from './lib/completionSound'
-import { getProjectTaskSnapshot, LOCAL_PROJECT_ID, taskBelongsToProject } from './lib/projectTasks'
+import { getProjectTaskSnapshot, isLocalProject, LOCAL_IMAGE_CREATION_ERROR, LOCAL_PROJECT_ID, taskBelongsToProject } from './lib/projectTasks'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export { LOCAL_PROJECT_ID }
@@ -247,6 +249,7 @@ function getProjectImageHistoryBeforeTasks(beforeTasks: TaskRecord[], afterTasks
       imageLayers: undefined,
       layerUsage: undefined,
       actualParamsByImage: undefined,
+      outputImageUrls: undefined,
       revisedPromptByImage: undefined,
       rawImageUrls: undefined,
       status: 'done' as const,
@@ -362,9 +365,30 @@ export async function ensureImageCached(id: string): Promise<string | undefined>
   const cached = getCachedImage(id)
   if (cached) return cached
   const rec = await getImage(id)
-  if (rec) {
-    cacheImage(id, rec.dataUrl)
-    return rec.dataUrl
+  const src = rec?.dataUrl || rec?.remoteUrl
+  if (src) {
+    cacheImage(id, src)
+    return src
+  }
+  const state = useStore.getState()
+  const task = state.tasks.find((item) => item.outputImages.includes(id))
+    ?? state.tasks.find((item) => getTaskReferencedImageIds(item).includes(id))
+  const url = task && getTaskImageUrl(task, id)
+  if (url) {
+    cacheImage(id, url)
+    return url
+  }
+  const project = state.projects.find((item) => item.id === task?.projectId)
+    ?? state.projects.find((item) => item.canvas?.items[id])
+  if (project?.storage !== 'online') return undefined
+  try {
+    const image = await restoreOnlineImage(project.remoteId ?? project.id, id)
+    if (!image) return undefined
+    cacheImage(id, image.dataUrl)
+    notifyImageThumbnail(id, { dataUrl: image.dataUrl, width: image.width, height: image.height })
+    return image.dataUrl
+  } catch (err) {
+    console.warn('图片缓存缺失，恢复远程图片 URL 失败', { projectId: project.id, imageId: id, error: err })
   }
   return undefined
 }
@@ -381,11 +405,12 @@ export async function ensureImageThumbnailCached(id: string): Promise<{ dataUrl:
 
   const rec = await getStoredFreshImageThumbnail(id)
   if (!rec?.thumbnailDataUrl) {
+    const dataUrl = await ensureImageCached(id)
+    if (!dataUrl) return undefined
     scheduleThumbnailBackfill([id], 'visible')
     const image = await getImage(id)
-    if (!image?.dataUrl) return undefined
     // 远程 URL 可能因跨域限制无法写入 canvas，直接使用原图保证仍可展示。
-    return { dataUrl: image.dataUrl, width: image.width, height: image.height }
+    return { dataUrl, width: image?.width, height: image?.height }
   }
 
   const image = await getImage(id)
@@ -2523,6 +2548,14 @@ function getActiveTaskProjectId() {
   return id && id !== LOCAL_PROJECT_ID ? id : undefined
 }
 
+export function canAddProjectImages(projectId: string | null | undefined) {
+  const state = useStore.getState()
+  // 首页的参考图草稿会随提交进入新建的在线项目。
+  if (projectId === null ? isAuthEnabled() : !isLocalProject(projectId, state.projects)) return true
+  state.showToast(LOCAL_IMAGE_CREATION_ERROR, 'error')
+  return false
+}
+
 // 内容版本号只由本地变更推进，用于判断同步期间是否又发生改动。
 // 不能用 updatedAt 承担这个职责：它会被服务端时间覆盖，两个时钟比对必然误判。
 function nextContentVersion(project: Project) {
@@ -2712,19 +2745,6 @@ async function syncOnlineProjectImages(projectId: string) {
     .map((image) => deleteOnlineProjectImage(remoteId, image.image_id)))
 }
 
-async function uploadGeneratedProjectImages(task: TaskRecord, images: StoredImage[]) {
-  if (!task.projectId || images.length === 0) return
-  const project = useStore.getState().projects.find((item) => item.id === task.projectId)
-  if (project?.storage !== 'online' || !project.remoteId) return
-  const remoteId = project.remoteId
-
-  try {
-    await Promise.all(images.map((image) => uploadOnlineProjectImage(remoteId, task.id, image)))
-  } catch (err) {
-    console.warn('项目图片即时保存失败，将在项目同步时重试：', err)
-    scheduleOnlineProjectSync(project.id)
-  }
-}
 
 function touchProject(id?: string, syncArchive = true) {
   if (!id) return
@@ -3359,11 +3379,12 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageUrls: result.imageUrls })
+  const { outputIds, outputImageUrls, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageIds: result.imageIds, imageUrls: result.imageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
 
   updateTaskInStore(task.id, {
     outputImages: outputIds,
+    outputImageUrls,
     transparentOriginalImages: transparentOriginalImageIds,
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
@@ -3386,6 +3407,7 @@ async function recoverFalTask(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
   if (!task || task.apiProvider !== 'fal' || !task.falRequestId || !task.falEndpoint || task.status === 'done') return
+  if (isLocalProject(task.projectId, useStore.getState().projects)) return
   const requestId = task.requestId ?? createRequestId()
   if (!task.requestId) void updateTaskInStore(taskId, { requestId })
 
@@ -3429,13 +3451,14 @@ async function completeRecoveredCompositeTask(task: TaskRecord, result: Awaited<
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageUrls: result.imageUrls })
+  const { outputIds, outputImageUrls, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageIds: result.imageIds, imageUrls: result.imageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {
     imageLayers: result.imageLayers,
     layerUsage: result.layerUsage,
     outputImages: outputIds,
+    outputImageUrls,
     transparentOriginalImages: transparentOriginalImageIds,
     rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
     actualParams: {
@@ -3462,6 +3485,7 @@ async function completeRecoveredCompositeTask(task: TaskRecord, result: Awaited<
 async function recoverCompositeTask(taskId: string) {
   const task = useStore.getState().tasks.find((item) => item.id === taskId)
   if (!task || task.status === 'done' || !task.compositeRequestId) return
+  if (isLocalProject(task.projectId, useStore.getState().projects)) return
   const requestId = task.requestId ?? createRequestId()
   if (!task.requestId) void updateTaskInStore(taskId, { requestId })
   const apiOverride = task.apiOverride
@@ -3840,6 +3864,7 @@ async function recoverAgentRoundImageStatus(conversationId: string, roundId: str
   const conversation = agentConversations.find((item) => item.id === conversationId)
   const round = conversation?.rounds.find((item) => item.id === roundId)
   if (!conversation || !round || round.status === 'done' || !round.imageStatusRequestIds?.length) return
+  if (isLocalProject(getAgentConversationProjectId(conversation, useStore.getState().tasks), useStore.getState().projects)) return
   const requestId = round.requestId ?? createRequestId()
   const requestRound = round.requestId ? round : { ...round, requestId }
   if (!round.requestId) {
@@ -4061,11 +4086,12 @@ async function completeRecoveredImageStatusTask(task: TaskRecord, records: Image
   const latestAfterDownload = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latestAfterDownload || !canRecoverTaskImageStatus(latestAfterDownload)) return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, images, { imageUrls: urls })
+  const { outputIds, outputImageUrls, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, images, { imageUrls: urls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {
     outputImages: outputIds,
+    outputImageUrls,
     transparentOriginalImages: transparentOriginalImageIds,
     outputErrors: failedRequests.length ? failedRequests : undefined,
     rawImageUrls: urls.length ? urls : undefined,
@@ -4092,6 +4118,7 @@ async function recoverImageStatusTask(taskId: string) {
   const task = tasks.find((item) => item.id === taskId)
   const requestIds = task?.imageStatusRequestIds ?? []
   if (!task || task.status === 'done' || (task.apiProvider ?? 'openai') === 'fal' || requestIds.length === 0) return
+  if (isLocalProject(task.projectId, useStore.getState().projects)) return
   const requestId = task.requestId ?? createRequestId()
   if (!task.requestId) void updateTaskInStore(taskId, { requestId })
   if (!canRecoverTaskImageStatus(task)) {
@@ -4302,6 +4329,7 @@ async function loadOnlineProject(
   activeProjectId: string | null,
 ): Promise<OnlineProjectLoadResult> {
   const cached = localProjects.find((item) => item.id === response.id || item.remoteId === response.id)
+  console.info('has cached project', { projectId: response.id, cached: Boolean(cached) })
   const remote = createOnlineProject(response)
   const availableImageIds = new Set(localImageIds)
   let tasks: TaskRecord[] = localTasks.filter((task) => task.projectId === response.id)
@@ -4389,8 +4417,6 @@ async function loadOnlineProject(
         contentLoaded = true
         tasks = parsed.tasks.map((task) => ({ ...task, projectId: project.id }))
         agentConversations = normalizeAgentConversations(parsed.agentConversations).map((conversation) => ({ ...conversation, projectId: project.id }))
-        images.push(...parsed.images)
-        for (const image of parsed.images) availableImageIds.add(image.id)
         thumbnails.push(...parsed.thumbnails)
         favoriteCollections = projectFavoriteCollections
       } catch (err) {
@@ -4409,7 +4435,7 @@ async function loadOnlineProject(
         .find((task) => task.outputImages.length > 0) ?? tasks[0]
       const coverImageId = activeProjectId === null ? coverTask?.outputImages[0] : undefined
       for (const remoteImage of remoteImages) {
-        if (coverImageId && activeProjectId === null && remoteImage.image_id !== coverImageId) continue
+        if (coverImageId && activeProjectId === null && remoteImage.image_id !== coverImageId && !remoteImage.image_url) continue
         try {
           const hasLocalImage = availableImageIds.has(remoteImage.image_id)
           if (remoteImage.image_url && hasLocalImage) continue
@@ -4677,7 +4703,7 @@ async function initializeStore() {
     ),
   )
   for (const task of tasks) {
-    if (!isActiveProjectRecord(task.projectId)) continue
+    if (!isActiveProjectRecord(task.projectId) || isLocalProject(task.projectId, projects)) continue
     if (
       task.apiProvider === 'fal' &&
       task.falRequestId &&
@@ -4705,7 +4731,7 @@ async function initializeStore() {
     }
   }
   for (const conversation of useStore.getState().agentConversations) {
-    if (!isActiveProjectRecord(conversation.projectId)) continue
+    if (!isActiveProjectRecord(conversation.projectId) || isLocalProject(getAgentConversationProjectId(conversation, tasks), projects)) continue
     for (const round of conversation.rounds) {
       if (shouldScheduleAgentRoundImageStatusRecovery(conversation.id, round, tasks)) {
         scheduleAgentImageStatusRecovery(conversation.id, round.id, 0)
@@ -4848,6 +4874,7 @@ async function initializeStore() {
 
 /** 分层复用原图所在项目，不改动输入区草稿。 */
 export async function decomposeImage(task: TaskRecord, imageId: string, prompt = DEFAULT_LAYER_PROMPT) {
+  if (isLocalProject(task.projectId, useStore.getState().projects)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   const state = useStore.getState()
   if (!task.outputImages.includes(imageId)) throw new Error('当前图片不可分层')
   if (!prompt.trim()) throw new Error('请输入分层指令')
@@ -4890,6 +4917,7 @@ export async function decomposeImage(task: TaskRecord, imageId: string, prompt =
 
 /** 提交新任务 */
 export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; apiOverride?: ApiOverride } = {}) {
+  if (!canAddProjectImages(useStore.getState().activeProjectId)) return
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, oidcApiOverride, showToast, setConfirmDialog } =
     useStore.getState()
   const apiOverride = options.apiOverride ?? oidcApiOverride ?? undefined
@@ -5438,31 +5466,25 @@ function addTaskReferencedImageIds(target: Set<string>, task: TaskRecord) {
   for (const id of task.streamPartialImageIds || []) target.add(id)
 }
 
-async function storeTaskOutputImages(task: TaskRecord, images: string[], options: { alreadyStoredOnline?: boolean; imageUrls?: Array<string | undefined> } = {}) {
+async function storeTaskOutputImages(task: TaskRecord, images: string[], options: { imageIds?: string[]; imageUrls?: Array<string | undefined> } = {}) {
+  if (isLocalProject(task.projectId, useStore.getState().projects)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   const outputIds: string[] = []
+  const outputImageUrls: Record<string, string> = {}
   const outputDataUrls: string[] = []
   const outputImageSizes: Array<{ width?: number; height?: number }> = []
   const transparentOriginalImageIds: string[] = []
   const storedImageIds: string[] = []
-  const storedProjectImages: StoredImage[] = []
   const state = useStore.getState()
   const canvasProjectId = task.projectId ?? LOCAL_PROJECT_ID
   const project = state.projects.find((item) => item.id === canvasProjectId)
-  const reservedIds = new Set([
-    ...Object.keys(project?.canvas?.items ?? {}),
-    ...Object.keys(state.projectCanvasCache[canvasProjectId]?.items ?? {}),
-  ])
 
   try {
     for (const [index, dataUrl] of images.entries()) {
       const remoteUrl = options.imageUrls?.[index]
       let outputDataUrl = dataUrl
       if (task.transparentOutput) {
-        const original = await storeImageWithSize(dataUrl, 'generated', { reservedIds })
-        if (remoteUrl) await putImage({ ...original, dataUrl, remoteUrl, source: 'generated' })
-        reservedIds.add(original.id)
+        const original = await storeGeneratedImage(project, task.id, dataUrl, { id: options.imageIds?.[index], remoteUrl })
         storedImageIds.push(original.id)
-        storedProjectImages.push({ ...original, dataUrl, remoteUrl, source: 'generated' })
         cacheImage(original.id, dataUrl)
 
         try {
@@ -5471,6 +5493,7 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[], options
         } catch (err) {
           console.warn('透明背景后处理失败，已回退为原始输出', err)
           outputIds.push(original.id)
+          if (original.remoteUrl) outputImageUrls[original.id] = original.remoteUrl
           outputDataUrls.push(dataUrl)
           outputImageSizes.push(original)
           transparentOriginalImageIds.push('')
@@ -5478,21 +5501,18 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[], options
         }
       }
 
-      const stored = await storeImageWithSize(outputDataUrl, 'generated', { reservedIds })
-      const outputRemoteUrl = task.transparentOutput ? undefined : remoteUrl
-      if (outputRemoteUrl) await putImage({ ...stored, dataUrl: outputDataUrl, remoteUrl: outputRemoteUrl, source: 'generated' })
-      reservedIds.add(stored.id)
+      const stored = await storeGeneratedImage(project, task.id, outputDataUrl, task.transparentOutput ? {} : { id: options.imageIds?.[index], remoteUrl })
       storedImageIds.push(stored.id)
-      storedProjectImages.push({ ...stored, dataUrl: outputDataUrl, remoteUrl: outputRemoteUrl, source: 'generated' })
       cacheImage(stored.id, outputDataUrl)
       outputIds.push(stored.id)
+      if (stored.remoteUrl) outputImageUrls[stored.id] = stored.remoteUrl
       outputDataUrls.push(outputDataUrl)
       outputImageSizes.push(stored)
     }
 
-    if (!options.alreadyStoredOnline) await uploadGeneratedProjectImages(task, storedProjectImages)
     return {
       outputIds,
+      outputImageUrls,
       outputDataUrls,
       outputImageSizes,
       transparentOriginalImageIds: transparentOriginalImageIds.length ? transparentOriginalImageIds : undefined,
@@ -5524,7 +5544,10 @@ async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
 
 async function persistTaskStreamPartialImage(taskId: string, dataUrl: string) {
   try {
-    const imgId = await storeImage(dataUrl, 'generated')
+    const task = useStore.getState().tasks.find((item) => item.id === taskId)
+    if (!task || isLocalProject(task.projectId, useStore.getState().projects)) return
+    const project = useStore.getState().projects.find((item) => item.id === task.projectId)
+    const { id: imgId } = await storeGeneratedImage(project, taskId, dataUrl)
     cacheImage(imgId, dataUrl)
 
     const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
@@ -5536,7 +5559,6 @@ async function persistTaskStreamPartialImage(taskId: string, dataUrl: string) {
     const currentIds = latestTask.streamPartialImageIds || []
     if (currentIds.includes(imgId)) return
     updateTaskInStore(taskId, { streamPartialImageIds: [...currentIds, imgId] })
-    await uploadGeneratedProjectImages(latestTask, [{ id: imgId, dataUrl, source: 'generated' }])
   } catch (err) {
     console.error(err)
   }
@@ -5914,6 +5936,7 @@ async function buildAgentApiInput(conversation: AgentConversation, currentRound:
 
 export async function submitAgentMessage() {
   const state = useStore.getState()
+  if (!canAddProjectImages(state.activeProjectId ?? undefined)) return
   const activeAgentDraft = state.appMode !== 'agent' && state.activeAgentConversationId
     ? state.agentInputDrafts[state.activeAgentConversationId]
     : null
@@ -6079,6 +6102,8 @@ export async function submitAgentMessage() {
 
 export async function regenerateAgentAssistantMessage(conversationId: string, roundId: string) {
   const state = useStore.getState()
+  const conversation = state.agentConversations.find((item) => item.id === conversationId)
+  if (conversation && isLocalProject(getAgentConversationProjectId(conversation, state.tasks), state.projects)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   const { settings, params, showToast } = state
   const normalizedSettings = normalizeSettings(settings)
 
@@ -6092,7 +6117,6 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   const activeProfile = { ...applyAgentOidcOverrideToProfile(getAgentTextApiProfile(normalizedSettings)!), apiMode: 'responses' as const }
   const imageProfile = applyAgentOidcOverrideToProfile(getAgentImageApiProfile(normalizedSettings)!)
 
-  const conversation = state.agentConversations.find((item) => item.id === conversationId)
   const sourceRound = conversation?.rounds.find((item) => item.id === roundId) ?? null
   const sourceUserMessage = sourceRound
     ? conversation?.messages.find((message) => message.id === sourceRound.userMessageId) ?? null
@@ -6199,6 +6223,7 @@ async function executeAgentRound(
   imageProfile: ApiProfile,
   projectId?: string,
 ) {
+  if (!canAddProjectImages(projectId)) return
   const startedAt = Date.now()
   const controller = new AbortController()
   const controllerKey = getAgentRoundControllerKey(conversationId, roundId)
@@ -6333,7 +6358,8 @@ async function executeAgentRound(
         return taskId
       }
 
-      const stored = await storeImageWithSize(image.dataUrl, 'generated')
+      const project = useStore.getState().projects.find((item) => item.id === projectId)
+      const stored = await storeGeneratedImage(project, taskId, image.dataUrl)
       cacheImage(stored.id, image.dataUrl)
       const actualParams: Partial<TaskParams> = {
         ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
@@ -6347,6 +6373,7 @@ async function executeAgentRound(
             ? latestTask.prompt
             : round.prompt || userMessage.content,
         outputImages: [stored.id],
+        outputImageUrls: stored.remoteUrl ? { [stored.id]: stored.remoteUrl } : undefined,
         actualParams,
         actualParamsByImage: { [stored.id]: actualParams },
         revisedPromptByImage: image.revisedPrompt ? { [stored.id]: image.revisedPrompt } : undefined,
@@ -6357,10 +6384,6 @@ async function executeAgentRound(
         elapsed: Date.now() - (latestTask?.createdAt ?? startedAt),
         agentToolAction: image.action,
       })
-      const completedTask = useStore.getState().tasks.find((task) => task.id === taskId)
-      if (completedTask) {
-        await uploadGeneratedProjectImages(completedTask, [{ ...stored, dataUrl: image.dataUrl, source: 'generated' }])
-      }
       useStore.getState().setTaskStreamPreview(taskId)
       return taskId
     }
@@ -6779,7 +6802,9 @@ async function executeAgentRound(
         }
         const promptRefIds = uniqueIds(extractAgentReferenceIds(image.revisedPrompt ?? ''))
         const promptRefs = await resolveReferenceImages(promptRefIds)
-        const stored = await storeImageWithSize(image.dataUrl, 'generated')
+        const taskId = genId()
+        const project = useStore.getState().projects.find((item) => item.id === projectId)
+        const stored = await storeGeneratedImage(project, taskId, image.dataUrl)
         cacheImage(stored.id, image.dataUrl)
         const actualParams: Partial<TaskParams> = {
           ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
@@ -6787,7 +6812,7 @@ async function executeAgentRound(
           n: 1,
         }
         const task: TaskRecord = {
-          id: genId(),
+          id: taskId,
           requestId,
           ...(projectId ? { projectId } : {}),
           prompt: image.revisedPrompt ?? round?.prompt ?? userMessage.content,
@@ -6801,6 +6826,7 @@ async function executeAgentRound(
           maskTargetImageId: round?.maskTargetImageId ?? null,
           maskImageId: round?.maskImageId ?? null,
           outputImages: [stored.id],
+          outputImageUrls: stored.remoteUrl ? { [stored.id]: stored.remoteUrl } : undefined,
           actualParams,
           actualParamsByImage: { [stored.id]: actualParams },
           revisedPromptByImage: image.revisedPrompt ? { [stored.id]: image.revisedPrompt } : undefined,
@@ -6821,7 +6847,6 @@ async function executeAgentRound(
         playCompletionSound()
         attachTaskToAgentRound(task.id)
         await putTask(task)
-        await uploadGeneratedProjectImages(task, [{ ...stored, dataUrl: image.dataUrl, source: 'generated' }])
         touchProject(projectId, false)
       }
 
@@ -7044,6 +7069,7 @@ async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
   if (!task) return
+  if (!canAddProjectImages(task.projectId)) return
   const taskProfile = getTaskApiProfile(settings, task)
   if (!taskProfile && task.apiProfileId) {
     updateTaskInStore(taskId, {
@@ -7274,8 +7300,8 @@ async function executeTask(taskId: string) {
     }
 
     // 存储输出图片
-    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, {
-      alreadyStoredOnline: result.imagesStoredOnline && !task.transparentOutput,
+    const { outputIds, outputImageUrls, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, {
+      imageIds: result.imageIds,
       imageUrls: result.imageUrls,
     })
     const isAsyncCustomTask = taskProvider !== 'fal' && taskProvider !== 'openai' && Boolean(customTaskInfo)
@@ -7324,6 +7350,7 @@ async function executeTask(taskId: string) {
     useStore.getState().setTaskStreamPreview(taskId)
     updateExecutingTask({
       outputImages: outputIds,
+      outputImageUrls,
       imageLayers: result.imageLayers,
       layerUsage: result.layerUsage,
       transparentOriginalImages: transparentOriginalImageIds,
@@ -7575,6 +7602,7 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>, sy
 
 /** 重新下载已经拿到 URL 但首次下载失败的图片，并恢复任务结果。 */
 export async function redownloadTaskImage(task: TaskRecord, requestIndex?: number) {
+  if (isLocalProject(task.projectId, useStore.getState().projects)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   const outputError = requestIndex === undefined
     ? undefined
@@ -7590,7 +7618,7 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
     if (rawImageUrls.length === 0) throw new Error('当前失败图片没有可重新下载的链接')
     const mime = MIME_MAP[latest.params.output_format] || 'image/png'
     const dataUrls = await Promise.all(rawImageUrls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
-    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls, { imageUrls: rawImageUrls })
+    const { outputIds, outputImageUrls, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls, { imageUrls: rawImageUrls })
     const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
     const remainingOutputErrors = (latest.outputErrors ?? []).filter((item) => item.requestIndex !== outputError.requestIndex)
     const outputInsertIndex = outputError.requestIndex - (latest.outputErrors ?? []).filter((item) => item.requestIndex < outputError.requestIndex).length
@@ -7603,6 +7631,7 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
     }
     await updateTaskInStore(latest.id, {
       outputImages: nextOutputImages,
+      outputImageUrls: { ...latest.outputImageUrls, ...outputImageUrls },
       transparentOriginalImages: nextTransparentOriginalImages.length
         ? nextTransparentOriginalImages
         : undefined,
@@ -7636,10 +7665,11 @@ export async function redownloadTaskImage(task: TaskRecord, requestIndex?: numbe
   const dataUrls = compositeRecovery.result?.images.length
     ? compositeRecovery.result.images
     : await Promise.all(rawImageUrls.map((url) => fetchImageUrlAsDataUrl(url, mime)))
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls, { imageUrls: rawImageUrls })
+  const { outputIds, outputImageUrls, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(latest, dataUrls, { imageUrls: rawImageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
   await updateTaskInStore(latest.id, {
     outputImages: outputIds,
+    outputImageUrls,
     ...(compositeRecovery.result?.imageLayers ? { imageLayers: compositeRecovery.result.imageLayers, layerUsage: compositeRecovery.result.layerUsage } : {}),
     transparentOriginalImages: transparentOriginalImageIds,
     outputErrors: undefined,
@@ -7880,6 +7910,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteImage
 
 /** 重试失败的任务：创建新任务并执行。网络/限流等任务级失败由界面优先调用原位重试。 */
 export async function retryTask(task: TaskRecord) {
+  if (isLocalProject(task.projectId, useStore.getState().projects)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   if (task.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) throw new Error('该图已无法再进行更多分层')
   if (task.layerDecomposition) {
     const resume = task.status === 'error' && (task.failureEndpoint === 'status' || task.failureEndpoint === 'download')
@@ -7971,6 +8002,7 @@ export async function retryTask(task: TaskRecord) {
 
 /** 网络异常重试：复用原任务、请求链路和画布占位符。 */
 export async function retryTaskInPlace(task: TaskRecord) {
+  if (isLocalProject(task.projectId, useStore.getState().projects)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status !== 'error') throw new Error('当前任务不可重试')
   if (latest.failureCode === INVALID_IMAGE_LAYER_DECOMPOSITION_CODE) throw new Error('该图已无法再进行更多分层')
@@ -8437,11 +8469,12 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageUrls: result.imageUrls })
+  const { outputIds, outputImageUrls, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, { imageIds: result.imageIds, imageUrls: result.imageUrls })
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {
     outputImages: outputIds,
+    outputImageUrls,
     transparentOriginalImages: transparentOriginalImageIds,
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
@@ -8464,6 +8497,7 @@ async function recoverCustomTask(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
   if (!task || !task.customTaskId || task.status === 'done') return
+  if (isLocalProject(task.projectId, useStore.getState().projects)) return
   const requestId = task.requestId ?? createRequestId()
   if (!task.requestId) void updateTaskInStore(taskId, { requestId })
 
@@ -8680,6 +8714,7 @@ export async function addImageFromFile(file: File): Promise<void> {
 }
 
 export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
+  if (!canAddProjectImages(useStore.getState().activeProjectId)) return null
   if (!file.type.startsWith('image/')) return null
   const dataUrl = await fileToDataUrl(file)
   const id = await storeImage(dataUrl, 'upload')
@@ -8689,6 +8724,7 @@ export async function createInputImageFromFile(file: File): Promise<InputImage |
 
 /** 添加图片到输入（右键菜单）—— 支持 data/blob/http URL */
 export async function addImageFromUrl(src: string): Promise<void> {
+  if (!canAddProjectImages(useStore.getState().activeProjectId)) return
   const res = await fetch(src)
   const blob = await res.blob()
   if (!blob.type.startsWith('image/')) throw new Error('不是有效的图片')
@@ -8698,12 +8734,14 @@ export async function addImageFromUrl(src: string): Promise<void> {
 }
 
 export async function createInputImageFromDataUrl(dataUrl: string): Promise<InputImage> {
+  if (!canAddProjectImages(useStore.getState().activeProjectId)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
   return { id, dataUrl }
 }
 
 export async function createInputImageFromUrl(src: string): Promise<InputImage> {
+  if (!canAddProjectImages(useStore.getState().activeProjectId)) throw new Error(LOCAL_IMAGE_CREATION_ERROR)
   const res = await fetch(src)
   const blob = await res.blob()
   if (!blob.type.startsWith('image/')) throw new Error('素材不是有效图片')

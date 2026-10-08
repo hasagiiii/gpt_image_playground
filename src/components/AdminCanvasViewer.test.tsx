@@ -105,6 +105,84 @@ describe('AdminCanvasViewer coordinates', () => {
     vi.unstubAllGlobals()
   })
 
+  it.each([
+    { width: 400, height: 200, frameHeight: '100px' },
+    { width: 200, height: 400, frameHeight: '400px' },
+  ])('他人图片缺少尺寸时按实际 $width × $height 恢复布局，不改变保存的位置和视口', async ({ width, height, frameHeight }) => {
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    await act(async () => root.render(
+      <AdminCanvasViewer
+        project={project}
+        tasks={[task]}
+        agentConversations={[]}
+        images={{ 'image-a': { dataUrl: 'https://cdn.example/other-user.png' } }}
+        onBack={vi.fn()}
+      />,
+    ))
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const frame = node.firstElementChild as HTMLElement
+    const image = node.querySelector('img')!
+    Object.defineProperties(image, {
+      naturalWidth: { value: width },
+      naturalHeight: { value: height },
+    })
+
+    act(() => image.dispatchEvent(new Event('load')))
+
+    expect(frame.style.height).toBe(frameHeight)
+    expect(node.style.left).toBe('120px')
+    expect(node.style.top).toBe('-40px')
+    expect(node.style.width).toBe('200px')
+    expect(host.querySelector<HTMLElement>('.origin-top-left')?.style.transform).toBe('translate(100px, 60px) scale(2)')
+  })
+
+  it.each([
+    { operator: { crop: { x: 0.1, y: 0.1, width: 0.5, height: 0.25 } }, frameHeight: '50px' },
+    { operator: { aspectRatio: 0.5 }, frameHeight: '400px' },
+  ])('读取实际尺寸后保留裁剪和分层比例 $frameHeight', async ({ operator, frameHeight }) => {
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    await act(async () => root.render(
+      <AdminCanvasViewer
+        project={{ ...project, canvas: { ...project.canvas!, items: { 'image-a': { ...project.canvas!.items['image-a'], rotation: 30, operator } } } }}
+        tasks={[task]}
+        agentConversations={[]}
+        images={{ 'image-a': { dataUrl: 'https://cdn.example/other-user.png' } }}
+        onBack={vi.fn()}
+      />,
+    ))
+    const node = host.querySelector<HTMLElement>('[data-canvas-node]')!
+    const image = node.querySelector('img')!
+    Object.defineProperties(image, {
+      naturalWidth: { value: 400 },
+      naturalHeight: { value: 200 },
+    })
+
+    act(() => image.dispatchEvent(new Event('load')))
+
+    expect((node.firstElementChild as HTMLElement).style.height).toBe(frameHeight)
+    expect(node.style.transform).toBe('rotate(30deg)')
+  })
+
+  it('同一图片标识更换地址后不沿用上一张图片的尺寸', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    await act(async () => root.render(
+      <AdminCanvasViewer project={project} tasks={[task]} agentConversations={[]} images={{ 'image-a': { dataUrl: 'https://cdn.example/old.png' } }} onBack={vi.fn()} />,
+    ))
+    const image = host.querySelector<HTMLImageElement>('[data-canvas-node] img')!
+    Object.defineProperties(image, {
+      naturalWidth: { value: 400 },
+      naturalHeight: { value: 200 },
+    })
+    act(() => image.dispatchEvent(new Event('load')))
+    expect((image.parentElement as HTMLElement).style.height).toBe('100px')
+
+    await act(async () => root.render(
+      <AdminCanvasViewer project={project} tasks={[task]} agentConversations={[]} images={{ 'image-a': { dataUrl: 'https://cdn.example/new.png', width: 200, height: 400 } }} onBack={vi.fn()} />,
+    ))
+
+    expect((host.querySelector('[data-canvas-node]')!.firstElementChild as HTMLElement).style.height).toBe('400px')
+  })
+
   it('默认隐藏坐标，打开后显示中心、图片左上角和原点坐标', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
     await act(async () => root.render(

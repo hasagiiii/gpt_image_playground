@@ -3,10 +3,15 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -141,6 +146,42 @@ func TestProjectImageHandlerSave(t *testing.T) {
 	}
 	if len(store.data) != 0 || store.image.ImageURL != "https://files.example/project-image.png" || len(store.image.SHA256) != 64 {
 		t.Fatalf("project image should persist URL without bytes: image=%#v data=%v", store.image, store.data)
+	}
+}
+
+func TestProjectImageHandlerAssignsGeneratedImageID(t *testing.T) {
+	imageURL := "https://files.example/project-image.png"
+	digest := sha256.Sum256([]byte(imageURL))
+	wantID := hex.EncodeToString(digest[:])
+	for _, mode := range []string{"url", "file"} {
+		t.Run(mode, func(t *testing.T) {
+			store := &projectImageStoreStub{}
+			var req *http.Request
+			if mode == "url" {
+				form := url.Values{"task_id": {"task-a"}, "source": {"generated"}, "image_url": {imageURL}}
+				req = httptest.NewRequest(http.MethodPost, "/api/v1/projects/86d80cf2-976f-4b2c-8b2e-64fc0d4e77e8/images", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			} else {
+				req = newProjectImageUploadRequest(t, []byte("generated-image"))
+				if err := req.ParseMultipartForm(1 << 20); err != nil {
+					t.Fatal(err)
+				}
+				delete(req.PostForm, "image_id")
+				delete(req.MultipartForm.Value, "image_id")
+			}
+			w := httptest.NewRecorder()
+			newProjectImageRouter(store).ServeHTTP(w, req)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("want 201, got %d body=%s", w.Code, w.Body.String())
+			}
+			var image models.ProjectImage
+			if err := json.Unmarshal(w.Body.Bytes(), &image); err != nil {
+				t.Fatal(err)
+			}
+			if image.ImageID != wantID || store.imageID != wantID {
+				t.Fatalf("response and stored IDs must match generation ID: response=%q stored=%q want=%q", image.ImageID, store.imageID, wantID)
+			}
+		})
 	}
 }
 

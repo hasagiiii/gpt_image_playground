@@ -159,11 +159,12 @@ export default function AdminUsers() {
       .then(async (archiveBytes) => {
         const parsed = readOnlineProjectArchive(archiveBytes)
         const loadedProject = parsed.project ? { ...parsed.project, id: project.id, title: project.title, storage: 'online' as const, remoteId: project.id } : createAdminProject(project)
-        const images = Object.fromEntries(parsed.images.map((image) => [image.id, image]))
+        const images: Record<string, StoredImage> = {}
         console.info('[只读画布] 在线数据响应', {
           userId: selectedUserId,
           projectId: project.id,
           archiveBytes: archiveBytes.byteLength,
+          pasedRspArchived: parsed,
         })
         if (cancelled) return
         setViewer({ project: loadedProject, tasks: parsed.tasks, agentConversations: parsed.agentConversations, images })
@@ -177,11 +178,10 @@ export default function AdminUsers() {
           remoteImageIds: remoteImages.map((image) => image.image_id),
         })
         await Promise.all(remoteImages.map(async (remoteImage) => {
-          if (images[remoteImage.image_id]) return
           try {
             const image = toAdminUserProjectImage(remoteImage)
             if (cancelled || !image) return
-            images[remoteImage.image_id] = image
+            images[image.id] = image
             setViewer((current) => current ? { ...current, images: { ...current.images, [image.id]: image } } : current)
           } catch (error) {
             console.warn(`管理员读取项目图片 ${remoteImage.image_id} 失败`, error)
@@ -197,6 +197,9 @@ export default function AdminUsers() {
           canvasItemIds: Object.keys(loadedProject.canvas?.items ?? {}),
           imageCount: Object.keys(images).length,
           imageIds: Object.keys(images),
+          imageDimensions: Object.fromEntries(Object.entries(images).map(([id, image]) => [id, { width: image.width, height: image.height, hasRemoteUrl: Boolean(image.remoteUrl) }])),
+          canvasViewport: loadedProject.canvas?.viewport,
+          canvasItems: Object.fromEntries(Object.entries(loadedProject.canvas?.items ?? {}).map(([id, item]) => [id, { x: item.x, y: item.y, width: item.width, z: item.z, rotation: item.rotation, aspectRatio: item.operator?.aspectRatio }])),
         })
       })
       .catch((error) => {

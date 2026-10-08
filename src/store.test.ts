@@ -4,7 +4,7 @@ import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import type { AgentConversation, ExportData, Project, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
-const authState = vi.hoisted(() => ({ accessToken: null as string | null }))
+const authState = vi.hoisted(() => ({ accessToken: null as string | null, imageSeq: 0 }))
 vi.mock('./auth/api', () => ({
   createRequestId: () => 'frontend-request-id',
   isAuthEnabled: () => true,
@@ -104,8 +104,12 @@ vi.mock('./lib/db', () => {
       images.set(id, { id, dataUrl, source, createdAt: Date.now() })
       return id
     },
-    storeImageWithSize: async (dataUrl: string, source: StoredImage['source'] = 'upload') => {
-      const id = `stored-image-${++imageSeq}`
+    safeCreateImageThumbnail: async (dataUrl: string) => {
+      const size = dataUrl.match(/(\d+)x(\d+)/)
+      return size ? { width: Number(size[1]), height: Number(size[2]) } : {}
+    },
+    storeImageWithSize: async (dataUrl: string, source: StoredImage['source'] = 'upload', options: { preferredId?: string } = {}) => {
+      const id = options.preferredId ?? `stored-image-${++imageSeq}`
       const size = dataUrl.match(/(\d+)x(\d+)/)
       const width = size ? Number(size[1]) : undefined
       const height = size ? Number(size[2]) : undefined
@@ -156,17 +160,18 @@ vi.mock('./lib/onlineProjects', () => ({
   })),
   listOnlineProjects: vi.fn(async () => []),
   listOnlineProjectImages: vi.fn(async () => []),
-  downloadOnlineProjectImage: vi.fn(async (_projectId: string, image: { image_id: string; source?: StoredImage['source']; width?: number; height?: number; created_at: string }) => ({
+  downloadOnlineProjectImage: vi.fn(async (_projectId: string, image: { image_id: string; image_url?: string; source?: StoredImage['source']; width?: number; height?: number; created_at: string }) => ({
     id: image.image_id,
-    dataUrl: 'data:image/png;base64,AAECAw==',
+    dataUrl: image.image_url ?? 'data:image/png;base64,AAECAw==',
+    remoteUrl: image.image_url,
     source: image.source,
     width: image.width,
     height: image.height,
     createdAt: Date.parse(image.created_at) || undefined,
   })),
-  uploadOnlineProjectImage: vi.fn(async () => ({
-    project_id: 'project-a',
-    image_id: 'image-a',
+  uploadOnlineProjectImage: vi.fn(async (projectId: string, _taskId: string | undefined, image: { id?: string }) => ({
+    project_id: projectId,
+    image_id: image.id ?? `backend-image-${++authState.imageSeq}`,
     mime_type: 'image/png',
     image_size: 1,
     image_sha256: 'sha256',
@@ -215,7 +220,6 @@ vi.mock('./lib/onlineProjects', () => ({
     agentConversations: [],
     favoriteCollections: [],
     defaultFavoriteCollectionId: null,
-    images: [],
     thumbnails: [],
   })),
   createOnlineProject: vi.fn((response: { id: string; title: string; archive_sha256?: string }) => ({
@@ -312,7 +316,7 @@ vi.mock('./lib/agentApi', () => ({
     }
   }),
 }))
-import { clearAgentConversations, clearImages, clearProjects, clearTasks, getAllAgentConversations, getAllProjects, getAllTasks, getImage, putAgentConversation, putImage, putProject, putTask as putDbTask } from './lib/db'
+import { clearAgentConversations, clearImages, clearProjects, clearTasks, getAllAgentConversations, getAllProjects, getAllTasks, getImage, putAgentConversation, putImage, putProject, putTask as putDbTask, getAllImageIds } from './lib/db'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { queryImageStatuses } from './lib/imageStatusApi'
@@ -320,9 +324,10 @@ import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { callBackendImageApi } from './lib/backendImageApi'
 import { callBackendCompositeImageApi, queryBackendCompositeImageTask } from './lib/backendCompositeImageApi'
 import { callSeedreamLayers, SEEDREAM_LAYER_MODEL } from './lib/seedreamLayers'
-import { decomposeImage } from './store'
+import { addImageFromUrl, createInputImageFromDataUrl, createInputImageFromFile, createInputImageFromUrl, decomposeImage, redownloadTaskImage } from './store'
+import { LOCAL_IMAGE_CREATION_ERROR } from './lib/projectTasks'
 import { buildLegacyProjectArchive, clearLegacyProjectUploadId, deleteOnlineProject, downloadOnlineProject, listOnlineProjectImages, listOnlineProjects, readOnlineProjectArchive, renameOnlineProject, saveOnlineProjectCanvas, saveOnlineProjectTask, saveOnlineProjectViewport, uploadOnlineProject, uploadOnlineProjectImage } from './lib/onlineProjects'
-import { LOCAL_PROJECT_ID, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeOutputImage, removeTask, renameFavoriteCollection, reuseConfig, retryTask, retryTaskInPlace, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { LOCAL_PROJECT_ID, ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail, cleanStaleAgentInputDrafts, clearFailedTasks, createFavoriteCollection, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getActiveDefaultFavoriteCollectionId, getActiveFavoriteCollections, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeOutputImage, removeTask, renameFavoriteCollection, reuseConfig, retryTask, retryTaskInPlace, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -382,7 +387,7 @@ describe('Seedream 分层任务', () => {
     await putImage({ ...imageA, source: 'generated', createdAt: 1 })
     useStore.setState({
       tasks: [task({ outputImages: [imageA.id], projectId: 'source-project' })],
-      projects: [],
+      projects: [{ id: 'source-project', title: '分层项目', initialPrompt: '', storage: 'online', createdAt: 1, updatedAt: 1 }],
       settings: normalizeSettings({ ...DEFAULT_SETTINGS, apiKey: 'profile-key' }),
       oidcApiOverride: { apiKey: 'selected-key', model: 'other-model' },
       prompt: '保留输入提示词', inputImages: [imageB], showToast: vi.fn(),
@@ -450,7 +455,7 @@ describe('Seedream 分层任务', () => {
   })
 
   it('分层完成时直接持久化拼合坐标，不依赖画布组件处于打开状态', async () => {
-    const project: Project = { id: 'source-project', title: '分层项目', initialPrompt: '', storage: 'local', createdAt: 1, updatedAt: 1 }
+    const project: Project = { id: 'source-project', title: '分层项目', initialPrompt: '', storage: 'online', createdAt: 1, updatedAt: 1 }
     useStore.setState({ projects: [project], projectCanvasCache: {} })
     vi.mocked(callSeedreamLayers).mockResolvedValueOnce({
       images: ['data:image/png;base64,2000x2240', 'data:image/png;base64,1534x1732'],
@@ -975,7 +980,7 @@ describe('mask draft lifecycle in store actions', () => {
   })
 
   it('stores new gallery tasks in the active project', async () => {
-    const projectId = useStore.getState().createProject('夏日饮品海报')
+    const projectId = useStore.getState().createProject('夏日饮品海报', { autoRecord: true })
 
     await submitTask()
 
@@ -985,7 +990,7 @@ describe('mask draft lifecycle in store actions', () => {
   })
 
   it('removes a project and all of its generation records', async () => {
-    const projectId = useStore.getState().createProject('品牌主视觉')
+    const projectId = useStore.getState().createProject('品牌主视觉', { autoRecord: true })
     await submitTask()
 
     await useStore.getState().deleteProject(projectId)
@@ -1162,7 +1167,6 @@ describe('mask draft lifecycle in store actions', () => {
       await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
       const generatedTask = useStore.getState().tasks[0]
       expect(uploadOnlineProjectImage).toHaveBeenCalledWith(projectId, generatedTask.id, expect.objectContaining({
-        id: generatedTask.outputImages[0],
         dataUrl: 'data:image/png;base64,AAECAw==',
         source: 'generated',
       }))
@@ -1182,6 +1186,7 @@ describe('mask draft lifecycle in store actions', () => {
     vi.mocked(callBackendImageApi).mockResolvedValueOnce({
       images: ['data:image/png;base64,AAECAw=='],
       imageIds: ['remote-image-id'],
+      imageUrls: ['https://cdn.example/remote-image-id.png'],
       actualParams: { size: '1024x1024', output_format: 'png', n: 1 },
       actualParamsList: [{ size: '1024x1024', output_format: 'png', n: 1 }],
       revisedPrompts: ['后端改写'],
@@ -1224,8 +1229,36 @@ describe('mask draft lifecycle in store actions', () => {
       expect(saveOnlineProjectTask).not.toHaveBeenCalled()
       expect(uploadOnlineProject).not.toHaveBeenCalled()
       expect(useStore.getState().projects.find((item) => item.id === projectId)?.syncPending).toBe(false)
-      expect(generatedTask.outputImages).toHaveLength(1)
+      expect(generatedTask.outputImages).toEqual(['remote-image-id'])
+      expect(generatedTask.outputImageUrls).toEqual({ 'remote-image-id': 'https://cdn.example/remote-image-id.png' })
+      expect(generatedTask.actualParamsByImage).toHaveProperty('remote-image-id')
+      expect(generatedTask.revisedPromptByImage).toEqual({ 'remote-image-id': '后端改写' })
+      expect(await getImage('remote-image-id')).toMatchObject({ dataUrl: 'data:image/png;base64,AAECAw==' })
       expect(generatedTask).toMatchObject({ apiMode: 'images', apiModel: 'gpt-image-2' })
+    } finally {
+      authState.accessToken = null
+    }
+  })
+
+  it('preserves backend IDs for identical outputs and existing canvas nodes', async () => {
+    authState.accessToken = 'token'
+    vi.mocked(callBackendImageApi).mockResolvedValueOnce({
+      images: [imageA.dataUrl, imageA.dataUrl],
+      imageIds: ['backend-a', 'backend-b'],
+      imagesStoredOnline: true,
+      taskRecordQueued: true,
+    })
+    try {
+      const projectId = useStore.getState().createProject('重复图片')
+      useStore.setState({ projectCanvasCache: {
+        [projectId]: { version: 1, viewport: { x: 0, y: 0, scale: 1 }, items: { 'backend-a': { x: 120, y: 80, width: 240, z: 0 } } },
+      } })
+      await submitTask({ apiOverride: { apiKey: 'oidc-key', model: 'gpt-image-2' } })
+      await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+      expect(useStore.getState().tasks[0].outputImages).toEqual(['backend-a', 'backend-b'])
+      expect(await getImage('backend-a')).toMatchObject({ dataUrl: imageA.dataUrl })
+      expect(await getImage('backend-b')).toMatchObject({ dataUrl: imageA.dataUrl })
+      expect(useStore.getState().projectCanvasCache[projectId].items['backend-a']).toMatchObject({ x: 120, y: 80 })
     } finally {
       authState.accessToken = null
     }
@@ -1365,6 +1398,7 @@ describe('mask draft lifecycle in store actions', () => {
       options.onImageStatusRequestCreated?.({ requestId: 'img-response-a' })
       return {
         images: ['data:image/png;base64,cmVzcG9uc2Vz'],
+        imageIds: ['responses-image-id'],
         actualParams: { output_format: 'png', n: 1 },
         actualParamsList: [{ output_format: 'png', n: 1 }],
         revisedPrompts: [],
@@ -1425,11 +1459,10 @@ describe('mask draft lifecycle in store actions', () => {
         createdAt: 1,
         updatedAt: 2,
       },
-      tasks: [task({ id: 'remote-task', outputImages: ['remote-image'] })],
+      tasks: [task({ id: 'remote-task', outputImages: ['remote-image', 'non-cover-image'] })],
       agentConversations: [],
       favoriteCollections: [],
       defaultFavoriteCollectionId: null,
-      images: [],
       thumbnails: [],
     })
     vi.mocked(listOnlineProjectImages).mockResolvedValueOnce([{
@@ -1440,6 +1473,16 @@ describe('mask draft lifecycle in store actions', () => {
       mime_type: 'image/png',
       image_size: 3,
       image_sha256: 'image-sha',
+      created_at: '2026-08-16T00:00:00Z',
+      updated_at: '2026-08-16T01:00:00Z',
+    }, {
+      project_id: projectId,
+      image_id: 'non-cover-image',
+      image_url: 'https://cdn.example/non-cover.png',
+      source: 'generated',
+      mime_type: 'image/png',
+      image_size: 3,
+      image_sha256: 'non-cover-sha',
       created_at: '2026-08-16T00:00:00Z',
       updated_at: '2026-08-16T01:00:00Z',
     }])
@@ -1457,6 +1500,7 @@ describe('mask draft lifecycle in store actions', () => {
       expect(useStore.getState().tasks.find((item) => item.id === 'remote-task')?.projectId).toBe(projectId)
       expect(useStore.getState().tasks.find((item) => item.id === 'legacy-local-task')).not.toHaveProperty('projectId')
       expect((await getImage('remote-image'))?.dataUrl).toBe('data:image/png;base64,AAECAw==')
+      expect((await getImage('non-cover-image'))?.dataUrl).toBe('https://cdn.example/non-cover.png')
     } finally {
       authState.accessToken = null
     }
@@ -1502,7 +1546,6 @@ describe('mask draft lifecycle in store actions', () => {
       agentConversations: [],
       favoriteCollections: [],
       defaultFavoriteCollectionId: null,
-      images: [],
       thumbnails: [],
     })
     vi.mocked(listOnlineProjectImages).mockResolvedValueOnce([])
@@ -1645,6 +1688,7 @@ describe('mask draft lifecycle in store actions', () => {
     })
 
     await retryTask(task({
+      projectId: 'online-project',
       apiOverride: { apiKey: 'oidc-key', model: 'oidc-model' },
     }))
     for (let i = 0; i < 5 && vi.mocked(callImageApi).mock.calls.length === 0; i += 1) {
@@ -1665,12 +1709,14 @@ describe('mask draft lifecycle in store actions', () => {
   })
 
   it('retries a Composite network failure in the original task with the same request identifiers', async () => {
+    useStore.setState({ projects: [{ id: 'online-project', title: '在线项目', initialPrompt: '', storage: 'online', createdAt: 1, updatedAt: 1 }] })
     vi.mocked(callBackendCompositeImageApi).mockClear()
     vi.mocked(callBackendCompositeImageApi).mockResolvedValueOnce({
       images: ['data:image/png;base64,aW1hZ2U='],
       imagesStoredOnline: false,
     })
     const failedTask = task({
+      projectId: 'online-project',
       id: 'network-task',
       requestId: 'frontend-network-request',
       apiProvider: 'openai',
@@ -1718,6 +1764,7 @@ describe('mask draft lifecycle in store actions', () => {
     })
 
     await retryTask(task({
+      projectId: 'online-project',
       apiOverride: { apiKey: 'old-oidc-key', model: 'old-oidc-model' },
     }))
     for (let i = 0; i < 5 && vi.mocked(callImageApi).mock.calls.length === 0; i += 1) {
@@ -2057,9 +2104,11 @@ describe('interrupted OpenAI running tasks', () => {
   })
 
   it('queries a persisted Composite request during startup instead of interrupting it', async () => {
+    await putProject({ id: 'online-project', title: '在线项目', initialPrompt: '', storage: 'online', remoteId: 'remote-online-project', createdAt: 1, updatedAt: 1 })
     await clearTasks()
     await clearImages()
     const compositeTask = task({
+      projectId: 'online-project',
       id: 'composite-recovery',
       apiProvider: 'openai',
       apiModel: 'openai/gpt-image-2',
@@ -2321,7 +2370,9 @@ describe('fal task recovery', () => {
   })
 
   it('applies transparent post-processing when a fal task recovers', async () => {
+    await putProject({ id: 'online-project', title: '在线项目', initialPrompt: '', storage: 'online', remoteId: 'remote-online-project', createdAt: 1, updatedAt: 1 })
     const falTask = task({
+      projectId: 'online-project',
       id: 'fal-transparent-task',
       apiProvider: 'fal',
       apiProfileId: 'fal-profile',
@@ -2396,11 +2447,13 @@ describe('image status recovery', () => {
   })
 
   it('recovers a tracked non-fal task from image status cos urls', async () => {
+    await putProject({ id: 'online-project', title: '在线项目', initialPrompt: '', storage: 'online', remoteId: 'remote-online-project', createdAt: 1, updatedAt: 1 })
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Blob(['ok'], { type: 'image/png' }), {
       status: 200,
       headers: { 'Content-Type': 'image/png' },
     }))
     const runningTask = task({
+      projectId: 'online-project',
       id: 'status-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
@@ -2436,6 +2489,7 @@ describe('image status recovery', () => {
   it('keeps image status cos urls when recovered image download is blocked', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
     const runningTask = task({
+      projectId: 'online-project',
       id: 'status-cors-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
@@ -2479,6 +2533,7 @@ describe('image status recovery', () => {
       oidcApiOverride: null,
     })
     const runningTask = task({
+      projectId: 'online-project',
       id: 'gallery-api-key-race-task',
       apiProvider: 'openai',
       apiProfileId: profileWithoutKey.id,
@@ -2505,11 +2560,13 @@ describe('image status recovery', () => {
   })
 
   it('restores Agent assistant message from image status texts after refresh', async () => {
+    await putProject({ id: 'online-project', title: '在线项目', initialPrompt: '', storage: 'online', remoteId: 'remote-online-project', createdAt: 1, updatedAt: 1 })
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Blob(['agent'], { type: 'image/png' }), {
       status: 200,
       headers: { 'Content-Type': 'image/png' },
     }))
     const conversation = agentConversation({
+      projectId: 'online-project',
       id: 'agent-status-conversation',
       activeRoundId: 'agent-status-round',
       rounds: [{
@@ -2534,6 +2591,7 @@ describe('image status recovery', () => {
       }],
     })
     const runningTask = task({
+      projectId: 'online-project',
       id: 'agent-status-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
@@ -2583,8 +2641,8 @@ describe('image status recovery', () => {
   // 在线项目必须走项目后端轮询，直连供应商域名会被 CORS 拦且暴露 key
   it('queries Agent round image status through the project backend for online projects', async () => {
     const conversation = agentConversation({
-      id: 'agent-backend-status-conversation',
       projectId: 'online-project',
+      id: 'agent-backend-status-conversation',
       activeRoundId: 'agent-backend-status-round',
       rounds: [{
         id: 'agent-backend-status-round',
@@ -2608,8 +2666,8 @@ describe('image status recovery', () => {
       ],
     })
     const runningTask = task({
-      id: 'agent-backend-status-task',
       projectId: 'online-project',
+      id: 'agent-backend-status-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
       apiMode: 'responses',
@@ -2658,6 +2716,7 @@ describe('image status recovery', () => {
       agentOidcApiOverride: null,
     })
     const conversation = agentConversation({
+      projectId: 'online-project',
       id: 'agent-api-key-race-conversation',
       activeRoundId: 'agent-api-key-race-round',
       rounds: [{
@@ -2689,12 +2748,13 @@ describe('image status recovery', () => {
     await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(
       expect.objectContaining({ id: profileWithoutKey.id, apiKey: 'loaded-agent-key' }),
       ['img_agent_api_key_race'],
-      { requestId: 'frontend-request-id' },
+      { requestId: 'frontend-request-id', viaBackend: true },
     ))
   })
 
   it('keeps a tracked Agent round running and queries image status after refresh before a task exists', async () => {
     const conversation = agentConversation({
+      projectId: 'online-project',
       id: 'agent-round-status-conversation',
       activeRoundId: 'agent-round-status',
       rounds: [{
@@ -2740,7 +2800,7 @@ describe('image status recovery', () => {
     })
 
     await initStore()
-    await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_round_status'], { requestId: 'frontend-request-id' }))
+    await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_round_status'], { requestId: 'frontend-request-id', viaBackend: true }))
 
     const restored = useStore.getState().agentConversations.find((item) => item.id === conversation.id)!
     expect(restored.rounds[0]).toMatchObject({
@@ -2754,6 +2814,7 @@ describe('image status recovery', () => {
 
   it('queries a shared Agent round/task image status id only once after refresh', async () => {
     const conversation = agentConversation({
+      projectId: 'online-project',
       id: 'agent-shared-status-conversation',
       activeRoundId: 'agent-shared-status-round',
       rounds: [{
@@ -2791,6 +2852,7 @@ describe('image status recovery', () => {
       ],
     })
     const runningTask = task({
+      projectId: 'online-project',
       id: 'agent-shared-status-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
@@ -2819,11 +2881,12 @@ describe('image status recovery', () => {
     await initStore()
     await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledTimes(1))
 
-    expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_shared_status'], { requestId: 'frontend-request-id' })
+    expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_shared_status'], { requestId: 'frontend-request-id', viaBackend: true })
   })
 
   it('does not query image status for a stopped Agent round after refresh', async () => {
     const conversation = agentConversation({
+      projectId: 'online-project',
       id: 'agent-stopped-conversation',
       activeRoundId: 'agent-stopped-round',
       rounds: [{
@@ -2879,6 +2942,7 @@ describe('image status recovery', () => {
       resolveStatus = resolve
     }))
     const conversation = agentConversation({
+      projectId: 'online-project',
       id: 'agent-stop-race-conversation',
       activeRoundId: 'agent-stop-race-round',
       rounds: [{
@@ -2917,7 +2981,7 @@ describe('image status recovery', () => {
     await putAgentConversation(conversation)
 
     await initStore()
-    await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_stop_race'], { requestId: 'frontend-request-id' }))
+    await vi.waitFor(() => expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_stop_race'], { requestId: 'frontend-request-id', viaBackend: true }))
     useStore.setState((state) => ({
       agentConversations: state.agentConversations.map((item) =>
         item.id === conversation.id
@@ -2957,6 +3021,7 @@ describe('image status recovery', () => {
         resolveStatus = resolve
       }))
       const runningTask = task({
+        projectId: 'online-project',
         id: 'status-invalid-key-task',
         apiProvider: 'openai',
         apiProfileId: openAIProfile.id,
@@ -3010,6 +3075,7 @@ describe('image status recovery', () => {
         resolveStatus = resolve
       }))
       const conversation = agentConversation({
+        projectId: 'online-project',
         id: 'agent-invalid-key-conversation',
         activeRoundId: 'agent-invalid-key-round',
         rounds: [{
@@ -3049,7 +3115,7 @@ describe('image status recovery', () => {
 
       await initStore()
       await vi.advanceTimersByTimeAsync(0)
-      expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_invalid_key'], { requestId: 'frontend-request-id' })
+      expect(queryImageStatuses).toHaveBeenCalledWith(expect.objectContaining({ id: openAIProfile.id }), ['img_agent_invalid_key'], { requestId: 'frontend-request-id', viaBackend: true })
 
       useStore.setState((state) => ({
         agentConversations: state.agentConversations.map((item) =>
@@ -3089,6 +3155,7 @@ describe('image status recovery', () => {
 
   it('does not recheck a terminal errored image status task on init', async () => {
     const erroredTask = task({
+      projectId: 'online-project',
       id: 'status-errored-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
@@ -3114,6 +3181,7 @@ describe('image status recovery', () => {
 
   it('does not query Agent round status on init when its image task is terminally failed', async () => {
     const conversation = agentConversation({
+      projectId: 'online-project',
       id: 'agent-terminal-task-conversation',
       activeRoundId: 'agent-terminal-task-round',
       rounds: [{
@@ -3151,6 +3219,7 @@ describe('image status recovery', () => {
       ],
     })
     const failedTask = task({
+      projectId: 'online-project',
       id: 'agent-terminal-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
@@ -3185,6 +3254,7 @@ describe('image status recovery', () => {
 
   it('fails a tracked non-fal task when image status explicitly fails', async () => {
     const runningTask = task({
+      projectId: 'online-project',
       id: 'status-failed-task',
       apiProvider: 'openai',
       apiProfileId: openAIProfile.id,
@@ -3830,6 +3900,8 @@ describe('agent context for removed outputs', () => {
       model: DEFAULT_RESPONSES_MODEL,
     })
     useStore.setState({
+      activeProjectId: 'online-project',
+      projects: [],
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         apiKey: 'test-key',
@@ -4408,6 +4480,7 @@ describe('agent built-in image tool failure', () => {
   })
 
   it('updates a completed streaming task with the revised prompt from the final response', async () => {
+    useStore.setState({ activeProjectId: 'online-project', projects: [{ id: 'online-project', title: '在线项目', initialPrompt: '', storage: 'online', createdAt: 1, updatedAt: 1 }] })
     vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
       await opts.onImageToolStarted?.({ toolCallId: 'ig-revised' })
       await opts.onImageToolCompleted?.({
@@ -4942,5 +5015,183 @@ describe('reused task API profile', () => {
       cancelText: '放弃提交',
     }))
     expect(state.showSettings).toBe(false)
+  })
+})
+
+describe('本地项目禁止新增图片', () => {
+  beforeEach(async () => {
+    await clearProjects()
+    await clearTasks()
+    await clearImages()
+    await clearAgentConversations()
+    await putImage(imageA)
+    useStore.setState({
+      projects: [
+        { id: 'local-project', title: '本地项目', initialPrompt: '', storage: 'local', createdAt: 1, updatedAt: 1 },
+        { id: 'online-project', title: '在线项目', initialPrompt: '', storage: 'online', createdAt: 1, updatedAt: 1 },
+      ],
+      activeProjectId: LOCAL_PROJECT_ID,
+      tasks: [],
+      agentConversations: [],
+      activeAgentConversationId: null,
+      inputImages: [],
+      prompt: '生成图片',
+      showToast: vi.fn(),
+    })
+    vi.mocked(callAgentResponsesApi).mockClear()
+    vi.mocked(callBackendImageApi).mockClear()
+    vi.mocked(callSeedreamLayers).mockClear()
+  })
+
+  it.each([LOCAL_PROJECT_ID, 'local-project'])('阻止 %s 生成和添加文件、URL、裁剪结果', async (projectId) => {
+    useStore.setState({ activeProjectId: projectId })
+    const file = new File(['image'], 'image.png', { type: 'image/png' })
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    try {
+      await submitTask()
+      await submitAgentMessage()
+      expect(await createInputImageFromFile(file)).toBeNull()
+      await addImageFromUrl('https://images.example/new.png')
+      await expect(createInputImageFromUrl('https://images.example/new.png')).rejects.toThrow(LOCAL_IMAGE_CREATION_ERROR)
+      await expect(createInputImageFromDataUrl(imageB.dataUrl)).rejects.toThrow(LOCAL_IMAGE_CREATION_ERROR)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(callAgentResponsesApi).not.toHaveBeenCalled()
+      expect(callBackendImageApi).not.toHaveBeenCalled()
+      expect(useStore.getState().tasks).toEqual([])
+      expect(useStore.getState().agentConversations).toEqual([])
+      expect(await getAllTasks()).toEqual([])
+      expect(await getAllImageIds()).toEqual([imageA.id])
+      expect(useStore.getState().showToast).toHaveBeenCalledWith(LOCAL_IMAGE_CREATION_ERROR, 'error')
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
+  it.each([undefined, 'local-project'])('按任务所属项目拦截重试、分层和补下载：%s', async (projectId) => {
+    const source = task({ projectId, status: 'error', outputImages: [imageA.id], rawImageUrls: ['https://images.example/new.png'] })
+    useStore.setState({ activeProjectId: 'online-project', tasks: [source] })
+    await expect(retryTask(source)).rejects.toThrow(LOCAL_IMAGE_CREATION_ERROR)
+    await expect(retryTaskInPlace(source)).rejects.toThrow(LOCAL_IMAGE_CREATION_ERROR)
+    await expect(decomposeImage(source, imageA.id)).rejects.toThrow(LOCAL_IMAGE_CREATION_ERROR)
+    await expect(redownloadTaskImage(source)).rejects.toThrow(LOCAL_IMAGE_CREATION_ERROR)
+    expect(useStore.getState().tasks).toEqual([source])
+    expect(await getAllImageIds()).toEqual([imageA.id])
+    expect(callSeedreamLayers).not.toHaveBeenCalled()
+  })
+
+  it('在线画布中也不能重新生成本地 Agent 会话', async () => {
+    const conversation = agentConversation({ projectId: 'local-project' })
+    useStore.setState({ activeProjectId: 'online-project', agentConversations: [conversation] })
+    await expect(regenerateAgentAssistantMessage(conversation.id, 'round-a')).rejects.toThrow(LOCAL_IMAGE_CREATION_ERROR)
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+    expect(useStore.getState().agentConversations).toEqual([conversation])
+  })
+
+  it('本地已有图片仍可读取和删除', async () => {
+    const source = task({ outputImages: [imageA.id] })
+    useStore.setState({ tasks: [source] })
+    expect(await getImage(imageA.id)).toMatchObject(imageA)
+    await removeOutputImage(source, imageA.id)
+    expect(useStore.getState().tasks[0]?.outputImages ?? []).toEqual([])
+    expect(await getImage(imageA.id)).toBeUndefined()
+  })
+
+  it.each([null, 'online-project'])('首页草稿和在线项目仍可新增参考图：%s', async (projectId) => {
+    useStore.setState({ activeProjectId: projectId })
+    const image = await createInputImageFromDataUrl(imageB.dataUrl)
+    expect(await getImage(image.id)).toMatchObject({ dataUrl: imageB.dataUrl })
+  })
+
+  it.each([undefined, 'local-project'])('刷新时不自动恢复本地未完成的生成任务：%s', async (projectId) => {
+    if (projectId) await putProject(useStore.getState().projects.find((project) => project.id === projectId)!)
+    const source = task({ projectId, status: 'running', inputImageIds: [imageA.id], imageStatusRequestIds: ['local-request'], finishedAt: null })
+    await putDbTask(source)
+    vi.mocked(queryImageStatuses).mockClear()
+    await initStore()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(queryImageStatuses).not.toHaveBeenCalled()
+    expect(await getAllImageIds()).toEqual([imageA.id])
+  })
+})
+
+
+describe('画布图片 URL 回退', () => {
+  const project: Project = { id: 'url-project', remoteId: 'remote-url-project', storage: 'online', title: '图片 URL', initialPrompt: '', createdAt: 1, updatedAt: 1 }
+  const remoteImage = (id: string) => ({
+    project_id: project.remoteId!, image_id: id, image_url: `https://cdn.example/${id}.png`, source: 'generated' as const,
+    width: 1200, height: 800, mime_type: 'image/png', image_size: 1, image_sha256: 'hash', created_at: '', updated_at: '',
+  })
+
+  beforeEach(async () => {
+    await clearImages()
+    vi.mocked(listOnlineProjectImages).mockReset().mockResolvedValue([])
+    useStore.setState({ projects: [project], tasks: [], projectCanvasCache: {}, activeProjectId: project.id })
+  })
+
+  it('任务保存的直链不依赖项目元数据和图片列表可用', async () => {
+    const id = 'task-direct-url-image'
+    useStore.setState({ projects: [], tasks: [task({ projectId: project.id, outputImages: [id], outputImageUrls: { [id]: 'https://cdn.example/task-direct.png' } })] })
+    expect(await ensureImageCached(id)).toBe('https://cdn.example/task-direct.png')
+    expect(listOnlineProjectImages).not.toHaveBeenCalled()
+  })
+
+  it('本地记录只剩 remoteUrl 时直接展示，无需重新查询', async () => {
+    await putImage({ id: 'url-only-image', dataUrl: '', remoteUrl: 'https://cdn.example/existing.png' })
+    expect(await ensureImageCached('url-only-image')).toBe('https://cdn.example/existing.png')
+    expect(listOnlineProjectImages).not.toHaveBeenCalled()
+  })
+
+  it('缓存缺失时按原 ID 恢复 URL，缩略图订阅同时获得原图尺寸', async () => {
+    const id = 'missing-url-image'
+    useStore.setState({ tasks: [task({ projectId: project.id, outputImages: [id] })] })
+    vi.mocked(listOnlineProjectImages).mockResolvedValueOnce([remoteImage('unrelated-image'), remoteImage(id)])
+    const listener = vi.fn()
+    const unsubscribe = subscribeImageThumbnail(id, listener)
+    try {
+      expect(await ensureImageCached(id)).toBe(remoteImage(id).image_url)
+      expect(listOnlineProjectImages).toHaveBeenCalledWith(project.remoteId)
+      expect(await getImage(id)).toMatchObject({ id, dataUrl: remoteImage(id).image_url, remoteUrl: remoteImage(id).image_url })
+      expect(listener).toHaveBeenCalledWith({ dataUrl: remoteImage(id).image_url, width: 1200, height: 800 })
+      expect(await ensureImageCached(id)).toBe(remoteImage(id).image_url)
+      expect(listOnlineProjectImages).toHaveBeenCalledTimes(1)
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('没有缩略图时也能返回后端图片直链', async () => {
+    const id = 'missing-thumbnail-url'
+    useStore.setState({ tasks: [task({ projectId: project.id, outputImages: [id] })] })
+    vi.mocked(listOnlineProjectImages).mockResolvedValueOnce([remoteImage(id)])
+    expect(await ensureImageThumbnailCached(id)).toEqual({ dataUrl: remoteImage(id).image_url, width: 1200, height: 800 })
+  })
+
+  it('同一项目多个图片缺失共用一次列表请求', async () => {
+    const ids = ['concurrent-url-a', 'concurrent-url-b']
+    useStore.setState({ tasks: [task({ projectId: project.id, outputImages: ids })] })
+    let finish!: (images: ReturnType<typeof remoteImage>[]) => void
+    vi.mocked(listOnlineProjectImages).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const pending = Promise.all(ids.map((id) => ensureImageCached(id)))
+    await vi.waitFor(() => expect(listOnlineProjectImages).toHaveBeenCalledTimes(1))
+    finish(ids.map(remoteImage))
+    expect(await pending).toEqual(ids.map((id) => remoteImage(id).image_url))
+  })
+
+  it('后端暂时不可用时不伪造图片，后续调用可重试', async () => {
+    const id = 'retry-missing-url'
+    useStore.setState({ tasks: [task({ projectId: project.id, outputImages: [id] })] })
+    vi.mocked(listOnlineProjectImages).mockRejectedValueOnce(new Error('网络异常')).mockResolvedValueOnce([remoteImage(id)])
+    expect(await ensureImageCached(id)).toBeUndefined()
+    expect(await getImage(id)).toBeUndefined()
+    expect(await ensureImageCached(id)).toBe(remoteImage(id).image_url)
+  })
+
+  it('本地项目或不存在的图片不会借用其他图片 URL', async () => {
+    useStore.setState({ projects: [{ ...project, storage: 'local' }], tasks: [task({ projectId: project.id, outputImages: ['local-missing-url'] })] })
+    expect(await ensureImageCached('local-missing-url')).toBeUndefined()
+    expect(listOnlineProjectImages).not.toHaveBeenCalled()
+    useStore.setState({ projects: [project], tasks: [task({ projectId: project.id, outputImages: ['remote-missing-url'] })] })
+    vi.mocked(listOnlineProjectImages).mockResolvedValueOnce([remoteImage('other-url')])
+    expect(await ensureImageCached('remote-missing-url')).toBeUndefined()
   })
 })

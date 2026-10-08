@@ -316,6 +316,10 @@ func TestProjectGenerationHandlerGeneratesAndSavesBeforeReturning(t *testing.T) 
 			t.Fatal(err)
 		}
 		outputImages, _ := task["outputImages"].([]any)
+		outputImageURLs, _ := task["outputImageUrls"].(map[string]any)
+		if outputImageURLs[expectedID] != store.image.ImageURL {
+			t.Fatalf("missing output image URL: %s", saved.task)
+		}
 		actualParamsByImage, _ := task["actualParamsByImage"].(map[string]any)
 		revisedPromptByImage, _ := task["revisedPromptByImage"].(map[string]any)
 		if task["status"] != "done" || task["error"] != nil || len(outputImages) != 1 || outputImages[0] != expectedID {

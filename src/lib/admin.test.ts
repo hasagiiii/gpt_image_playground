@@ -6,11 +6,28 @@ const authFetch = vi.hoisted(() => vi.fn())
 
 vi.mock('../auth/api', () => ({ authFetch }))
 
-import { listAdminUserMaterials, toAdminUserProjectImage } from './admin'
+import { downloadAdminUserProject, listAdminUserMaterials, listAdminUserProjectImages, listAdminUserProjects, toAdminUserProjectImage } from './admin'
 
 describe('admin', () => {
   beforeEach(() => {
     authFetch.mockReset()
+  })
+
+  it('读取他人画布列表、归档和图片时绕过旧 Service Worker 缓存', async () => {
+    const projects = [{ id: 'project-a', title: '最新布局' }]
+    const images = [{ image_id: 'image-a', width: 400, height: 200 }]
+    authFetch
+      .mockResolvedValueOnce(new Response(JSON.stringify({ projects })))
+      .mockResolvedValueOnce(new Response(new Uint8Array([80, 75, 3, 4])))
+      .mockResolvedValueOnce(new Response(JSON.stringify(images)))
+
+    await expect(listAdminUserProjects('user/a')).resolves.toEqual(projects)
+    await expect(downloadAdminUserProject('user/a', 'project/a')).resolves.toEqual(new Uint8Array([80, 75, 3, 4]))
+    await expect(listAdminUserProjectImages('user/a', 'project/a')).resolves.toEqual(images)
+
+    expect(authFetch).toHaveBeenNthCalledWith(1, expect.stringMatching(/^\/api\/v1\/admin\/users\/user%2Fa\/projects\?_=\d+$/), { cache: 'no-store' })
+    expect(authFetch).toHaveBeenNthCalledWith(2, expect.stringMatching(/^\/api\/v1\/admin\/users\/user%2Fa\/projects\/project%2Fa\?_=\d+$/), { cache: 'no-store' })
+    expect(authFetch).toHaveBeenNthCalledWith(3, expect.stringMatching(/^\/api\/v1\/admin\/users\/user%2Fa\/projects\/project%2Fa\/images\?_=\d+$/), { cache: 'no-store' })
   })
 
   it('uses the direct image URL for read-only images', async () => {

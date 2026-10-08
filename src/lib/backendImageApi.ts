@@ -147,8 +147,16 @@ export async function callBackendImageApi(options: {
     throw error
   }
 
-  const images = Array.isArray(data?.images) ? data.images.filter((item): item is string => typeof item === 'string' && item.startsWith('data:image/')) : []
-  if (images.length === 0) throw new Error('后端生图接口没有返回图片')
+  const images = data?.images
+  if (!Array.isArray(images) || images.length === 0) throw new Error('后端生图接口没有返回图片')
+  if (!images.every((item): item is string => typeof item === 'string' && item.startsWith('data:image/'))) {
+    throw new Error('后端生图接口返回了无效图片')
+  }
+  // 图片和 ID 必须逐项对应，不能过滤无效项后让索引错位，也不能在前端重新分配 ID。
+  const imageIds = data?.image_ids
+  if (!Array.isArray(imageIds) || imageIds.length !== images.length || !imageIds.every((id): id is string => typeof id === 'string' && id.trim().length > 0)) {
+    throw new Error('后端生图接口返回的图片 ID 缺失或与图片数量不一致')
+  }
 
   const actualParams = data?.actual_params && typeof data.actual_params === 'object'
     ? data.actual_params as Partial<TaskParams>
@@ -158,9 +166,6 @@ export async function callBackendImageApi(options: {
     : images.map(() => actualParams)
   const revisedPrompts = Array.isArray(data?.revised_prompts)
     ? data.revised_prompts.map((item) => typeof item === 'string' ? item : undefined)
-    : undefined
-  const imageIds = Array.isArray(data?.image_ids)
-    ? data.image_ids.filter((item): item is string => typeof item === 'string')
     : undefined
   const imageUrls = Array.isArray(data?.image_urls)
     ? data.image_urls.map((item) => typeof item === 'string' ? item : undefined)

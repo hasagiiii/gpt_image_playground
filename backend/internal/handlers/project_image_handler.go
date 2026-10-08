@@ -23,6 +23,11 @@ const maxProjectImageBytes = 64 << 20
 
 var projectImageIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 
+func generatedProjectImageID(imageURL string) string {
+	digest := sha256.Sum256([]byte(imageURL))
+	return hex.EncodeToString(digest[:])
+}
+
 type projectImageStore interface {
 	SaveImage(ctx context.Context, userID string, image models.ProjectImage, data []byte) (*models.ProjectImage, error)
 	ListImages(ctx context.Context, userID, projectID string) ([]models.ProjectImage, error)
@@ -158,7 +163,7 @@ func (h *ProjectImageHandler) Save(c *gin.Context) {
 	imageID := strings.TrimSpace(c.PostForm("image_id"))
 	taskID := strings.TrimSpace(c.PostForm("task_id"))
 	source := strings.TrimSpace(c.PostForm("source"))
-	if !projectImageIDPattern.MatchString(imageID) || (taskID != "" && !projectImageIDPattern.MatchString(taskID)) {
+	if (imageID != "" && !projectImageIDPattern.MatchString(imageID)) || (taskID != "" && !projectImageIDPattern.MatchString(taskID)) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": http.StatusBadRequest, "message": "valid image and task ids required"})
 		return
 	}
@@ -248,6 +253,10 @@ func (h *ProjectImageHandler) Save(c *gin.Context) {
 		if parsedSize, parseErr := strconv.ParseInt(imageSizeValue, 10, 64); parseErr == nil && parsedSize >= 0 {
 			imageSize = parsedSize
 		}
+	}
+	// 新图片与生图接口共用后端 ID，旧记录同步时保留已有引用。
+	if imageID == "" {
+		imageID = generatedProjectImageID(imageURL)
 	}
 	image, err := h.images.SaveImage(c.Request.Context(), userID, models.ProjectImage{
 		ProjectID: projectID,
