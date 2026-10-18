@@ -125,7 +125,6 @@ const COMPOSITE_RECOVERY_POLL_MS = 5_000
 const COMPOSITE_RECOVERY_TIMEOUT_MS = 10 * 60 * 1000
 const IMAGE_STATUS_RECOVERY_POLL_MS = 5_000
 const IMAGE_STATUS_API_KEY_WAIT_MS = 250
-const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -561,49 +560,6 @@ function showTaskCompletionNotification(title: string, body: string) {
   showBrowserNotification(title, { body })
 }
 
-function countSuccessfulOutputImages(tasks: TaskRecord[]) {
-  return tasks.reduce((count, task) => count + (task.status === 'done' && !isAgentTask(task) ? task.outputImages.length : 0), 0)
-}
-
-function skipSupportPromptForImportedData(tasks: TaskRecord[]) {
-  const count = countSuccessfulOutputImages(tasks)
-  useStore.setState((state) => {
-    if (state.supportPromptDismissed) return {}
-    if (count <= SUPPORT_PROMPT_IMAGE_THRESHOLD) {
-      return { supportPromptSkippedForImportedData: false }
-    }
-    if (state.supportPromptOpen) return {}
-    return { supportPromptSkippedForImportedData: true }
-  })
-}
-
-function showSupportPromptForExistingLocalData(tasks: TaskRecord[]) {
-  const count = countSuccessfulOutputImages(tasks)
-  useStore.setState((state) => {
-    if (state.supportPromptDismissed || state.supportPromptOpen) return {}
-    if (count <= SUPPORT_PROMPT_IMAGE_THRESHOLD) {
-      return { supportPromptSkippedForImportedData: false }
-    }
-    if (state.supportPromptSkippedForImportedData) return {}
-    return { supportPromptOpen: true }
-  })
-}
-
-function maybeOpenSupportPrompt(previousTasks: TaskRecord[], nextTasks: TaskRecord[], taskId: string) {
-  const state = useStore.getState()
-  if (state.supportPromptDismissed || state.supportPromptOpen || state.supportPromptSkippedForImportedData) return
-
-  const previousTask = previousTasks.find((task) => task.id === taskId)
-  const nextTask = nextTasks.find((task) => task.id === taskId)
-  if (!nextTask || previousTask?.status === 'done' || nextTask.status !== 'done' || nextTask.outputImages.length === 0) return
-
-  const previousCount = countSuccessfulOutputImages(previousTasks)
-  const nextCount = countSuccessfulOutputImages(nextTasks)
-  if (previousCount <= SUPPORT_PROMPT_IMAGE_THRESHOLD && nextCount > SUPPORT_PROMPT_IMAGE_THRESHOLD) {
-    useStore.setState({ supportPromptOpen: true })
-  }
-}
-
 function normalizeStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
@@ -965,9 +921,6 @@ export function getPersistedState(state: AppState) {
     agentAssetPanelCollapsed: state.agentAssetPanelCollapsed,
     favoriteCollections: state.favoriteCollections,
     defaultFavoriteCollectionId: state.defaultFavoriteCollectionId,
-    supportPromptDismissed: state.supportPromptDismissed,
-    supportPromptOpen: state.supportPromptOpen,
-    supportPromptSkippedForImportedData: state.supportPromptSkippedForImportedData,
   }
 }
 
@@ -1043,9 +996,6 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     activeFavoriteCollectionId: null,
     favoritePickerTaskIds: null,
     favoritePickerImageIds: null,
-    supportPromptDismissed: Boolean(persisted.supportPromptDismissed),
-    supportPromptOpen: Boolean(persisted.supportPromptOpen),
-    supportPromptSkippedForImportedData: Boolean(persisted.supportPromptSkippedForImportedData),
     prompt: restoredAgentDraft ? restoredAgentDraft.prompt : galleryInputDraft?.prompt ?? '',
     inputImages: restoredAgentDraft ? restoredAgentDraft.inputImages : galleryInputDraft?.inputImages ?? [],
     maskDraft: restoredAgentDraft ? restoredAgentDraft.maskDraft : galleryInputDraft?.maskDraft ?? null,
@@ -1195,11 +1145,6 @@ interface AppState {
   showSettings: boolean
   settingsTabRequest: SettingsTab | null
   setShowSettings: (v: boolean, tab?: SettingsTab) => void
-  supportPromptOpen: boolean
-  supportPromptDismissed: boolean
-  supportPromptSkippedForImportedData: boolean
-  setSupportPromptOpen: (v: boolean) => void
-  dismissSupportPrompt: () => void
 
   // Toast
   toast: { message: string; type: ToastType } | null
@@ -2228,12 +2173,7 @@ export const useStore = create<AppState>()(
             recordProjectImageHistory(projectId, previousTasks, tasks)
           }
         }
-        set(() => ({
-          tasks,
-          ...(countSuccessfulOutputImages(tasks) <= SUPPORT_PROMPT_IMAGE_THRESHOLD
-            ? { supportPromptSkippedForImportedData: false }
-            : {}),
-        }))
+        set({ tasks })
       },
       favoriteCollections: [createDefaultFavoriteCollection()],
       setFavoriteCollections: (favoriteCollections) => set((state) => {
@@ -2371,11 +2311,6 @@ export const useStore = create<AppState>()(
           ...(!showSettings ? { settingsTabRequest: null } : {}),
         })
       },
-      supportPromptOpen: false,
-      supportPromptDismissed: false,
-      supportPromptSkippedForImportedData: false,
-      setSupportPromptOpen: (supportPromptOpen) => set({ supportPromptOpen }),
-      dismissSupportPrompt: () => set({ supportPromptOpen: false, supportPromptDismissed: true }),
 
       // Toast
       toast: null,
@@ -4696,7 +4631,6 @@ async function initializeStore() {
     useStore.setState({ agentConversations: recoveredAgentConversations })
   }
   syncAgentConversationsFromTerminalImageStatusTasks(tasks)
-  showSupportPromptForExistingLocalData(tasks)
   const agentRoundRequestIds = new Set(
     useStore.getState().agentConversations.flatMap((conversation) =>
       conversation.rounds.flatMap((round) => round.imageStatusRequestIds ?? []),
@@ -7596,7 +7530,6 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>, sy
     if (next !== canvas) state.updateProjectCanvas(projectId, next)
   }
   if (previousTask?.status !== 'done' && task?.status === 'done' && task.outputImages.length > 0) playCompletionSound()
-  maybeOpenSupportPrompt(tasks, updated, taskId)
   return task ? putTask(task, syncOnline) : undefined
 }
 
@@ -8449,15 +8382,13 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
       activeAgentConversationId: null,
       projects: [],
       activeProjectId: null,
-      supportPromptOpen: false,
-      supportPromptSkippedForImportedData: false,
     })
     clearInputImages()
     clearMaskDraft()
   }
 
   if (options.clearConfig) {
-    useStore.setState({ dismissedCodexCliPrompts: [], supportPromptDismissed: false })
+    useStore.setState({ dismissedCodexCliPrompts: [] })
     setSettings({ ...DEFAULT_SETTINGS })
     setParams({ ...DEFAULT_PARAMS })
   }
@@ -8677,7 +8608,6 @@ export async function importData(file: File, options: ImportOptions = { importCo
         }
       })
       await replaceStoredAgentConversations(useStore.getState().agentConversations)
-      skipSupportPromptForImportedData(tasks)
       scheduleThumbnailBackfill(importedImageIds)
     }
 

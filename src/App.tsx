@@ -26,7 +26,6 @@ import MaterialLibrary from './components/MaterialLibrary'
 import AdminAnnouncements from './components/AdminAnnouncements'
 import AdminUsers from './components/AdminUsers'
 import AnnouncementNotice from './components/AnnouncementNotice'
-import SupportPromptModal from './components/SupportPromptModal'
 import { FavoriteCollectionPickerModal, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 import { ChevronLeftIcon } from './components/icons'
@@ -224,7 +223,6 @@ export default function App() {
       <Lightbox />
       <SettingsModal />
       <ConfirmDialog />
-      <SupportPromptModal />
       <FavoriteCollectionPickerModal />
       <ManageCollectionsModal />
       <Toast />
